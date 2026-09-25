@@ -13,31 +13,32 @@ npm ci
 npm run dev
 ```
 
-Open the localhost URL printed by Vite. No API keys, accounts, downloaded assets, or additional services are needed. The demo makes no external requests.
+Open the localhost URL printed by Vite. All models and textures are bundled. No API keys, accounts, or additional services are needed. The demo makes no external requests.
 
 A desktop browser and GPU with WebGPU support are required. Enable hardware acceleration and serve the app on localhost or HTTPS. The solver requires 1,024 compute invocations per workgroup, a workgroup X size of 1,024, and 10 storage buffers per shader stage. Adapters with lower limits cannot run it. There is no WebGL simulation fallback.
 
 ## The collection
 
-| Preset              | Explore                                                             |
-| ------------------- | ------------------------------------------------------------------- |
-| **Tidal chamber**   | A collapsing column of water, an obstacle, and changing currents    |
-| **Crown impact**    | A falling drop, a pool, and the resulting splash                    |
-| **Liquid marble**   | Surface tension and angular motion in zero gravity                  |
-| **Amber cascade**   | Viscous liquid flowing over ceramic steps                           |
-| **Floating forms**  | Two-way interaction between fluid and deformable objects            |
-| **Elastic studies** | Shape matching, compliance, and collisions                          |
-| **Silk in motion**  | Cloth stretch, bending, aerodynamic drag, and lift                  |
-| **Vortex plume**    | Passive tracer particles carried by a rotating fluid velocity field |
+| Preset              | Explore                                                                |
+| ------------------- | ---------------------------------------------------------------------- |
+| **Tidal chamber**   | Waves spilling over low weirs and through staggered wall gaps          |
+| **Crown impact**    | A falling drop splashing into a shallow pool                           |
+| **Liquid marble**   | Inward gravity, surface tension, and droplets pulled off by clicking   |
+| **Viscous pour**    | A continuous nozzle-fed stream with implicit velocity diffusion        |
+| **Buoyancy**        | Textured rubber ducks floating or sinking as their density changes     |
+| **Elastic studies** | 20 textured CC0 forms that bend under moving compression plates        |
+| **Silk in motion**  | Soft red velvet displaced by a moving chrome sphere                    |
+| **Vortex plume**    | Lit volumetric smoke with filtered density and correct scene occlusion |
 
 Each preset has a focused parameter panel. Sliders apply immediately; controls marked **↻** restart the experiment when released. Settings are remembered per preset during the current session. **Reset all** restores that preset's defaults.
 
 - **Space** pauses or plays; **R** restarts. Shortcuts do not intercept focused controls.
 - **Drag** to orbit, **right-drag** to pan, and **scroll or pinch** to zoom.
 - **Surface / Particles** reveals the simulation beneath the rendering. In Vortex plume, Particles also reveals the carrier fluid.
-- **Balanced / High fidelity** changes particle density and render resolution. Changing quality restarts the scene.
+- **Balanced / High fidelity** changes particle density and render resolution. Elastic studies uses exactly **20 × 200 particles** on Balanced and **20 × 500** on High fidelity. Changing quality restarts the scene.
+- **Ambient occlusion** adds contact shading and depth to creases. Disable it under Appearance to reduce rendering cost.
 - **Loop experiment** automatically replays a study after its duration. Disable it to continue experimenting with the settled state.
-- **Disturb** applies a small impulse in fluid presets.
+- **Click the liquid** to apply a local impulse. In Liquid marble, this pulls a cap outward into droplets. Focus the viewport and press **Enter** for a center-screen impulse. Successful interactions resume playback.
 - **Save image** downloads a PNG of the current viewport.
 - On smaller screens, open **Parameters** to access the controls.
 
@@ -52,23 +53,26 @@ One npm project, with engine code and demo code kept separate:
 ```text
 src/
   core/       Particle buffers, integration, constraints, contacts, colliders
-  fluids/     Fluid solver and screen-space surface rendering
+  fluids/     Fluid solver, viscosity diffusion, and surface reconstruction
   softbody/   Soft and rigid body solvers, voxelization, mesh skinning
-  cloth/      Stretch, bending, tether, and aerodynamic constraints
-  gas/        Passive tracer advection and billboard rendering
+  cloth/      Cloth constraints and smooth bicubic surface rendering
+  gas/        Tracer advection, volumetric smoke, and diagnostic sprites
   render/     GPU-driven particle rendering
   sdf/        CPU mesh-to-SDF baking and binary utilities
   index.ts    Engine exports
 demo/
   presets/    Eight presets and their controls
-  runtime/    Scene lifecycle, lighting, camera, and frame pacing
-  main.ts     Gallery and parameter interface
+  runtime/    Scene lifecycle, lighting, ambient occlusion, and camera
+  assets/     CC0 source meshes used by the demo
+  main.ts     Preset list and parameter interface
   style.css   Responsive interface styles
-public/       Local icons and rendered preset previews
+public/       Local models, particle templates, icons, and preset previews
 tests/        Numerical tests and GPU benchmark harness
 ```
 
 The engine is source code in this repository, not a published npm package. Import from `src/index.ts` or an individual module when integrating it. Start with `demo/presets/liquids.ts` for a complete example of particle allocation, a fluid material, colliders, a simulation loop, and surface rendering. The demo runtime handles device initialization and resource disposal.
+
+The buoyancy preset uses coupled fluid pressure for vertical support and a torque-only weighted-base approximation to keep the toy ducks upright. Increasing their relative density above water still makes them sink.
 
 The public API is experimental and may change. The soft-body solver and screen-space fluid renderer have numerical and rendering limitations; this project is intended for interactive visualization, not engineering analysis.
 
@@ -80,6 +84,7 @@ The public API is experimental and may change. The soft-body solver and screen-s
 | `npm run build`          | Type-check and build the demo into `dist/`               |
 | `npm run preview`        | Serve the production build locally                       |
 | `npm run typecheck`      | Check engine, demo, and test types                       |
+| `npm run assets:elastic` | Rebuild smoothed CC0 meshes and exact particle templates |
 | `npm run lint`           | Lint engine, demo, and scripts                           |
 | `npm test`               | Run CPU tests                                            |
 | `npm run test:gpu`       | Run numerical WebGPU tests using installed Google Chrome |
@@ -89,8 +94,8 @@ The public API is experimental and may change. The soft-body solver and screen-s
 
 GPU checks require a compatible local GPU. The test runner passes Chrome's `--enable-unsafe-webgpu` flag for local testing. Performance results are specific to the browser, adapter, driver, and settings; they are not cross-device guarantees. Benchmark output remains local and is ignored by Git.
 
-A small number of numerical checks are explicitly skipped with explanations in their test files. Retained cloth-compliance and buoyancy checks have shown intermittent failures on the tested adapter; their assertions have not been relaxed.
+A small number of numerical checks are explicitly skipped with explanations in their test files. The suite includes regressions for shape matching that preserves externally applied translations, viscous shear dissipation, and solver convergence. Impact deformation depends on the timestep and iteration budget; local shape matching needs multiple iterations to converge.
 
 ## License
 
-[MIT](LICENSE). Dependency notices are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+[MIT](LICENSE). The bundled Kenney and Poly Haven models are CC0. Asset sources, modifications, and dependency notices are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

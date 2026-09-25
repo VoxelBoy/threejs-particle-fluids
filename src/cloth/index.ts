@@ -5,3 +5,4 @@ export { buildTethers, type TetherConstraint, type BuildTethersOptions } from '.
 export { createClothTetherConstraints } from './tether.js';
 export { createClothAeroKernel, type ClothAeroKernel } from './aero.js';
 export { ClothSystem, type ClothSystemOptions } from './ClothSystem.js';
+export { createClothSurface, type ClothSurfaceOptions } from './surface.js';

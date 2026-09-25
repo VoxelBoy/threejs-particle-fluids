@@ -1,8 +1,8 @@
-import { Mesh, TorusGeometry, Vector3 } from 'three';
-import { Fn, color, float, instanceIndex, mix, uniform, vec3, vec4 } from 'three/tsl';
+import { BoxGeometry, CylinderGeometry, Group, Mesh, Vector3 } from 'three';
+import { Fn, If, color, float, instanceIndex, mix, sin, cos, uniform, vec3, vec4 } from 'three/tsl';
 import { HashGrid, ParticleSystem, SimLoop, createXpbdUniforms } from '../../src/core/index.js';
 import { FluidSystem } from '../../src/fluids/index.js';
-import { GasSystem, PointSpritesGasRenderer } from '../../src/gas/index.js';
+import { GasSystem, PointSpritesGasRenderer, VolumetricGasRenderer } from '../../src/gas/index.js';
 import { createParticleMesh } from '../../src/render/particles.js';
 import { material, pedestal } from '../runtime/stage.js';
 import type { BuildContext, Experiment, Values } from '../types.js';
@@ -13,7 +13,7 @@ type Any = any;
 
 export function buildVortex(ctx: BuildContext, values: Values): Experiment {
   const radius = ctx.quality === 'high' ? 0.029 : 0.035;
-  const initial = lattice([-0.5, radius, -0.5], [0.5, 1.5, 0.5], radius * 2);
+  const initial = lattice([-0.5, radius, -0.5], [0.5, 1.9, 0.5], radius * 2);
   const particles = new ParticleSystem(ctx.renderer, initial.length, radius);
   particles.uploadParticles(initial);
   const hashGrid = new HashGrid(particles, { cellSize: radius * 4 });
@@ -36,10 +36,9 @@ export function buildVortex(ctx: BuildContext, values: Values): Experiment {
     hashGrid,
     h: radius * 4,
     xpbd,
-    lifetime: 7,
+    lifetime: 8,
   });
   const colliders = tank(particles, 0.52, 0.52);
-  colliders.addPlane(new Vector3(0, -1, 0), new Vector3(0, 1.55, 0));
   colliders.upload();
   const substeps = 2,
     iterations = 2;
@@ -55,13 +54,27 @@ export function buildVortex(ctx: BuildContext, values: Values): Experiment {
   loop.kernels.floorY.value = -1e9;
   const swirl = uniform(values['swirl']!);
   const rise = uniform(values['rise']!);
+  const flowTime = uniform(0);
   const stir = Fn(() => {
     const i: Any = instanceIndex;
-    const p: Any = particles.positions.element(i).xyz;
+    const particle: Any = particles.positions.element(i);
+    const p: Any = particle.xyz.toVar();
+    // Recycle the carrier flow through an open top, preventing an artificial
+    // ceiling from collecting the smoke into a flat, mushroom-shaped cap.
+    If(p.y.greaterThan(1.96), () => {
+      p.y.assign(radius);
+      particle.assign(vec4(p, particle.w));
+    });
     const velocity: Any = particles.velocities.element(i);
     const r2: Any = p.x.mul(p.x).add(p.z.mul(p.z));
-    const lift: Any = float(1).sub(r2.mul(8)).mul(rise);
-    const goal: Any = vec3(p.z.negate().mul(swirl), lift, p.x.mul(swirl));
+    const lift: Any = float(1).sub(r2.mul(2)).max(0.25).mul(rise);
+    const phase: Any = p.y.mul(5).sub(flowTime.mul(0.65));
+    const curl: Any = sin(p.x.mul(9).add(flowTime.mul(0.4))).mul(cos(p.z.mul(9).sub(phase)));
+    const goal: Any = vec3(
+      p.z.negate().mul(swirl).add(sin(phase).mul(0.08)),
+      lift.add(curl.mul(0.08)),
+      p.x.mul(swirl).add(cos(phase).mul(0.08)),
+    );
     velocity.assign(vec4(mix(velocity.xyz, goal, 0.12), velocity.w));
   })().compute(initial.length);
   const smoke = new PointSpritesGasRenderer({
@@ -70,6 +83,15 @@ export function buildVortex(ctx: BuildContext, values: Values): Experiment {
     initialOpacity: 0.45,
     opacityTau: 4.5,
     colorNode: (pos: Any) => mix(color(0xe8a266), color(0xa89cdf), pos.y.div(1.5).clamp(0, 1)),
+  });
+  smoke.object.visible = false;
+  const volume = new VolumetricGasRenderer({
+    gas,
+    min: new Vector3(-0.62, 0, -0.62),
+    max: new Vector3(0.62, 1.72, 0.62),
+    resolution: ctx.quality === 'high' ? [80, 128, 80] : [64, 96, 64],
+    steps: ctx.quality === 'high' ? 96 : 72,
+    density: values['density']!,
   });
   const dots = createParticleMesh({
     particles,
@@ -80,21 +102,37 @@ export function buildVortex(ctx: BuildContext, values: Values): Experiment {
     heightSegments: 4,
   });
   dots.visible = false;
-  const ring = new Mesh(new TorusGeometry(0.47, 0.012, 10, 80), material(0xbcb3a3, 0.25, 0.8));
-  ring.rotation.x = Math.PI / 2;
-  ring.position.y = 0.02;
+  const vent = new Group();
+  const recess = new Mesh(new CylinderGeometry(0.19, 0.19, 0.006, 64), material(0x0b141d, 0.8, 0));
+  recess.position.y = 0.005;
+  vent.add(recess);
+  const grilleMaterial = material(0x738894, 0.35, 0.7);
+  for (let i = -5; i <= 5; i++) {
+    const x = i * 0.031;
+    const length = Math.sqrt(0.18 ** 2 - x ** 2) * 2;
+    const slat = new Mesh(new BoxGeometry(0.009, 0.008, length), grilleMaterial);
+    slat.position.set(x, 0.012, 0);
+    vent.add(slat);
+  }
   let emissionCarry = 0;
-  // A helical seed makes the velocity field legible from the first frame.
-  for (let i = 0; i < 360; i++) {
-    const y = (i / 360) * 1.35 + 0.06,
-      angle = i * 0.09;
-    const r = 0.2 + 0.045 * Math.sin(i * 0.17);
-    gas.emit([Math.cos(angle) * r, y, Math.sin(angle) * r], [0, 0, 0], 2, 0);
+  // Fill a gently twisting column; the density filter joins the samples into smoke.
+  for (let i = 0; i < 1600; i++) {
+    const h = (i * 0.61803398875) % 1;
+    const angle = i * 2.399963;
+    const radius = Math.sqrt((i * 0.41421356) % 1) * (0.08 + h * 0.17);
+    const centerX = Math.sin(h * 9) * h * 0.11;
+    const centerZ = Math.cos(h * 9) * h * 0.11;
+    gas.emit(
+      [centerX + Math.cos(angle) * radius, 0.07 + h * 1.35, centerZ + Math.sin(angle) * radius],
+      [0, 0, 0],
+      1,
+      0,
+    );
   }
   return {
     particles,
     loop,
-    objects: [pedestal(0.68), ring, smoke.object, dots],
+    objects: [pedestal(0.58), vent, volume.object, smoke.object, dots],
     get particleCount() {
       const alive = gas.smokeAlive.value.array as Uint32Array;
       let count = initial.length;
@@ -103,7 +141,10 @@ export function buildVortex(ctx: BuildContext, values: Values): Experiment {
     },
     substeps,
     iterations,
+    prepareRender: () => volume.update(ctx.renderer),
     async update(dt, time) {
+      volume.time.value = time;
+      flowTime.value = time;
       await ctx.renderer.computeAsync(stir);
       emissionCarry += values['emission']! * dt;
       const count = Math.floor(emissionCarry);
@@ -111,7 +152,7 @@ export function buildVortex(ctx: BuildContext, values: Values): Experiment {
         emissionCarry -= count;
         for (let i = 0; i < count; i++) {
           const angle = time * 5 + i * 2.39996;
-          const r = 0.09 + 0.08 * (i / count);
+          const r = 0.12 * Math.sqrt((i * 0.61803398875 + time * 0.3) % 1);
           gas.emit(
             [Math.cos(angle) * r, 0.08 + (i % 5) * 0.008, Math.sin(angle) * r],
             [0, values['rise']!, 0],
@@ -125,12 +166,16 @@ export function buildVortex(ctx: BuildContext, values: Values): Experiment {
       values[key] = value;
       if (key === 'swirl') swirl.value = value;
       if (key === 'rise') rise.value = value;
+      if (key === 'density') volume.density.value = value;
     },
     setParticleView(enabled) {
       dots.visible = enabled;
+      smoke.object.visible = enabled;
+      volume.object.visible = !enabled;
     },
     dispose() {
       smoke.dispose();
+      volume.dispose();
       particles.destroy();
       hashGrid.destroy();
       colliders.destroy();

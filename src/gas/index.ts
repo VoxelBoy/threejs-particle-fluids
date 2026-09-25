@@ -5,3 +5,7 @@ export {
   PointSpritesGasRenderer,
   type PointSpritesGasRendererOptions,
 } from './render/PointSpritesGasRenderer.js';
+export {
+  VolumetricGasRenderer,
+  type VolumetricGasRendererOptions,
+} from './render/VolumetricGasRenderer.js';

@@ -4,6 +4,7 @@ import {
   Discard,
   Fn,
   cameraPosition,
+  cameraProjectionMatrix,
   cameraViewMatrix,
   cameraWorldMatrix,
   float,
@@ -108,7 +109,7 @@ function buildSphereImposterMaterial(
   const viewCenterView: Any = cameraViewMatrix.mul(vec4(particleWorld, 1.0)).xyz;
   const viewCenterZ: Any = viewCenterView.z.toVarying('depthPassViewCenterZ');
 
-  material.outputNode = Fn(() => {
+  const surfaceDepth: Any = Fn(() => {
     const diskUv: Any = uv().mul(2.0).sub(1.0);
     const r2: Any = diskUv.dot(diskUv);
     Discard(r2.greaterThan(1.0));
@@ -116,8 +117,14 @@ function buildSphereImposterMaterial(
     const zOffset: Any = r2.oneMinus().sqrt().mul(radiusUniform);
     const viewSurfaceZ: Any = viewCenterZ.add(zOffset);
 
-    return vec4(viewSurfaceZ.negate(), 0.0, 0.0, 1.0);
-  })();
+    return viewSurfaceZ.negate();
+  })().toVar();
+  material.outputNode = vec4(surfaceDepth, 0, 0, 1);
+  // Depth-test the actual front of the sphere/ellipsoid, not its billboard center.
+  material.depthNode = (cameraProjectionMatrix as Any)
+    .element(3)
+    .z.div(surfaceDepth)
+    .sub((cameraProjectionMatrix as Any).element(2).z);
 
   return material;
 }
@@ -217,7 +224,7 @@ function buildEllipsoidImposterMaterial(
   const aniOffVy: Any = aniOff.y.toVarying('aniOffY');
   const aniOffVz: Any = aniOff.z.toVarying('aniOffZ');
 
-  material.outputNode = Fn(() => {
+  const surfaceDepth: Any = Fn(() => {
     const xBarF: Any = vec3(xBarVx, xBarVy, xBarVz);
     const aniDiagF: Any = vec3(aniDiagVx, aniDiagVy, aniDiagVz);
     const aniOffF: Any = vec3(aniOffVx, aniOffVy, aniOffVz);
@@ -278,8 +285,14 @@ function buildEllipsoidImposterMaterial(
     const hitView: Any = cameraViewMatrix.mul(vec4(hit, 1.0)).xyz;
     const viewSurfaceZ: Any = hitView.z;
 
-    return vec4(viewSurfaceZ.negate(), 0.0, 0.0, 1.0);
-  })();
+    return viewSurfaceZ.negate();
+  })().toVar();
+  material.outputNode = vec4(surfaceDepth, 0, 0, 1);
+  // Depth-test the actual front of the sphere/ellipsoid, not its billboard center.
+  material.depthNode = (cameraProjectionMatrix as Any)
+    .element(3)
+    .z.div(surfaceDepth)
+    .sub((cameraProjectionMatrix as Any).element(2).z);
 
   return material;
 }

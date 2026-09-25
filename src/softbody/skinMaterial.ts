@@ -1,7 +1,24 @@
 import { Color, Vector3 } from 'three';
 import type { MeshStandardMaterial } from 'three';
 import { MeshStandardNodeMaterial } from 'three/webgpu';
-import { If, float, uint, uniform, vec4 } from 'three/tsl';
+import {
+  If,
+  Fn,
+  cameraViewMatrix,
+  cross,
+  dFdx,
+  dFdy,
+  faceDirection,
+  float,
+  normalize,
+  positionView,
+  texture,
+  uint,
+  uniform,
+  uv,
+  vec3,
+  vec4,
+} from 'three/tsl';
 import type UniformNode from 'three/src/nodes/core/UniformNode.js';
 
 import type { SoftbodySystem } from './SoftbodySystem.js';
@@ -171,6 +188,7 @@ export function createSoftbodySkinMaterial(
   // assignment works; the standard PBR shader graph reads these without
   // any explicit `colorNode` / `mapNode` wiring on our side.
   if (sourceMaterial) {
+    material.side = sourceMaterial.side;
     if (sourceMaterial.color) material.color.copy(sourceMaterial.color);
     if (sourceMaterial.emissive) material.emissive.copy(sourceMaterial.emissive);
     material.roughness = sourceMaterial.roughness;
@@ -198,7 +216,45 @@ export function createSoftbodySkinMaterial(
   // the actual TSL node graph. Three.js sees the call site as a single
   // node; the body is inlined into the vertex shader.
   (material as Any).positionNode = buildSkinPositionFn(skinArgs)();
-  (material as Any).normalNode = buildSkinNormalFn(skinArgs)();
+  // Skin at vertices, then interpolate the resulting normal. Integer influence
+  // indices are flat varyings: reading them in the fragment stage applies one
+  // corner's skin transform to the whole triangle and creates visible facets.
+  const worldNormal = buildSkinNormalFn(skinArgs)().toVarying();
+  // NodeMaterial.normalNode expects view space; the DQB helper returns world space.
+  const viewNormal = normalize(cameraViewMatrix.mul(vec4(worldNormal, 0)).xyz).mul(
+    faceDirection as Any,
+  );
+  (material as Any).normalNode = viewNormal;
+  if (sourceMaterial?.normalMap) {
+    const map = sourceMaterial.normalMap;
+    const scale = uniform(sourceMaterial.normalScale.clone());
+    // Build the tangent frame from the deformed surface, so the source normal
+    // map remains attached to the skin as the body rotates, bends, and stretches.
+    (material as Any).normalNode = Fn(() => {
+      const dp1: Any = dFdx(positionView),
+        dp2: Any = dFdy(positionView);
+      const duv1: Any = dFdx(uv(map.channel)),
+        duv2: Any = dFdy(uv(map.channel));
+      const p2: Any = cross(dp2, viewNormal),
+        p1: Any = cross(viewNormal, dp1);
+      const tangent: Any = p2.mul(duv1.x).add(p1.mul(duv2.x));
+      const bitangent: Any = p2.mul(duv1.y).add(p1.mul(duv2.y));
+      const inverseScale: Any = tangent
+        .dot(tangent)
+        .max(bitangent.dot(bitangent))
+        .max(1e-12)
+        .inverseSqrt();
+      const sampled: Any = texture(map).xyz.mul(2).sub(1);
+      const mapped: Any = vec3(sampled.xy.mul(scale), sampled.z);
+      return normalize(
+        tangent
+          .mul(mapped.x)
+          .add(bitangent.mul(mapped.y))
+          .mul(inverseScale)
+          .add(viewNormal.mul(mapped.z)),
+      );
+    })();
+  }
 
   return material;
 }

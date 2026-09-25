@@ -8,10 +8,18 @@ const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `
   <header class="topbar">
     <a class="brand" href="./" aria-label="Three.js Particle Fluids home"><img src="${import.meta.env.BASE_URL}favicon.svg" alt="" width="34" height="34"><span>Three.js <strong>Particle Fluids</strong></span></a>
-    <span class="header-note">INTERACTIVE STUDIES IN MOTION</span>
     <span class="gpu-badge"><span></span> WebGPU</span>
   </header>
   <main class="workspace">
+  <nav class="gallery" aria-label="Choose a preset"><div class="gallery-heading"><span class="eyebrow">PRESETS</span><span>08</span></div><div class="preset-grid">${presets
+    .map(
+      (preset) => `
+    <button class="preset-card" data-preset="${preset.id}" aria-label="${preset.number}. ${preset.name}" aria-pressed="false" style="--card-accent:${preset.accent}">
+      <div class="preset-preview preview-${preset.id}"><img src="${import.meta.env.BASE_URL}previews/${preset.id}.png" alt="" width="60" height="48" loading="lazy"></div>
+      <span class="preset-info"><span class="preset-title">${preset.name}</span><span class="preset-category">${preset.category}</span></span><span class="preset-number">${preset.number}</span>
+    </button>`,
+    )
+    .join('')}</div></nav>
     <section class="viewport" aria-label="Simulation viewport">
       <div id="canvas-host"></div>
       <aside class="diagnostics" aria-label="Live performance diagnostics">
@@ -19,11 +27,11 @@ app.innerHTML = `
         <dl><div><dt>FPS</dt><dd id="fps">—</dd></div><div><dt>Frame</dt><dd><span id="frame-ms">—</span><small>ms</small></dd></div><div><dt>Particles</dt><dd id="particle-count">—</dd></div></dl>
         <div class="diagnostic-foot"><span id="solver-info">GPU COMPUTE</span><span id="sim-time">0.0 s</span></div>
       </aside>
-      <div class="scene-label"><span id="scene-category"></span><h1 id="scene-name"></h1><p id="scene-caption">Simulated on your GPU. Shaped by you.</p></div>
+      <div class="scene-label"><span id="scene-category"></span><h1 id="scene-name"></h1></div>
       <div id="loading" class="loading" role="status"><span class="spinner"></span><strong id="loading-title">Preparing the simulation</strong><span id="loading-copy">Compiling the first frame…</span></div>
-      <div id="error" class="error-card" hidden role="alert"><span class="eyebrow">GRAPHICS UNAVAILABLE</span><h2>Let’s get things moving.</h2><p id="error-copy"></p><p>Use a browser with WebGPU and hardware acceleration enabled. Open this demo on localhost or HTTPS.</p><button id="retry" class="primary">Try again ${icon('reset')}</button></div>
+      <div id="error" class="error-card" hidden role="alert"><span class="eyebrow">GRAPHICS UNAVAILABLE</span><h2>WebGPU unavailable</h2><p id="error-copy"></p><p>Use a browser with WebGPU and hardware acceleration enabled. Open this demo on localhost or HTTPS.</p><button id="retry" class="primary">Try again ${icon('reset')}</button></div>
       <div class="viewport-bottom">
-        <div class="camera-hint">Drag to orbit <span>·</span> Scroll to zoom</div>
+        <div class="camera-hint" id="interaction-hint">Drag to orbit · Scroll to zoom</div>
         <div class="transport" aria-label="Playback controls">
           <button id="play" class="play-button" title="Pause (Space)" aria-label="Pause simulation">${icon('pause')}</button>
           <button id="restart" class="icon-button" title="Restart (R)" aria-label="Restart simulation">${icon('reset')}</button>
@@ -32,11 +40,10 @@ app.innerHTML = `
           <button id="capture" class="icon-button" title="Save image" aria-label="Save image">${icon('camera')}</button>
         </div>
         <button id="mobile-controls" class="mobile-controls" aria-controls="inspector" aria-expanded="false">${icon('tune')} Parameters</button>
-        <button id="disturb" class="disturb" hidden>${icon('spark')} Disturb</button>
       </div>
     </section>
     <aside class="inspector" id="inspector" aria-label="Preset parameters">
-      <div class="inspector-top"><span class="eyebrow">THE EXPERIMENT</span><button id="close-controls" class="icon-button" aria-label="Close parameters">${icon('close')}</button><span id="preset-index"></span></div>
+      <div class="inspector-top"><span class="eyebrow">PRESET</span><button id="close-controls" class="icon-button" aria-label="Close parameters">${icon('close')}</button><span id="preset-index"></span></div>
       <h2 id="panel-name"></h2><p id="description" class="description"></p>
       <div class="section-label"><span>PARAMETERS</span><button id="defaults" class="text-button">Reset all</button></div>
       <div id="parameters"></div>
@@ -45,20 +52,12 @@ app.innerHTML = `
         <div class="section-label"><span>APPEARANCE</span></div>
         <fieldset class="segmented"><legend class="sr-only">Render mode</legend><label><input type="radio" name="render-mode" value="surface" checked><span>Surface</span></label><label><input type="radio" name="render-mode" value="particles"><span>Particles</span></label></fieldset>
         <div class="setting-row"><label for="quality">Quality</label><select id="quality"><option value="balanced">Balanced</option><option value="high">High fidelity</option></select></div>
+        <label class="setting-row switch-row" for="ambient-occlusion"><span>Ambient occlusion</span><input type="checkbox" id="ambient-occlusion" checked><span class="switch" aria-hidden="true"></span></label>
         <label class="setting-row switch-row" for="loop"><span>Loop experiment</span><input type="checkbox" id="loop" checked><span class="switch" aria-hidden="true"></span></label>
       </div>
-      <div class="inspector-footer"><span class="footer-mark">THREE.JS</span><span>Physics in the browser.</span></div>
     </aside>
   </main>
-  <nav class="gallery" aria-label="Choose a preset"><div class="gallery-heading"><span class="eyebrow">EXPLORE THE COLLECTION</span><span>08 studies <span class="gallery-hint">· Select to explore</span></span></div><div class="preset-grid">${presets
-    .map(
-      (preset) => `
-    <button class="preset-card" data-preset="${preset.id}" aria-label="${preset.number}. ${preset.name}" aria-pressed="false" style="--card-accent:${preset.accent}">
-      <div class="preset-preview preview-${preset.id}"><img src="${import.meta.env.BASE_URL}previews/${preset.id}.png" alt="" loading="lazy"><span class="preset-number">${preset.number}</span><span class="preset-arrow">${icon('arrow')}</span></div>
-      <span class="preset-title">${preset.name}</span><span class="preset-category">${preset.category}</span>
-    </button>`,
-    )
-    .join('')}</div></nav>
+
   <div id="toast" role="status" class="toast" hidden></div>
 `;
 
@@ -75,6 +74,7 @@ let playing = !matchMedia('(prefers-reduced-motion: reduce)').matches;
 let looping = true;
 let quality: 'balanced' | 'high' = 'balanced';
 let particleView = false;
+let ambientOcclusion = true;
 let loading = true;
 let toastTimer = 0;
 let structuralTimer = 0;
@@ -123,7 +123,7 @@ function setBusy(busy: boolean): void {
   loading = busy;
   el('loading').hidden = !busy;
   el('parameters').setAttribute('aria-busy', String(busy));
-  for (const id of ['play', 'restart', 'capture', 'camera-reset', 'disturb'])
+  for (const id of ['play', 'restart', 'capture', 'camera-reset'])
     el<HTMLButtonElement>(id).disabled = busy;
 }
 
@@ -153,6 +153,12 @@ function rebuild(preserveCamera = true): void {
         (error) => {
           if (token === generation) showError(error);
         },
+        () => {
+          if (token === generation) {
+            playing = true;
+            syncPlayback();
+          }
+        },
       );
       try {
         await next.init(host, config, level, camera);
@@ -166,9 +172,12 @@ function rebuild(preserveCamera = true): void {
           if (!control.restart) next.experiment.setParameter(control.key, values[control.key]!);
         next.playing = playing;
         next.looping = looping;
+        next.ambientOcclusion = ambientOcclusion;
         next.experiment.setParticleView?.(particleView);
         host.replaceChildren(next.canvas);
-        el('disturb').hidden = !next.experiment.disturb;
+        el('interaction-hint').textContent = next.experiment.interact
+          ? 'Click the liquid to splash · Drag to orbit · Scroll to zoom'
+          : 'Drag to orbit · Scroll to zoom';
         setBusy(false);
         syncPlayback();
         next.start();
@@ -259,13 +268,6 @@ el('play').addEventListener('click', () => {
 el('restart').addEventListener('click', () => rebuild());
 el('retry').addEventListener('click', () => rebuild(false));
 el('camera-reset').addEventListener('click', () => world?.resetCamera());
-el('disturb').addEventListener('click', () => {
-  world?.experiment.disturb?.();
-  if (!playing) {
-    playing = true;
-    syncPlayback();
-  }
-});
 el('defaults').addEventListener('click', () => {
   values = defaults(selected);
   memory.set(selected.id, { ...values });
@@ -279,6 +281,10 @@ el<HTMLSelectElement>('quality').addEventListener('change', (event) => {
 el<HTMLInputElement>('loop').addEventListener('change', (event) => {
   looping = (event.target as HTMLInputElement).checked;
   if (world) world.looping = looping;
+});
+el<HTMLInputElement>('ambient-occlusion').addEventListener('change', (event) => {
+  ambientOcclusion = (event.target as HTMLInputElement).checked;
+  if (world) world.ambientOcclusion = ambientOcclusion;
 });
 document.querySelectorAll<HTMLInputElement>('[name="render-mode"]').forEach((input) =>
   input.addEventListener('change', () => {

@@ -5,8 +5,8 @@ const presetIds = [
   'tidal-chamber',
   'crown-impact',
   'liquid-marble',
-  'amber-cascade',
-  'floating-forms',
+  'viscous-pour',
+  'buoyancy',
   'elastic-studies',
   'silk-in-motion',
   'vortex-plume',
@@ -39,6 +39,10 @@ test('all eight presets render, advance, and switch without browser errors', asy
     ).toBeGreaterThan(100);
     await page.getByLabel('Particles', { exact: true }).check();
     await page.getByLabel('Surface', { exact: true }).check();
+    await page.getByLabel('Ambient occlusion', { exact: true }).uncheck();
+    await page.waitForTimeout(100);
+    await page.getByLabel('Ambient occlusion', { exact: true }).check();
+    await page.waitForTimeout(100);
   }
   expect(errors).toEqual([]);
 });
@@ -81,7 +85,7 @@ test('pause, live controls, rebuilds, captures, and rapid navigation preserve a 
     await page.locator(`[data-preset="${id}"]`).click();
   await ready(page);
   await expect(page.locator('#panel-name')).toHaveText('Liquid marble');
-  await page.getByRole('button', { name: 'Disturb', exact: true }).click();
+  await page.locator('#canvas-host canvas').click();
   await page.getByRole('button', { name: 'Restart simulation' }).click();
   await ready(page);
   expect(errors).toEqual([]);
@@ -99,6 +103,10 @@ test('mobile controls, reduced motion, and deep links work', async ({ page }) =>
   await expect(page.locator('#inspector')).toBeVisible();
   await page.getByLabel('Wind speed', { exact: true }).fill('2.1');
   await expect(page.locator('#value-wind')).toContainText('2.1');
+  const timeBeforeSoftness = await page.locator('#sim-time').innerText();
+  await page.getByLabel('Drape softness', { exact: true }).fill('1');
+  await expect(page.locator('#value-bend')).toContainText('1.00');
+  await expect(page.locator('#sim-time')).toHaveText(timeBeforeSoftness);
   await page.keyboard.press('Escape');
   await expect(page.locator('#inspector')).toBeHidden();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -110,4 +118,38 @@ test('missing WebGPU produces a helpful recovery state', async ({ page }) => {
   await expect(page.locator('#error')).toBeVisible();
   await expect(page.locator('#error-copy')).toContainText('WebGPU');
   await expect(page.getByRole('button', { name: 'Try again' })).toBeEnabled();
+});
+
+test('soft-body quality levels keep 20 objects with the requested particle budgets', async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto('/?preset=elastic-studies');
+  await ready(page);
+  await expect(page.locator('#particle-count')).toHaveText('4,000');
+  await page.getByLabel('Quality', { exact: true }).selectOption('high');
+  await ready(page);
+  await expect(page.locator('#particle-count')).toHaveText('10,000');
+  await expect
+    .poll(async () => parseFloat(await page.locator('#sim-time').innerText()))
+    .toBeGreaterThan(0.8);
+  expect(errors).toEqual([]);
+});
+
+test('liquid clicks resume a paused scene; background clicks do not', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/?preset=liquid-marble');
+  await ready(page);
+  const canvas = page.locator('#canvas-host canvas');
+  const bounds = (await canvas.boundingBox())!;
+  await page.mouse.click(bounds.x + 30, bounds.y + 200);
+  await expect(page.locator('#sim-state')).toHaveText('PAUSED');
+  await canvas.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#sim-state')).toHaveText(/RUNNING/);
+  await expect
+    .poll(async () => parseFloat(await page.locator('#sim-time').innerText()))
+    .toBeGreaterThan(0.5);
+  await expect(page.locator('#disturb')).toHaveCount(0);
 });

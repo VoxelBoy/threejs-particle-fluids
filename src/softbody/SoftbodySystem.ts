@@ -156,8 +156,7 @@ export class SoftbodySystem implements Material {
   readonly bodyCount: StorageBufferNode<'uint'>;
   /**
    * Per-body current-configuration centre of mass. Written by
-   * {@link preIterKernels}'s Pass 1 (center-of-mass) once per substep;
-   * read by Pass 3 (Δx apply) on every iter.
+   * the initial frame fit and refreshed before every shape-matching iteration.
    */
   readonly bodyCenters: StorageBufferNode<'vec4'>;
 
@@ -168,8 +167,7 @@ export class SoftbodySystem implements Material {
    * per body — `bodyRotations[3·b + row].xyz` is row `row` of `R_b`,
    * `w` unused. Total length = `3 · bodies.length`.
    *
-   * Written by {@link preIterKernels}' Pass 2 once per substep; read by
-   * {@link perIterKernels}' Pass 3 (Δx apply) on every iter via
+   * Refitted before every shape-matching iteration; read by the apply pass via
    * `goal_i = R · r_i + c`.
    */
   readonly bodyRotations: StorageBufferNode<'vec4'>;
@@ -459,7 +457,9 @@ export class SoftbodySystem implements Material {
         numBodies: bodies.length,
       });
       this.preIterKernels = [resetLambdaKernel, centerOfMassKernel, momentPolarKernel];
-      this.perIterKernels = [shapeMatchApplyKernel];
+      // Refit to the current predicted positions after other materials act.
+      // A substep-cached center cancels fluid pressure and collision translations.
+      this.perIterKernels = [centerOfMassKernel, momentPolarKernel, shapeMatchApplyKernel];
     } else {
       // ---- §5.1 (Mueller 2011) — Phase 12 implicit kernel set ----
       this.installImplicitKernels(options);
@@ -684,8 +684,7 @@ export class SoftbodySystem implements Material {
     (this as { pairLambda?: StorageBufferNode<'vec4'> }).pairLambda = pairLambda;
     (this as { implicitAccumulator?: ContactAccumulator }).implicitAccumulator = accumulator;
 
-    // preIter: reset accumulator + overflow flag + pair λ; compute c_i,
-    // R_i once per substep. Order matches §5.3's "reset → centre → moment".
+    // Reset multipliers once per substep; refit neighborhoods each iteration.
     this.preIterKernels = [
       resetAccum,
       resetOverflow,
@@ -693,12 +692,13 @@ export class SoftbodySystem implements Material {
       centerKernel,
       momentPolarKernel,
     ];
-    // perIter: scatter Δx into accumulator, apply (zeroes accumulator for
-    // next iter), write qp_i. The qp_i write runs every iter; the last
-    // iter's value wins naturally (R_i is constant across iters within a
-    // substep, so qp_i is also stable — see shapeMatchImplicit.ts Pass 4
-    // doc for the cadence rationale).
-    this.perIterKernels = [scatterKernel, applyKernel, qpWriteKernel];
+    this.perIterKernels = [
+      centerKernel,
+      momentPolarKernel,
+      scatterKernel,
+      applyKernel,
+      qpWriteKernel,
+    ];
   }
 
   /**

@@ -1,4 +1,4 @@
-import type { Object3D, PerspectiveCamera, Scene } from 'three';
+import type { Object3D, PerspectiveCamera, Scene, Vector2 } from 'three';
 import type { WebGPURenderer } from 'three/webgpu';
 import type { ParticleSystem, SimLoop } from '../src/core/index.js';
 
@@ -44,6 +44,6 @@ export interface Experiment {
   prepareRender?(): void | Promise<void>;
   setParameter(key: string, value: number): void;
   setParticleView?(enabled: boolean): void;
-  disturb?(): void;
+  interact?(uv: Vector2): Promise<boolean>;
   dispose(): void;
 }

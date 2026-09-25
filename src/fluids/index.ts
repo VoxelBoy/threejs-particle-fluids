@@ -81,3 +81,4 @@ export {
   type SurfaceParams,
   type ThicknessParams,
 } from './render/index.js';
+export { ViscositySolver, type ViscositySolverOptions } from './ViscositySolver.js';

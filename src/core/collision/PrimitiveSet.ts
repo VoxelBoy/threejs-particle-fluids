@@ -392,7 +392,7 @@ export class PrimitiveSet {
       const vy = (curr.y - rec.prevPosition.y) * invDt;
       const vz = (curr.z - rec.prevPosition.z) * invDt;
       this.setColliderCenter(rec.slot, curr);
-      this.writeVec4(this.cpuLinVel, rec.slot, vx, vy, vz, 0);
+      this.writeVec4(this.cpuLinVel, rec.slot, vx, vy, vz, this.cpuLinVel[rec.slot * 4 + 3]!);
       rec.prevPosition.copy(curr);
       this.invalidate(rec.slot);
     }

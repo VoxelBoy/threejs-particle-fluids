@@ -8,7 +8,17 @@ import {
   Vector2,
   Vector3,
 } from 'three';
-import { PMREMGenerator, type WebGPURenderer } from 'three/webgpu';
+import {
+  PMREMGenerator,
+  RenderPipeline,
+  type Node,
+  type TextureNode,
+  type WebGPURenderer,
+} from 'three/webgpu';
+import { pass, renderOutput, rtt, vec4 } from 'three/tsl';
+import { ao } from 'three/addons/tsl/display/GTAONode.js';
+import { denoise } from 'three/addons/tsl/display/DenoiseNode.js';
+import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { FrameStepper, createParticleRenderer } from '../../src/core/index.js';
@@ -38,6 +48,7 @@ export class World {
   controls!: OrbitControls;
   playing = true;
   looping = true;
+  ambientOcclusion = true;
   time = 0;
   private stopped = false;
   private frameId = 0;
@@ -50,12 +61,16 @@ export class World {
   private width = 0;
   private height = 0;
   private captureRequest: { resolve(blob: Blob): void; reject(error: Error): void } | undefined;
+  private pointerStart: Vector2 | undefined;
+  private interaction: Vector2 | undefined;
+  private renderPipeline!: RenderPipeline;
 
   constructor(
     readonly preset: Preset,
     private readonly onStats: (stats: Diagnostics) => void,
     private readonly onLoop: () => void,
     private readonly onError: (error: unknown) => void,
+    private readonly onInteraction: () => void,
   ) {
     this.canvas.setAttribute(
       'aria-label',
@@ -126,6 +141,76 @@ export class World {
       values,
     );
     this.scene.add(...this.experiment.objects);
+    // Reconstruct normals from depth so custom volume shaders need no extra MRT
+    // output. Half-resolution GTAO and edge-aware filtering keep the cost modest.
+    // Normal reconstruction requires a single-sample depth texture. FXAA runs
+    // after tone mapping to smooth silhouettes without multisampled depth reads.
+    const scenePass = pass(this.scene, this.camera, { samples: 1 });
+    const color = scenePass.getTextureNode('output');
+    const depth = scenePass.getTextureNode('depth');
+    // @ts-expect-error Three.js supports null to reconstruct normals; r184 typings omit it.
+    const occlusion = ao(depth, null, this.camera);
+    occlusion.resolutionScale = 0.5;
+    occlusion.radius.value = 0.15;
+    occlusion.thickness.value = 0.12;
+    occlusion.samples.value = quality === 'high' ? 16 : 8;
+    occlusion.scale.value = 1.1;
+    // @ts-expect-error Same optional-normal support as GTAONode.
+    const filtered = denoise(occlusion.getTextureNode(), depth, null, this.camera);
+    filtered.radius.value = 3;
+    filtered.depthPhi.value = 0.05;
+    this.renderPipeline = new RenderPipeline(this.renderer);
+    const composite = vec4(
+      color.rgb.mul((filtered as unknown as Node<'vec4'>).r.mul(0.7).add(0.3)),
+      color.a,
+    );
+    const display = rtt(
+      renderOutput(composite, this.renderer.toneMapping, this.renderer.outputColorSpace),
+    );
+    this.renderPipeline.outputColorTransform = false;
+    this.renderPipeline.outputNode = fxaa(display);
+    this.cleanup.push(() => {
+      this.renderPipeline.dispose();
+      display.renderTarget?.dispose();
+      display.dispose();
+      occlusion.dispose();
+      // Denoise owns a small noise texture; it has no render target of its own.
+      (filtered.noiseNode as TextureNode).value.dispose();
+      scenePass.dispose();
+    });
+    const down = (event: PointerEvent) => {
+      if (event.button === 0) this.pointerStart = new Vector2(event.clientX, event.clientY);
+    };
+    const up = (event: PointerEvent) => {
+      if (
+        this.pointerStart &&
+        this.pointerStart.distanceTo(new Vector2(event.clientX, event.clientY)) < 5
+      ) {
+        const rect = this.canvas.getBoundingClientRect();
+        this.interaction = new Vector2(
+          (event.clientX - rect.left) / rect.width,
+          (event.clientY - rect.top) / rect.height,
+        );
+      }
+      this.pointerStart = undefined;
+    };
+    const cancel = () => {
+      this.pointerStart = undefined;
+    };
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === 'Enter' && this.experiment.interact)
+        this.interaction = new Vector2(0.5, 0.5);
+    };
+    this.canvas.addEventListener('pointerdown', down);
+    this.canvas.addEventListener('pointerup', up);
+    this.canvas.addEventListener('pointercancel', cancel);
+    this.canvas.addEventListener('keydown', keydown);
+    this.cleanup.push(() => {
+      this.canvas.removeEventListener('pointerdown', down);
+      this.canvas.removeEventListener('pointerup', up);
+      this.canvas.removeEventListener('pointercancel', cancel);
+      this.canvas.removeEventListener('keydown', keydown);
+    });
     const observer = new ResizeObserver(() => {
       this.width = host.clientWidth;
       this.height = host.clientHeight;
@@ -168,7 +253,13 @@ export class World {
     if (size.x !== this.width || size.y !== this.height) this.resize(this.width, this.height);
     this.controls.update();
     await this.experiment.prepareRender?.();
-    this.renderer.render(this.scene, this.camera);
+    if (this.interaction) {
+      const uv = this.interaction;
+      this.interaction = undefined;
+      if (await this.experiment.interact?.(uv)) this.onInteraction();
+    }
+    if (this.ambientOcclusion) this.renderPipeline.render();
+    else this.renderer.render(this.scene, this.camera);
     if (this.captureRequest) {
       const request = this.captureRequest;
       this.captureRequest = undefined;

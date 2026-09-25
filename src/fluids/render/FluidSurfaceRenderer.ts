@@ -8,6 +8,7 @@ import {
   RenderTarget,
   Scene,
   Vector2,
+  Vector3,
   type Camera,
 } from 'three';
 import { uniform } from 'three/tsl';
@@ -314,7 +315,7 @@ export class FluidSurfaceRenderer {
     // WebGPU's command queue; we kick the dispatch and proceed.
     if (this.params.anisotropy.enabled.value) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      void (r as any).computeAsync([this.anisotropyKernel]);
+      (r as any).compute([this.anisotropyKernel]);
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const savedClearColor = (r as any).getClearColor(this.clearColorScratch).clone();
@@ -363,6 +364,24 @@ export class FluidSurfaceRenderer {
     this.syncParamsToUniforms();
     this.mesh.visible = false;
     this.debugRenderer.render();
+  }
+
+  /** Pick the visible liquid surface. Reads one pixel only, on interaction. */
+  async pick(uv: Vector2): Promise<Vector3 | null> {
+    const x = Math.min(this.finalRT.width - 1, Math.max(0, Math.floor(uv.x * this.finalRT.width)));
+    const y = Math.min(
+      this.finalRT.height - 1,
+      Math.max(0, Math.floor(uv.y * this.finalRT.height)),
+    );
+    const pixel = await this.opts.renderer.readRenderTargetPixelsAsync(this.finalRT, x, y, 1, 1);
+    const depth = Number(pixel[0]);
+    if (!Number.isFinite(depth) || depth <= 0 || depth >= 1e5) return null;
+    const projection = this.opts.camera.projectionMatrix.elements;
+    return new Vector3(
+      ((uv.x * 2 - 1) * depth) / projection[0]!,
+      ((1 - uv.y * 2) * depth) / projection[5]!,
+      -depth,
+    ).applyMatrix4(this.opts.camera.matrixWorld);
   }
 
   /** Keep screen-space buffers aligned with the canvas after a resize or DPR change. */

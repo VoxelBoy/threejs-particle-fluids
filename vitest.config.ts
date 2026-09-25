@@ -9,6 +9,7 @@ export default defineConfig({
           'three/src/constants.js',
           'three/examples/jsm/controls/OrbitControls.js',
           'three/examples/jsm/environments/RoomEnvironment.js',
+          'three/examples/jsm/geometries/RoundedBoxGeometry.js',
         ]
       : [],
   },
