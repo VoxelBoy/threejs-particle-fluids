@@ -1,0 +1,32 @@
+node_modules/
+dist/
+.cache/
+.DS_Store
+*.log
+coverage/
+.vitest-cache/
+playwright-report/
+test-results/
+tests/**/__screenshots__/
+.env
+.env.local
+.claude/
+
+# Local credentials and personal development files
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+.npmrc.local
+.codex/
+.agents/
+.vscode/
+.idea/
+*.tsbuildinfo
+# Research papers are not bundled with the project.
+*.pdf
+
+tests/perf/results/
+tests/perf/baseline-*.json

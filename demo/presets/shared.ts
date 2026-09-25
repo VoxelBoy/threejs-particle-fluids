@@ -1,0 +1,44 @@
+import { Vector3, type BufferGeometry } from 'three';
+import { PrimitiveSet, type ParticleInit, type ParticleSystem } from '../../src/core/index.js';
+import type { TriangleMesh } from '../../src/softbody/index.js';
+
+export function lattice(
+  min: readonly number[],
+  max: readonly number[],
+  spacing: number,
+  accept?: (x: number, y: number, z: number) => boolean,
+): ParticleInit[] {
+  const values: ParticleInit[] = [];
+  for (let y = min[1]! + spacing / 2; y < max[1]!; y += spacing) {
+    for (let z = min[2]! + spacing / 2; z < max[2]!; z += spacing) {
+      for (let x = min[0]! + spacing / 2; x < max[0]!; x += spacing) {
+        if (accept && !accept(x, y, z)) continue;
+        values.push({ position: [x, y, z], velocity: [0, 0, 0], invMass: 1, phase: 0 });
+      }
+    }
+  }
+  return values;
+}
+
+export function tank(particles: ParticleSystem, halfX = 0.8, halfZ = 0.55): PrimitiveSet {
+  const colliders = new PrimitiveSet(particles, { capacity: 12 });
+  const friction = { muS: 0.08, muK: 0.04 };
+  colliders.addPlane(new Vector3(0, 1, 0), new Vector3(), friction);
+  colliders.addPlane(new Vector3(1, 0, 0), new Vector3(-halfX, 0, 0), friction);
+  colliders.addPlane(new Vector3(-1, 0, 0), new Vector3(halfX, 0, 0), friction);
+  colliders.addPlane(new Vector3(0, 0, 1), new Vector3(0, 0, -halfZ), friction);
+  colliders.addPlane(new Vector3(0, 0, -1), new Vector3(0, 0, halfZ), friction);
+  return colliders;
+}
+
+export function triangleMesh(geometry: BufferGeometry): TriangleMesh {
+  const position = geometry.getAttribute('position');
+  const vertices = new Float32Array(position.count * 3);
+  for (let i = 0; i < position.count; i++)
+    vertices.set([position.getX(i), position.getY(i), position.getZ(i)], i * 3);
+  const index = geometry.getIndex();
+  const indices = index
+    ? Uint32Array.from(index.array)
+    : Uint32Array.from({ length: position.count }, (_, i) => i);
+  return { vertices, indices };
+}

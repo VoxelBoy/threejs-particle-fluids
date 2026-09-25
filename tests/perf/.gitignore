@@ -1,0 +1,6 @@
+# Phase Perf — local-run outputs are NOT committed. Only `baseline-*.json`
+# files (committed at perf-track phase exits per
+# `plans/phase-perf-bench-harness.md` §"Step 8 — workflow and committed-
+# baseline policy") and `baseline-*.html` reports alongside them are
+# checked in.
+results/
