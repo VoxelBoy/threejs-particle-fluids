@@ -10,7 +10,7 @@ it('the fabric softness control changes folding while the supported hem stays fi
   try {
     for (const bend of [0, 1]) {
       const experiment = buildCloth(
-        { renderer, scene: new Scene(), camera: new PerspectiveCamera(), quality: 'balanced' },
+        { renderer, scene: new Scene(), camera: new PerspectiveCamera(), particles: 961 },
         { bend, wind: 0.3, speed: 0.8, gravity: 6 },
       );
       try {

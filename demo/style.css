@@ -157,6 +157,24 @@ canvas {
   pointer-events: none;
   font-variant-numeric: tabular-nums;
 }
+.particle-level {
+  position: absolute;
+  top: 20px;
+  right: 24px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #82909f;
+  font-size: 8px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+}
+.particle-level select {
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+  padding: 6px 8px;
+}
 .diagnostic-heading {
   display: flex;
   align-items: center;

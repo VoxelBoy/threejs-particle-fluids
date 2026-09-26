@@ -18,7 +18,7 @@ import { VolumetricGasRenderer, type SmokeTracers } from '../../src/gas/index.js
 import { basin, material } from '../runtime/stage.js';
 import type { BuildContext, Experiment, Values } from '../types.js';
 import { liquidVisual } from './liquids.js';
-import { lattice, tank } from './shared.js';
+import { fitRadius, lattice, tank } from './shared.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -128,9 +128,11 @@ function smokePuffs(count: number) {
 }
 
 export async function buildBubbles(ctx: BuildContext, values: Values): Promise<Experiment> {
-  const radius = ctx.quality === 'high' ? 0.013 : 0.017;
+  const fill = (r: number) => lattice([-HALF_X, r, -HALF_Z], [HALF_X, LEVEL, HALF_Z], r * 2);
+  const radius = fitRadius(fill, ctx.particles, 0.017);
   const spacing = radius * 2;
-  const initial = lattice([-HALF_X, radius, -HALF_Z], [HALF_X, LEVEL, HALF_Z], spacing);
+  const initial = fill(radius);
+  const detailed = ctx.particles >= 10000;
   const particles = new ParticleSystem(ctx.renderer, initial.length, radius);
   particles.uploadParticles(initial);
   const hashGrid = new HashGrid(particles, { cellSize: radius * 4 });
@@ -194,8 +196,8 @@ export async function buildBubbles(ctx: BuildContext, values: Values): Promise<E
     gas: puffs.tracers,
     min: new Vector3(-HALF_X - 0.1, LEVEL - 0.02, -HALF_Z - 0.1),
     max: new Vector3(HALF_X + 0.1, 1.75, HALF_Z + 0.1),
-    resolution: ctx.quality === 'high' ? [72, 112, 56] : [56, 88, 44],
-    steps: ctx.quality === 'high' ? 96 : 72,
+    resolution: detailed ? [72, 112, 56] : [56, 88, 44],
+    steps: detailed ? 96 : 72,
     density: values['density']! * 0.6,
   });
 

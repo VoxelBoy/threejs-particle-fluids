@@ -34,15 +34,16 @@ import { createParticleMesh } from '../../src/render/particles.js';
 import { basin } from '../runtime/stage.js';
 import type { BuildContext, Experiment, Values } from '../types.js';
 import { liquidVisual } from './liquids.js';
-import { lattice, tank, triangleMesh } from './shared.js';
+import { fitRadius, lattice, tank, triangleMesh } from './shared.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
 export async function buildBuoyancy(ctx: BuildContext, values: Values): Promise<Experiment> {
-  const radius = ctx.quality === 'high' ? 0.016 : 0.021;
+  const fill = (r: number) => lattice([-0.76, r, -0.5], [0.76, 0.42, 0.5], r * 2);
+  const radius = fitRadius(fill, ctx.particles, 0.021);
   const spacing = radius * 2;
-  const initial = lattice([-0.76, radius, -0.5], [0.76, 0.42, 0.5], spacing);
+  const initial = fill(radius);
   const waterCount = initial.length;
   const model = await new GLTFLoader().loadAsync(
     `${import.meta.env.BASE_URL}models/buoyancy/rubber-duck.glb`,

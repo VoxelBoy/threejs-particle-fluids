@@ -55,7 +55,7 @@ test('pause, live controls, rebuilds, captures, and rapid navigation preserve a 
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto('/?preset=crown-impact');
   await ready(page);
-  await page.getByLabel('Loop experiment').uncheck();
+  await expect(page.getByLabel('Loop experiment')).not.toBeChecked();
   await page.getByRole('button', { name: 'Pause simulation' }).click();
   await expect(page.locator('#sim-state')).toHaveText('PAUSED');
   const pausedTime = await page.locator('#sim-time').innerText();
@@ -69,7 +69,7 @@ test('pause, live controls, rebuilds, captures, and rapid navigation preserve a 
   await page.locator('#canvas-host canvas').focus();
   await page.keyboard.press('Space');
   await expect(page.locator('#sim-state')).toHaveText(/RUNNING/);
-  await page.getByLabel('Quality', { exact: true }).selectOption('high');
+  await page.getByLabel('Particle count').selectOption('high');
   await ready(page);
   await page.setViewportSize({ width: 1200, height: 820 });
   const download = page.waitForEvent('download');
@@ -81,7 +81,7 @@ test('pause, live controls, rebuilds, captures, and rapid navigation preserve a 
   await page.getByRole('button', { name: 'Reset all', exact: true }).click();
   await ready(page);
   await expect(page.getByLabel('Gravity', { exact: true })).toHaveValue('7');
-  await page.getByLabel('Quality', { exact: true }).selectOption('balanced');
+  await page.getByLabel('Particle count').selectOption('medium');
   for (const id of ['silk-in-motion', 'vortex-plume', 'liquid-marble'])
     await page.locator(`[data-preset="${id}"]`).click();
   await ready(page);
@@ -121,15 +121,13 @@ test('missing WebGPU produces a helpful recovery state', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Try again' })).toBeEnabled();
 });
 
-test('soft-body quality levels keep 20 objects with the requested particle budgets', async ({
-  page,
-}) => {
+test('particle levels keep 20 soft bodies at the requested particle budgets', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto('/?preset=elastic-studies');
   await ready(page);
-  await expect(page.locator('#particle-count')).toHaveText('4,000');
-  await page.getByLabel('Quality', { exact: true }).selectOption('high');
+  await expect(page.locator('#particle-count')).toHaveText('5,000');
+  await page.getByLabel('Particle count').selectOption('high');
   await ready(page);
   await expect(page.locator('#particle-count')).toHaveText('10,000');
   await expect

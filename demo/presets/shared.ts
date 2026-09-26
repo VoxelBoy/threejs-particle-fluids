@@ -47,3 +47,17 @@ export function triangleMesh(geometry: BufferGeometry): TriangleMesh {
     : Uint32Array.from({ length: position.count }, (_, i) => i);
   return { vertices, indices };
 }
+
+/**
+ * Particle radius for which `fill(radius)` produces about `target` particles.
+ * Lattice counts scale with 1/r³, so a few cube-root corrections converge.
+ */
+export function fitRadius(
+  fill: (radius: number) => readonly unknown[],
+  target: number,
+  guess: number,
+): number {
+  let radius = guess;
+  for (let i = 0; i < 5; i++) radius *= Math.cbrt(Math.max(1, fill(radius).length) / target);
+  return radius;
+}

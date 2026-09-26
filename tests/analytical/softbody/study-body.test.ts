@@ -26,13 +26,13 @@ for (const name of ['donut', 'croissant', 'banana', 'ginger-bread']) {
       else shared.set(key, normal);
     }
   });
-  for (const [quality, count] of [
-    ['balanced', 200],
-    ['high', 500],
-  ] as const) {
-    it(`${name} has ${count} connected, non-overlapping samples at ${quality} quality`, () => {
-      const body = asset[quality];
-      expect(body.positions.length).toBe(count * 3);
+  for (const budget of [50, 250, 500, 750, 1250]) {
+    it(`${name} has a connected, non-overlapping ${budget}-particle template`, () => {
+      const body = asset.templates[budget]!;
+      const count = body.positions.length / 3;
+      // Thin limbs may keep a few samples beyond tiny budgets rather than split.
+      expect(count).toBeGreaterThanOrEqual(budget);
+      expect(count).toBeLessThanOrEqual(Math.ceil(budget * 1.2));
       expect(body.surface.length).toBe(count);
       const neighbors = Array.from({ length: count }, () => [] as number[]);
       for (let i = 0; i < body.edges.length; i += 2) {
@@ -53,12 +53,13 @@ for (const name of ['donut', 'croissant', 'banana', 'ginger-bread']) {
         pending.push(...neighbors[node]!.filter((n) => !visited.has(n)));
       }
       expect(visited.size).toBe(count);
-      const boundaryCount = body.surface.reduce((sum, flag) => sum + flag, 0);
+      const boundaryCount = body.surface.reduce((sum: number, flag: number) => sum + flag, 0);
       expect(boundaryCount).toBeGreaterThan(0);
-      expect(boundaryCount).toBeLessThan(count);
-      expect(body.surface.slice(0, boundaryCount).every((flag) => flag === 1)).toBe(true);
-      expect(body.surface.slice(boundaryCount).every((flag) => flag === 0)).toBe(true);
-      const diameter = 0.03 * Math.cbrt(200 / count);
+      // At the smallest budget every sample lies on the surface.
+      if (budget >= 250) expect(boundaryCount).toBeLessThan(count);
+      expect(body.surface.slice(0, boundaryCount).every((flag: number) => flag === 1)).toBe(true);
+      expect(body.surface.slice(boundaryCount).every((flag: number) => flag === 0)).toBe(true);
+      const diameter = 0.03 * Math.cbrt(200 / budget);
       let minimumDistance = Infinity;
       for (let a = 0; a < count; a++)
         for (let b = a + 1; b < count; b++) {

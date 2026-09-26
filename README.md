@@ -36,9 +36,9 @@ Each preset has a focused parameter panel. Sliders apply immediately; controls m
 - **Space** pauses or plays; **R** restarts. Shortcuts do not intercept focused controls.
 - **Drag** to orbit, **right-drag** to pan, and **scroll or pinch** to zoom.
 - **Surface / Particles** reveals the simulation beneath the rendering. In Vortex plume, Particles also reveals the carrier fluid.
-- **Balanced / High fidelity** changes particle density and render resolution. Elastic studies uses exactly **20 × 200 particles** on Balanced and **20 × 500** on High fidelity. Changing quality restarts the scene.
+- The **Particles** menu in the viewport's upper-right corner sets the particle budget: Low (1,000), Medium (5,000), High (10,000), Ultra (15,000), or Max (25,000). Presets resize their particles to fill the same volume with that count; Elastic studies splits it across its 20 bodies. Changing it restarts the scene.
 - **Ambient occlusion** adds contact shading and depth to creases. Disable it under Appearance to reduce rendering cost.
-- **Loop experiment** automatically replays a study after its duration. Disable it to continue experimenting with the settled state.
+- **Loop experiment** (off by default) replays a study after its duration.
 - **Click the liquid** to apply a local impulse. In Liquid marble, this pulls a cap outward into droplets. Focus the viewport and press **Enter** for a center-screen impulse. Successful interactions resume playback.
 - **Save image** downloads a PNG of the current viewport.
 - On smaller screens, open **Parameters** to access the controls.

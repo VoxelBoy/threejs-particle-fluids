@@ -11,6 +11,7 @@ import {
 import {
   PMREMGenerator,
   RenderPipeline,
+  type RTTNode,
   type Node,
   type TextureNode,
   type WebGPURenderer,
@@ -64,6 +65,7 @@ export class World {
   private pointerStart: Vector2 | undefined;
   private interaction: Vector2 | undefined;
   private renderPipeline!: RenderPipeline;
+  private aoTarget: RTTNode | undefined;
 
   constructor(
     readonly preset: Preset,
@@ -82,7 +84,7 @@ export class World {
   async init(
     host: HTMLElement,
     values: Values,
-    quality: 'balanced' | 'high',
+    particles: number,
     cameraState?: CameraState,
   ): Promise<void> {
     if (!navigator.gpu) throw new Error('WebGPU is unavailable in this browser.');
@@ -91,9 +93,7 @@ export class World {
       antialias: true,
       alpha: false,
     });
-    this.renderer.setPixelRatio(
-      Math.min(window.devicePixelRatio, quality === 'high' ? 1.75 : 1.25),
-    );
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.toneMapping = ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 0.9;
     this.renderer.shadowMap.enabled = true;
@@ -137,7 +137,7 @@ export class World {
     this.controls.update();
     this.resize(host.clientWidth, host.clientHeight);
     this.experiment = await this.preset.build(
-      { renderer: this.renderer, scene: this.scene, camera: this.camera, quality },
+      { renderer: this.renderer, scene: this.scene, camera: this.camera, particles },
       values,
     );
     this.scene.add(...this.experiment.objects);
@@ -153,17 +153,18 @@ export class World {
     occlusion.resolutionScale = 0.5;
     occlusion.radius.value = 0.15;
     occlusion.thickness.value = 0.12;
-    occlusion.samples.value = quality === 'high' ? 16 : 8;
+    occlusion.samples.value = 12;
     occlusion.scale.value = 1.1;
     // @ts-expect-error Same optional-normal support as GTAONode.
     const filtered = denoise(occlusion.getTextureNode(), depth, null, this.camera);
     filtered.radius.value = 3;
     filtered.depthPhi.value = 0.05;
+    // Denoise into its own half-resolution target too; the composite upsamples it
+    // with bilinear filtering. Only the colour pass runs at full resolution.
+    this.aoTarget = rtt(filtered as unknown as Node<'vec4'>, 1, 1);
+    this.sizeAoTarget();
     this.renderPipeline = new RenderPipeline(this.renderer);
-    const composite = vec4(
-      color.rgb.mul((filtered as unknown as Node<'vec4'>).r.mul(0.7).add(0.3)),
-      color.a,
-    );
+    const composite = vec4(color.rgb.mul(this.aoTarget.r.mul(0.7).add(0.3)), color.a);
     const display = rtt(
       renderOutput(composite, this.renderer.toneMapping, this.renderer.outputColorSpace),
     );
@@ -174,6 +175,8 @@ export class World {
       display.renderTarget?.dispose();
       display.dispose();
       occlusion.dispose();
+      this.aoTarget?.renderTarget?.dispose();
+      this.aoTarget?.dispose();
       // Denoise owns a small noise texture; it has no render target of its own.
       (filtered.noiseNode as TextureNode).value.dispose();
       scenePass.dispose();
@@ -246,6 +249,13 @@ export class World {
         180) /
       Math.PI;
     this.camera.updateProjectionMatrix();
+    this.sizeAoTarget();
+  }
+
+  private sizeAoTarget(): void {
+    if (!this.aoTarget) return;
+    const size = this.renderer.getDrawingBufferSize(new Vector2());
+    this.aoTarget.setSize(Math.max(1, Math.floor(size.x / 2)), Math.max(1, Math.floor(size.y / 2)));
   }
 
   private async render(): Promise<void> {

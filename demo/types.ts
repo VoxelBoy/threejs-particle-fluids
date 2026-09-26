@@ -27,11 +27,22 @@ export interface Preset {
   controls: readonly Control[];
   build(context: BuildContext, values: Values): Promise<Experiment> | Experiment;
 }
+/** Particle budgets offered in the viewport. Presets size their particles to match. */
+export const PARTICLE_LEVELS = [
+  { id: 'low', label: 'Low', count: 1000 },
+  { id: 'medium', label: 'Medium', count: 5000 },
+  { id: 'high', label: 'High', count: 10000 },
+  { id: 'ultra', label: 'Ultra', count: 15000 },
+  { id: 'max', label: 'Max', count: 25000 },
+] as const;
+export type ParticleLevel = (typeof PARTICLE_LEVELS)[number]['id'];
+
 export interface BuildContext {
   renderer: WebGPURenderer;
   scene: Scene;
   camera: PerspectiveCamera;
-  quality: 'balanced' | 'high';
+  /** Target particle count for the preset's main material. */
+  particles: number;
 }
 export interface Experiment {
   particles: ParticleSystem;

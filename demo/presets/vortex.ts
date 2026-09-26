@@ -6,14 +6,16 @@ import { GasSystem, PointSpritesGasRenderer, VolumetricGasRenderer } from '../..
 import { createParticleMesh } from '../../src/render/particles.js';
 import { material, pedestal } from '../runtime/stage.js';
 import type { BuildContext, Experiment, Values } from '../types.js';
-import { lattice, tank } from './shared.js';
+import { fitRadius, lattice, tank } from './shared.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
 export function buildVortex(ctx: BuildContext, values: Values): Experiment {
-  const radius = ctx.quality === 'high' ? 0.029 : 0.035;
-  const initial = lattice([-0.5, radius, -0.5], [0.5, 1.9, 0.5], radius * 2);
+  const fill = (r: number) => lattice([-0.5, r, -0.5], [0.5, 1.9, 0.5], r * 2);
+  const radius = fitRadius(fill, ctx.particles, 0.035);
+  const initial = fill(radius);
+  const detailed = ctx.particles >= 10000;
   const particles = new ParticleSystem(ctx.renderer, initial.length, radius);
   particles.uploadParticles(initial);
   const hashGrid = new HashGrid(particles, { cellSize: radius * 4 });
@@ -30,7 +32,7 @@ export function buildVortex(ctx: BuildContext, values: Values): Experiment {
     xsph: { c: 0.03 },
   });
   const gas = new GasSystem({
-    capacity: ctx.quality === 'high' ? 7200 : 4800,
+    capacity: detailed ? 7200 : 4800,
     fluidParticles: particles,
     fluidRange: fluid.fluidParticles,
     hashGrid,
@@ -89,8 +91,8 @@ export function buildVortex(ctx: BuildContext, values: Values): Experiment {
     gas,
     min: new Vector3(-0.62, 0, -0.62),
     max: new Vector3(0.62, 1.72, 0.62),
-    resolution: ctx.quality === 'high' ? [80, 128, 80] : [64, 96, 64],
-    steps: ctx.quality === 'high' ? 96 : 72,
+    resolution: detailed ? [80, 128, 80] : [64, 96, 64],
+    steps: detailed ? 96 : 72,
     density: values['density']!,
   });
   const dots = createParticleMesh({

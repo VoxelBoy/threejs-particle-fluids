@@ -7,7 +7,8 @@ import { clothStand } from '../runtime/stage.js';
 import type { BuildContext, Experiment, Values } from '../types.js';
 
 export function buildCloth(ctx: BuildContext, values: Values): Experiment {
-  const segments = ctx.quality === 'high' ? 42 : 30;
+  // A (segments + 1)² grid of particles close to the requested count.
+  const segments = Math.max(12, Math.round(Math.sqrt(ctx.particles)) - 1);
   const geometry = new PlaneGeometry(1.26, 1.2, segments, segments).translate(0, 1.0, 0);
   // Distribute the load across a supported hem instead of concentrating all
   // tension in two tiny corner patches. The rows below it remain free to fold.
@@ -18,7 +19,11 @@ export function buildCloth(ctx: BuildContext, values: Values): Experiment {
     vertices.setZ(i, Math.sin(vertices.getX(i) * 18) * 0.018 * drape);
   }
   const graph = fromBufferGeometry(geometry, { surfaceDensity: 0.08, pinnedIndices });
-  const particles = new ParticleSystem(ctx.renderer, graph.positions.length, 0.018);
+  const particles = new ParticleSystem(
+    ctx.renderer,
+    graph.positions.length,
+    0.018 * (30 / segments),
+  );
   particles.uploadParticles(
     graph.positions.map((position, i) => ({
       position,

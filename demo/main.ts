@@ -2,7 +2,7 @@ import './style.css';
 import { icon } from './icons.js';
 import { defaults, presets } from './presets/index.js';
 import { World, type Diagnostics } from './runtime/world.js';
-import type { Preset, Values } from './types.js';
+import { PARTICLE_LEVELS, type ParticleLevel, type Preset, type Values } from './types.js';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `
@@ -27,6 +27,10 @@ app.innerHTML = `
         <dl><div><dt>FPS</dt><dd id="fps">—</dd></div><div><dt>Frame</dt><dd><span id="frame-ms">—</span><small>ms</small></dd></div><div><dt>Particles</dt><dd id="particle-count">—</dd></div></dl>
         <div class="diagnostic-foot"><span id="solver-info">GPU COMPUTE</span><span id="sim-time">0.0 s</span></div>
       </aside>
+      <label class="particle-level"><span>Particles</span><select id="particle-level" aria-label="Particle count">${PARTICLE_LEVELS.map(
+        (level) =>
+          `<option value="${level.id}"${level.id === 'medium' ? ' selected' : ''}>${level.label} · ${level.count.toLocaleString('en-US')}</option>`,
+      ).join('')}</select></label>
       <div class="scene-label"><span id="scene-category"></span><h1 id="scene-name"></h1></div>
       <div id="loading" class="loading" role="status"><span class="spinner"></span><strong id="loading-title">Preparing the simulation</strong><span id="loading-copy">Compiling the first frame…</span></div>
       <div id="error" class="error-card" hidden role="alert"><span class="eyebrow">GRAPHICS UNAVAILABLE</span><h2>WebGPU unavailable</h2><p id="error-copy"></p><p>Use a browser with WebGPU and hardware acceleration enabled. Open this demo on localhost or HTTPS.</p><button id="retry" class="primary">Try again ${icon('reset')}</button></div>
@@ -51,9 +55,8 @@ app.innerHTML = `
       <div class="render-settings">
         <div class="section-label"><span>APPEARANCE</span></div>
         <fieldset class="segmented"><legend class="sr-only">Render mode</legend><label><input type="radio" name="render-mode" value="surface" checked><span>Surface</span></label><label><input type="radio" name="render-mode" value="particles"><span>Particles</span></label></fieldset>
-        <div class="setting-row"><label for="quality">Quality</label><select id="quality"><option value="balanced">Balanced</option><option value="high">High fidelity</option></select></div>
         <label class="setting-row switch-row" for="ambient-occlusion"><span>Ambient occlusion</span><input type="checkbox" id="ambient-occlusion" checked><span class="switch" aria-hidden="true"></span></label>
-        <label class="setting-row switch-row" for="loop"><span>Loop experiment</span><input type="checkbox" id="loop" checked><span class="switch" aria-hidden="true"></span></label>
+        <label class="setting-row switch-row" for="loop"><span>Loop experiment</span><input type="checkbox" id="loop"><span class="switch" aria-hidden="true"></span></label>
       </div>
     </aside>
   </main>
@@ -71,8 +74,8 @@ let world: World | undefined;
 let generation = 0;
 let queue = Promise.resolve();
 let playing = !matchMedia('(prefers-reduced-motion: reduce)').matches;
-let looping = true;
-let quality: 'balanced' | 'high' = 'balanced';
+let looping = false;
+let particleLevel: ParticleLevel = 'medium';
 let particleView = false;
 let ambientOcclusion = true;
 let loading = true;
@@ -131,7 +134,7 @@ function rebuild(preserveCamera = true): void {
   const token = ++generation;
   const preset = selected;
   const config = { ...values };
-  const level = quality;
+  const count = PARTICLE_LEVELS.find((level) => level.id === particleLevel)!.count;
   const camera = preserveCamera ? world?.cameraState() : undefined;
   setBusy(true);
   el('error').hidden = true;
@@ -161,7 +164,7 @@ function rebuild(preserveCamera = true): void {
         },
       );
       try {
-        await next.init(host, config, level, camera);
+        await next.init(host, config, count, camera);
         if (token !== generation) {
           await next.dispose();
           return;
@@ -274,8 +277,8 @@ el('defaults').addEventListener('click', () => {
   renderParameters();
   rebuild();
 });
-el<HTMLSelectElement>('quality').addEventListener('change', (event) => {
-  quality = (event.target as HTMLSelectElement).value as typeof quality;
+el<HTMLSelectElement>('particle-level').addEventListener('change', (event) => {
+  particleLevel = (event.target as HTMLSelectElement).value as ParticleLevel;
   rebuild();
 });
 el<HTMLInputElement>('loop').addEventListener('change', (event) => {

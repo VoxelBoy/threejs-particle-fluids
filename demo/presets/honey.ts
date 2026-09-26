@@ -80,10 +80,10 @@ async function loadBunny(): Promise<{ mesh: Mesh; sdf: SDFData; aim: Vector3 }> 
 }
 
 export async function buildHoney(ctx: BuildContext, values: Values): Promise<Experiment> {
-  const high = ctx.quality === 'high';
-  const radius = high ? 0.007 : 0.0095;
-  const spacing = radius * 2;
-  const count = high ? 15000 : 5000;
+  // A fixed ~34 L of honey, split into the requested number of particles.
+  const count = ctx.particles;
+  const spacing = Math.cbrt(0.0343 / count);
+  const radius = spacing / 2;
   // Every particle starts pinned (inverse mass 0) in a sparse grid far below the
   // floor, then the nozzle releases them layer by layer.
   const initial: ParticleInit[] = Array.from({ length: count }, (_, k) => ({

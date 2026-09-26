@@ -1,4 +1,5 @@
 /** Rebuild the bundled CC0 meshes and particle templates: npm run assets:elastic. */
+export const BODY_BUDGETS = [50, 250, 500, 750, 1250] as const;
 import { copyFile, readFile, writeFile } from 'node:fs/promises';
 import { BufferGeometry, Float32BufferAttribute, Vector2, Vector3 } from 'three';
 import { voxelize, type TriangleMesh, type VoxelizeResult } from '../src/softbody/voxelize.js';
@@ -189,8 +190,16 @@ function sample(mesh: TriangleMesh, count: number) {
       if (isConnected && (!best || voxels.count < best.voxels.count)) best = { voxels, radius };
     } else high = radius;
   }
-  if (!best || best.voxels.count > count * 1.2)
-    throw new Error(`No suitable connected ${count}-particle lattice.`);
+  // Coarse lattices can split thin features; scan from coarse to fine for the
+  // first connected one. Small budgets may overshoot and are trimmed below.
+  for (let radius = 0.08; !best && radius > 0.001; radius *= 0.97) {
+    const voxels = voxelize(mesh, { particleRadius: radius });
+    if (voxels.count < count) continue;
+    const graph = adjacency(voxels);
+    if (connected(graph, new Set(graph.map((_, i) => i))).size === voxels.count)
+      best = { voxels, radius };
+  }
+  if (!best) throw new Error(`No suitable connected ${count}-particle lattice.`);
   const { voxels, radius } = best,
     graph = adjacency(voxels);
   const active = new Set(graph.map((_, i) => i));
@@ -200,8 +209,8 @@ function sample(mesh: TriangleMesh, count: number) {
       .filter((i) => voxels.surfaceFlag[i] === 1)
       .sort((a, b) => graph[b]!.size - graph[a]!.size);
     const remove = candidates.find((i) => connected(graph, active, i).size === active.size - 1);
-    if (remove === undefined)
-      throw new Error('Cannot trim particle budget without disconnecting the body.');
+    // Thin limbs at tiny budgets: keep the few extra samples rather than split.
+    if (remove === undefined) break;
     active.delete(remove);
     for (const j of graph[remove]!) graph[j]!.delete(remove);
   }
@@ -214,7 +223,7 @@ function sample(mesh: TriangleMesh, count: number) {
     for (const j of graph[i]!)
       if (active.has(j) && ids.get(i)! < ids.get(j)!) edges.push(ids.get(i)!, ids.get(j)!);
   // Every asset shares a collision radius. Match its lattice spacing exactly,
-  // and scale the render shell with it so both quality levels have the same mass.
+  // and scale the render shell with it so every level has the same mass.
   const targetRadius = 0.015 * Math.cbrt(200 / count),
     scale = targetRadius / radius;
   const positions = ordered.flatMap((i) =>
@@ -259,20 +268,16 @@ for (const name of ['donut', 'croissant', 'banana', 'ginger-bread']) {
     vertices: Float32Array.from(mesh.vertices.flatMap((v) => v.toArray())),
     indices: Uint32Array.from(mesh.faces.flat()),
   };
-  const balanced = sample(triangles, 200),
-    high = sample(triangles, 500);
-  const data = {
-    ...renderMesh(mesh),
-    balanced,
-    high,
-  };
+  // One template per particle-count level: 20 bodies share each level's budget.
+  const templates = Object.fromEntries(
+    BODY_BUDGETS.map((count) => [count, sample(triangles, count)]),
+  );
+  const data = { ...renderMesh(mesh), templates };
   await writeFile(
     new URL(`../public/models/elastic/${name}.json`, import.meta.url),
     JSON.stringify(data, (_key, v: unknown) => (typeof v === 'number' ? round(v) : v)) + '\n',
   );
-  console.log(
-    `${name}: ${mesh.vertices.length} vertices, 200 / 500 connected particles; scales ${balanced.scale.toFixed(2)} / ${high.scale.toFixed(2)}`,
-  );
+  console.log(`${name}: ${mesh.vertices.length} vertices, ${BODY_BUDGETS.join(' / ')} particles`);
 }
 await copyFile(
   new URL('../demo/assets/elastic/Textures/colormap.png', import.meta.url),

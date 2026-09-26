@@ -18,7 +18,7 @@ import {
 import { createParticleMesh } from '../../src/render/particles.js';
 import { basin, block, pedestal } from '../runtime/stage.js';
 import type { BuildContext, Experiment, Values } from '../types.js';
-import { lattice, tank } from './shared.js';
+import { fitRadius, lattice, tank } from './shared.js';
 
 // TSL's generated operator chains need the broad node type at graph boundaries.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -45,7 +45,7 @@ export function liquidVisual(ctx: BuildContext, fluid: FluidSystem, options: Liq
     bounds: options.bounds,
     colliders: options.colliders,
     solids: options.solids,
-    voxelBudget: ctx.quality === 'high' ? 900_000 : 600_000,
+    voxelBudget: fluid.fluidParticles.count > 12000 ? 900_000 : 600_000,
     appearance: { color: options.color, ...options.appearance },
     cavities: options.cavities,
     sdfColliders: options.sdfColliders,
@@ -85,8 +85,6 @@ export async function buildFluid(
   values: Values,
   kind: 'tidal' | 'impact' | 'marble',
 ): Promise<Experiment> {
-  const radius = ctx.quality === 'high' ? 0.014 : 0.018;
-  const spacing = radius * 2;
   const halfX = 0.8,
     halfZ = 0.55;
   const tidalWalls = [
@@ -95,46 +93,54 @@ export async function buildFluid(
     { x: 0.37, z: 0.19, height: 0.36, length: 0.66 },
     { x: 0.64, z: 0, height: 0.075, length: 0.9 },
   ];
-  let initial: ParticleInit[];
-  if (kind === 'tidal') {
-    initial = lattice([-0.75, radius, -0.45], [-0.34, 0.82, 0.45], spacing);
-    initial.push(
-      ...lattice(
-        [-0.3, radius, -0.45],
-        [0.74, 0.105, 0.45],
+  const fill = (radius: number): ParticleInit[] => {
+    const spacing = radius * 2;
+    let initial: ParticleInit[];
+    if (kind === 'tidal') {
+      initial = lattice([-0.75, radius, -0.45], [-0.34, 0.82, 0.45], spacing);
+      initial.push(
+        ...lattice(
+          [-0.3, radius, -0.45],
+          [0.74, 0.105, 0.45],
+          spacing,
+          (x, y, z) =>
+            !tidalWalls.some(
+              (wall) =>
+                Math.abs(x - wall.x) < 0.0325 + radius &&
+                Math.abs(z - wall.z) < wall.length / 2 + radius &&
+                y < wall.height + radius,
+            ),
+        ),
+      );
+    } else if (kind === 'impact') {
+      initial = lattice([-0.72, radius, -0.46], [0.72, 0.17, 0.46], spacing);
+      const center = values['height'] ?? 1.1;
+      initial.push(
+        ...lattice(
+          [-0.24, center - 0.24, -0.24],
+          [0.24, center + 0.24, 0.24],
+          spacing,
+          (x, y, z) => x * x + (y - center) ** 2 + z * z < 0.24 ** 2,
+        ),
+      );
+    } else {
+      initial = lattice(
+        [-0.31, 0.2, -0.31],
+        [0.31, 0.82, 0.31],
         spacing,
-        (x, y, z) =>
-          !tidalWalls.some(
-            (wall) =>
-              Math.abs(x - wall.x) < 0.0325 + radius &&
-              Math.abs(z - wall.z) < wall.length / 2 + radius &&
-              y < wall.height + radius,
-          ),
-      ),
-    );
-  } else if (kind === 'impact') {
-    initial = lattice([-0.72, radius, -0.46], [0.72, 0.17, 0.46], spacing);
-    const center = values['height'] ?? 1.1;
-    initial.push(
-      ...lattice(
-        [-0.24, center - 0.24, -0.24],
-        [0.24, center + 0.24, 0.24],
-        spacing,
-        (x, y, z) => x * x + (y - center) ** 2 + z * z < 0.24 ** 2,
-      ),
-    );
-  } else {
-    initial = lattice(
-      [-0.31, 0.2, -0.31],
-      [0.31, 0.82, 0.31],
-      spacing,
-      (x, y, z) => x * x + (y - 0.51) ** 2 + z * z < 0.3 ** 2,
-    );
-    initial = initial.map((p) => ({
-      ...p,
-      velocity: [-p.position[2] * values['spin']!, 0, p.position[0] * values['spin']!] as const,
-    }));
-  }
+        (x, y, z) => x * x + (y - 0.51) ** 2 + z * z < 0.3 ** 2,
+      );
+      initial = initial.map((p) => ({
+        ...p,
+        velocity: [-p.position[2] * values['spin']!, 0, p.position[0] * values['spin']!] as const,
+      }));
+    }
+    return initial;
+  };
+  // Size particles so the preset fills its volume with the requested count.
+  const radius = fitRadius(fill, ctx.particles, 0.018);
+  const spacing = radius * 2;
+  const initial = fill(radius);
   const particles = new ParticleSystem(ctx.renderer, initial.length, radius);
   particles.uploadParticles(initial);
   const hashGrid = new HashGrid(particles, { cellSize: radius * 4 });
@@ -186,8 +192,8 @@ export async function buildFluid(
     tidal: { color: 0x4fb4cf, appearance: { attenuationDistance: 0.55, scattering: 0.06 } },
     impact: { color: 0x5aa6cf, appearance: { attenuationDistance: 0.6, scattering: 0.04 } },
     marble: {
-      color: 0x8bb2c5,
-      appearance: { metalness: 1, metalColor: 0xb4c6d2, attenuationDistance: 0.4 },
+      color: 0x7fc4d8,
+      appearance: { attenuationDistance: 0.8, scattering: 0.03, envIntensity: 1.2 },
     },
   };
   const visual = liquidVisual(ctx, fluid, {
@@ -209,16 +215,19 @@ export async function buildFluid(
     const force: Any = delta.div(delta.length().max(0.25)).mul(pull).mul(frameDt);
     velocity.assign(vec4(velocity.xyz.add(force), velocity.w));
   })().compute(initial.length);
+  // The marble takes a broad pull; pools get a tighter splash.
+  const pullRadius = kind === 'marble' ? 0.4 : 0.22;
+  const strength = kind === 'marble' ? 2.4 : 3.8;
   const impulse = Fn(() => {
     const i: Any = instanceIndex;
     const pos: Any = particles.positions.element(i).xyz;
     const distance: Any = pos.sub(hit).length();
-    If(distance.lessThan(0.22), () => {
+    If(distance.lessThan(pullRadius), () => {
       const velocity: Any = particles.velocities.element(i);
-      const falloff: Any = float(1).sub(distance.div(0.22)).pow(2);
-      // Pull a small cap outwards; the lower-speed neck stretches then separates.
+      // Smooth, wide falloff pulls out a broad lobe rather than a thin thread.
+      const falloff: Any = float(1).sub(distance.div(pullRadius).pow(2)).pow(2);
       const direction: Any = hit.sub(attractor).normalize();
-      velocity.assign(vec4(velocity.xyz.add(direction.mul(falloff.mul(3.8))), velocity.w));
+      velocity.assign(vec4(velocity.xyz.add(direction.mul(falloff.mul(strength))), velocity.w));
     });
   })().compute(initial.length);
   return {

@@ -33,8 +33,8 @@ export interface ElasticAsset {
   normals: number[];
   uvs: number[];
   indices: number[];
-  balanced: SampledBody;
-  high: SampledBody;
+  /** Particle templates keyed by per-body budget (see prepare-elastic-assets). */
+  templates: Record<string, SampledBody>;
 }
 
 const names = ['donut', 'croissant', 'banana', 'ginger-bread'] as const;
@@ -62,22 +62,28 @@ export async function buildElastic(ctx: BuildContext, values: Values): Promise<E
     roughness: 0.62,
     metalness: 0,
   });
-  const perBody = ctx.quality === 'high' ? 500 : 200;
+  // Twenty bodies share the budget; use the closest baked template.
+  const budgets = Object.keys(assets[0]!.templates).map(Number);
+  const perBody = budgets.reduce((best, b) =>
+    Math.abs(b - ctx.particles / 20) < Math.abs(best - ctx.particles / 20) ? b : best,
+  );
   const radius = 0.015 * Math.cbrt(200 / perBody);
   const initial: ParticleInit[] = [];
   const bodies: SoftbodyDef[] = [];
   const geometries: BufferGeometry[] = [];
   for (let n = 0; n < 20; n++) {
     const asset = assets[n % assets.length]!;
-    const shape = asset[ctx.quality];
+    const shape = asset.templates[perBody]!;
+    const count = shape.positions.length / 3;
+    const start = initial.length;
     const center = new Vector3(
       ((n % 4) - 1.5) * 0.44,
       values['height']! + Math.floor(n / 12) * 0.48,
       ((Math.floor(n / 4) % 3) - 1) * 0.47,
     );
     const rotation = new Euler(0.4 + (n % 3) * 0.32, (n % 5) * 0.42 - 0.8, ((n % 4) - 1.5) * 0.23);
-    const rest = new Float32Array(perBody * 3);
-    for (let i = 0; i < perBody; i++) {
+    const rest = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
       const p = new Vector3()
         .fromArray(shape.positions, i * 3)
         .applyEuler(rotation)
@@ -87,7 +93,7 @@ export async function buildElastic(ctx: BuildContext, values: Values): Promise<E
       initial.push({
         position: [p.x, p.y, p.z],
         velocity: [0, 0, 0],
-        invMass: perBody / 20,
+        invMass: count / 20,
         phase: 0,
       });
     }
@@ -101,7 +107,7 @@ export async function buildElastic(ctx: BuildContext, values: Values): Promise<E
     geometry.translate(center.x, center.y, center.z);
     geometries.push(geometry);
     bodies.push({
-      particleRange: { start: n * perBody, count: perBody },
+      particleRange: { start, count },
       restPositions: rest,
       surfaceFlag: Uint8Array.from(shape.surface),
       phaseId: 0,
