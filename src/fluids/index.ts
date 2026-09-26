@@ -80,5 +80,10 @@ export {
   type SmoothingResolution,
   type SurfaceParams,
   type ThicknessParams,
+  FluidVolumeRenderer,
+  SurfaceField,
+  type FluidAppearance,
+  type FluidVolumeRendererOptions,
+  type SurfaceFieldOptions,
 } from './render/index.js';
 export { ViscositySolver, type ViscositySolverOptions } from './ViscositySolver.js';

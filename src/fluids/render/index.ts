@@ -15,3 +15,9 @@ export {
   type SurfaceParams,
   type ThicknessParams,
 } from './params.js';
+export {
+  FluidVolumeRenderer,
+  type FluidAppearance,
+  type FluidVolumeRendererOptions,
+} from './volume/FluidVolumeRenderer.js';
+export { SurfaceField, type SurfaceFieldOptions } from './volume/field.js';

@@ -1,4 +1,18 @@
 import type { Object3D } from 'three';
+import type StorageBufferNode from 'three/src/nodes/accessors/StorageBufferNode.js';
+
+/**
+ * The tracer buffers a smoke renderer reads. `GasSystem` provides them; so
+ * can any other emitter (e.g. puffs released by bursting bubbles).
+ */
+export interface SmokeTracers {
+  readonly capacity: number;
+  /** Seconds a tracer lives; density fades linearly with age. */
+  readonly lifetime: number;
+  readonly smokePositions: StorageBufferNode<'vec4'>;
+  readonly smokeAge: StorageBufferNode<'float'>;
+  readonly smokeAlive: StorageBufferNode<'uint'>;
+}
 
 /**
  * Polymorphic interface for any smoke-particle renderer.

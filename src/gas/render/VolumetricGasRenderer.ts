@@ -40,7 +40,7 @@ import {
   viewportDepthTexture,
 } from 'three/tsl';
 import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
-import type { GasSystem } from '../sim/GasSystem.js';
+import type { SmokeTracers } from './types.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -94,7 +94,7 @@ function createDetailTexture(): Data3DTexture {
 }
 
 export interface VolumetricGasRendererOptions {
-  readonly gas: GasSystem;
+  readonly gas: SmokeTracers;
   readonly min: Vector3;
   readonly max: Vector3;
   readonly resolution?: readonly [number, number, number];

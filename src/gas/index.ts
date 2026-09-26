@@ -1,6 +1,6 @@
 export { GasSystem, type GasSystemOptions } from './sim/GasSystem.js';
 export { buildSmokeAdvectKernel, type BuildSmokeAdvectKernelArgs } from './sim/smokeAdvect.js';
-export type { GasRenderer } from './render/types.js';
+export type { GasRenderer, SmokeTracers } from './render/types.js';
 export {
   PointSpritesGasRenderer,
   type PointSpritesGasRendererOptions,

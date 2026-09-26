@@ -1,13 +1,14 @@
 import {
+  Box3,
   CanvasTexture,
   Mesh,
   RepeatWrapping,
   SRGBColorSpace,
+  Vector3,
   type BufferGeometry,
   type MeshStandardMaterial,
   type Texture,
 } from 'three';
-import type { MeshPhysicalNodeMaterial } from 'three/webgpu';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import {
   Fn,
@@ -182,14 +183,13 @@ export async function buildBuoyancy(ctx: BuildContext, values: Values): Promise<
         reachRadius: radius * 3.5,
       }),
   );
-  const visual = liquidVisual(ctx, fluid, 0xbde9ff, values['roughness']);
-  visual.surface.params.surface.attenuationDistance.value = 1.8;
-  visual.surface.params.surface.envIntensity.value = 0.4;
-  const waterMaterial = visual.surface.mesh.material as MeshPhysicalNodeMaterial;
-  waterMaterial.ior = 1.333;
-  waterMaterial.metalness = 0;
-  waterMaterial.transmission = 1;
-  waterMaterial.clearcoat = 0;
+  const visual = liquidVisual(ctx, fluid, {
+    bounds: new Box3(new Vector3(-0.83, -0.02, -0.58), new Vector3(0.83, 0.85, 0.58)),
+    colliders,
+    solids: { start: waterCount, count: initial.length - waterCount },
+    color: 0x9fd8ec,
+    appearance: { attenuationDistance: 1.2, scattering: 0.04, roughness: values['roughness'] },
+  });
   const tray = basin(1.65, 1.15, 0.39);
   // Ceramic pool tiles make the water's transparency and refraction readable.
   const tile = document.createElement('canvas');
@@ -243,7 +243,7 @@ export async function buildBuoyancy(ctx: BuildContext, values: Values): Promise<
       }
       if (key === 'viscosity' && fluid.xsphCUniform) fluid.xsphCUniform.value = value;
       if (key === 'tension') fluid.cohesion?.setGamma(value);
-      if (key === 'roughness') visual.surface.params.surface.roughness.value = value;
+      if (key === 'roughness') visual.surface.appearance.roughness.value = value;
     },
     dispose() {
       tileTexture.dispose();

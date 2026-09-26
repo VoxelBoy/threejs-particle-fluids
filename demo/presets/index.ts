@@ -1,6 +1,8 @@
 import type { Control, Preset, Values } from '../types.js';
 import { buildFluid } from './liquids.js';
+import { buildBubbles } from './bubbles.js';
 import { buildBuoyancy } from './buoyancy.js';
+import { buildHoney } from './honey.js';
 import { buildElastic } from './elastic.js';
 import { buildCloth } from './silk.js';
 import { buildVortex } from './vortex.js';
@@ -138,32 +140,32 @@ export const presets: readonly Preset[] = [
   {
     id: 'viscous-pour',
     number: '04',
-    name: 'Viscous pour',
+    name: 'Honey bunny',
     category: 'VISCOSITY',
     description:
-      'A continuous ribbon of thick liquid folds into a pool. Adjust viscosity to compare slow folding with free flow.',
+      'A circling nozzle drizzles thick honey over the Stanford bunny, coating it and piling up. Lower viscosity to compare with free flow.',
     accent: '#eac08e',
-    camera: [1.7, 1.5, 2.6],
-    target: [0, 0.4, 0],
-    duration: 24,
+    camera: [1.05, 0.85, 1.55],
+    target: [0, 0.25, 0],
+    duration: 40,
     controls: [
-      gravity(4),
+      gravity(9.8),
       {
         key: 'viscosity',
         label: 'Viscosity',
         description:
           'Implicit diffusion resists shear without becoming unstable at high viscosity.',
-        min: 0.01,
-        max: 3,
-        step: 0.01,
-        value: 1.2,
+        min: 0.1,
+        max: 30,
+        step: 0.5,
+        value: 20,
       },
-      tension(0.14),
+      tension(0.015),
       {
         key: 'flow',
         label: 'Pour rate',
-        description: 'Volume supplied by the nozzle.',
-        min: 0,
+        description: 'Speed of the stream leaving the nozzle.',
+        min: 0.2,
         max: 2,
         step: 0.1,
         value: 1,
@@ -171,16 +173,16 @@ export const presets: readonly Preset[] = [
       {
         key: 'height',
         label: 'Nozzle height',
-        description: 'Raises the nozzle above the pool.',
-        min: 0.65,
-        max: 1.1,
+        description: 'Raises the circling nozzle above the bunny.',
+        min: 0.55,
+        max: 1.05,
         step: 0.05,
-        value: 1.05,
+        value: 0.75,
         unit: 'm',
       },
       roughness(0.12),
     ],
-    build: (ctx, values) => buildFluid(ctx, values, 'amber'),
+    build: buildHoney,
   },
   {
     id: 'buoyancy',
@@ -352,6 +354,59 @@ export const presets: readonly Preset[] = [
       },
     ],
     build: buildVortex,
+  },
+  {
+    id: 'smoke-bubbles',
+    number: '09',
+    name: 'Smoke bubbles',
+    category: 'GAS & LIQUID',
+    description:
+      'Smoke-filled bubbles swell at vents, wobble up through a glass tank, and burst into rising puffs.',
+    accent: '#a8c6d4',
+    camera: [1.35, 1.05, 1.75],
+    target: [0, 0.42, 0],
+    duration: 30,
+    controls: [
+      {
+        key: 'rate',
+        label: 'Bubble rate',
+        description: 'How often each vent releases a bubble.',
+        min: 0.2,
+        max: 3,
+        step: 0.1,
+        value: 1,
+      },
+      {
+        key: 'size',
+        label: 'Bubble size',
+        description: 'Radius of new bubbles.',
+        min: 0.03,
+        max: 0.08,
+        step: 0.005,
+        value: 0.05,
+        unit: 'm',
+      },
+      {
+        key: 'rise',
+        label: 'Rise speed',
+        description: 'How fast bubbles climb and smoke drifts upward.',
+        min: 0.1,
+        max: 0.8,
+        step: 0.05,
+        value: 0.35,
+        unit: 'm/s',
+      },
+      {
+        key: 'density',
+        label: 'Smoke density',
+        description: 'How much light the smoke absorbs and scatters.',
+        min: 0.2,
+        max: 3,
+        step: 0.1,
+        value: 1.2,
+      },
+    ],
+    build: buildBubbles,
   },
 ];
 

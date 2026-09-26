@@ -17,3 +17,7 @@ The four source OBJ/MTL files and original color atlas are in `demo/assets/elast
 ## Buoyancy rubber ducks
 
 `public/models/buoyancy/rubber-duck.glb` is the [Rubber Duck Toy](https://polyhaven.com/a/rubber_duck_toy) by **Plat251**, distributed by Poly Haven under [CC0 1.0 Universal](https://polyhaven.com/license). The embedded 1K color, normal, and material textures are retained. The demo scales and rotates the model and samples its volume for buoyancy; the asset remains CC0.
+
+## Honey bunny
+
+`demo/assets/honey/bunny.drc` is the **Stanford Bunny** from the [Stanford 3D Scanning Repository](https://graphics.stanford.edu/data/3Dscanrep/) (Stanford University Computer Graphics Laboratory), in the Draco-compressed copy distributed with the three.js examples. Stanford permits free use of the model and asks that it be credited. Run `npm run assets:honey` to rebuild `public/models/honey/`: the script decodes the mesh, caps the five holes in its base, scales it to 42 cm, writes a quantized display mesh, and bakes a collision distance field from a simplified copy.

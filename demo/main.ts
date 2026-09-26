@@ -11,7 +11,7 @@ app.innerHTML = `
     <span class="gpu-badge"><span></span> WebGPU</span>
   </header>
   <main class="workspace">
-  <nav class="gallery" aria-label="Choose a preset"><div class="gallery-heading"><span class="eyebrow">PRESETS</span><span>08</span></div><div class="preset-grid">${presets
+  <nav class="gallery" aria-label="Choose a preset"><div class="gallery-heading"><span class="eyebrow">PRESETS</span><span>${String(presets.length).padStart(2, '0')}</span></div><div class="preset-grid">${presets
     .map(
       (preset) => `
     <button class="preset-card" data-preset="${preset.id}" aria-label="${preset.number}. ${preset.name}" aria-pressed="false" style="--card-accent:${preset.accent}">
@@ -238,7 +238,7 @@ function selectPreset(preset: Preset, updateUrl = true): void {
   for (const id of ['scene-name', 'panel-name']) el(id).textContent = preset.name;
   el('scene-category').textContent = `${preset.number} / ${preset.category}`;
   el('description').textContent = preset.description;
-  el('preset-index').textContent = `${preset.number} / 08`;
+  el('preset-index').textContent = `${preset.number} / ${String(presets.length).padStart(2, '0')}`;
   document.title = `${preset.name} — Three.js Particle Fluids`;
   document
     .querySelectorAll<HTMLButtonElement>('[data-preset]')

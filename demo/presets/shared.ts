@@ -20,9 +20,14 @@ export function lattice(
   return values;
 }
 
-export function tank(particles: ParticleSystem, halfX = 0.8, halfZ = 0.55): PrimitiveSet {
-  const colliders = new PrimitiveSet(particles, { capacity: 12 });
-  const friction = { muS: 0.08, muK: 0.04 };
+export function tank(
+  particles: ParticleSystem,
+  halfX = 0.8,
+  halfZ = 0.55,
+  capacity = 12,
+  friction = { muS: 0.08, muK: 0.04 },
+): PrimitiveSet {
+  const colliders = new PrimitiveSet(particles, { capacity });
   colliders.addPlane(new Vector3(0, 1, 0), new Vector3(), friction);
   colliders.addPlane(new Vector3(1, 0, 0), new Vector3(-halfX, 0, 0), friction);
   colliders.addPlane(new Vector3(-1, 0, 0), new Vector3(halfX, 0, 0), friction);

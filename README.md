@@ -1,6 +1,6 @@
 # Three.js Particle Fluids
 
-Interactive particle simulations built with **Three.js, WebGPU, and the Three.js Shading Language (TSL)**. Eight curated presets explore fluid, form, and motion, with live controls and GPU performance diagnostics.
+Interactive particle simulations built with **Three.js, WebGPU, and the Three.js Shading Language (TSL)**. Nine curated presets explore fluid, form, and motion, with live controls and GPU performance diagnostics.
 
 ![Tidal chamber](public/previews/cover.png)
 
@@ -24,11 +24,12 @@ A desktop browser and GPU with WebGPU support are required. Enable hardware acce
 | **Tidal chamber**   | Waves spilling over low weirs and through staggered wall gaps          |
 | **Crown impact**    | A falling drop splashing into a shallow pool                           |
 | **Liquid marble**   | Inward gravity, surface tension, and droplets pulled off by clicking   |
-| **Viscous pour**    | A continuous nozzle-fed stream with implicit velocity diffusion        |
+| **Honey bunny**     | A circling nozzle drizzles viscous honey over the Stanford bunny       |
 | **Buoyancy**        | Textured rubber ducks floating or sinking as their density changes     |
 | **Elastic studies** | 20 textured CC0 forms that bend under moving compression plates        |
 | **Silk in motion**  | Soft red velvet displaced by a moving chrome sphere                    |
 | **Vortex plume**    | Lit volumetric smoke with filtered density and correct scene occlusion |
+| **Smoke bubbles**   | Smoke-filled bubbles rise through water and burst into drifting puffs  |
 
 Each preset has a focused parameter panel. Sliders apply immediately; controls marked **↻** restart the experiment when released. Settings are remembered per preset during the current session. **Reset all** restores that preset's defaults.
 
@@ -53,7 +54,7 @@ One npm project, with engine code and demo code kept separate:
 ```text
 src/
   core/       Particle buffers, integration, constraints, contacts, colliders
-  fluids/     Fluid solver, viscosity diffusion, and surface reconstruction
+  fluids/     Fluid solver, viscosity diffusion, and ray-marched surface rendering
   softbody/   Soft and rigid body solvers, voxelization, mesh skinning
   cloth/      Cloth constraints and smooth bicubic surface rendering
   gas/        Tracer advection, volumetric smoke, and diagnostic sprites
@@ -61,7 +62,7 @@ src/
   sdf/        CPU mesh-to-SDF baking and binary utilities
   index.ts    Engine exports
 demo/
-  presets/    Eight presets and their controls
+  presets/    Nine presets and their controls
   runtime/    Scene lifecycle, lighting, ambient occlusion, and camera
   assets/     CC0 source meshes used by the demo
   main.ts     Preset list and parameter interface

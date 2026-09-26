@@ -403,6 +403,31 @@ export class PrimitiveSet {
    * `Object3D`). Useful for live UI sliders or scripted animations that
    * drive rotation without a corresponding scene object.
    */
+  /**
+   * Move and resize a sphere collider. `velocity` feeds the friction pass;
+   * call {@link upload} afterwards to publish the change.
+   */
+  setSphere(slot: number, center: Vector3, radius: number, velocity?: Vector3): void {
+    this.assertAlive();
+    if (!Number.isInteger(slot) || slot < 0 || slot >= this.count)
+      throw new Error(`PrimitiveSet.setSphere: invalid slot ${slot} (count=${this.count})`);
+    if (unpackKind(this.cpuPacked[slot]!) !== KIND_SPHERE)
+      throw new Error(`PrimitiveSet.setSphere: slot ${slot} is not a sphere`);
+    if (!(radius > 0))
+      throw new Error(`PrimitiveSet.setSphere: radius must be positive, got ${radius}`);
+    this.writeVec4(this.cpuData0, slot, center.x, center.y, center.z, radius);
+    const base = slot * 4;
+    this.writeVec4(
+      this.cpuLinVel,
+      slot,
+      velocity?.x ?? 0,
+      velocity?.y ?? 0,
+      velocity?.z ?? 0,
+      this.cpuLinVel[base + 3]!,
+    );
+    this.invalidate(slot);
+  }
+
   setColliderRotation(slot: number, rotation: Quaternion): void {
     this.assertAlive();
     if (!Number.isInteger(slot) || slot < 0 || slot >= this.count) {
