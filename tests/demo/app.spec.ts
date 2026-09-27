@@ -2,13 +2,16 @@ import { expect, test, type Page } from '@playwright/test';
 import { stat } from 'node:fs/promises';
 
 const presetIds = [
-  'tidal-chamber',
+  'wave-chamber',
   'crown-impact',
   'liquid-marble',
   'viscous-pour',
   'buoyancy',
   'elastic-studies',
+  'bunny-lineup',
+  'banana-blender',
   'silk-in-motion',
+  'velvet-drape',
   'vortex-plume',
   'smoke-bubbles',
 ];
@@ -20,14 +23,14 @@ async function ready(page: Page): Promise<void> {
   await expect(page.locator('#fps')).not.toHaveText('—');
 }
 
-test('all nine presets render, advance, and switch without browser errors', async ({ page }) => {
+test('all twelve presets render, advance, and switch without browser errors', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
     if (message.type() === 'error') errors.push(message.text());
   });
   await page.goto('/');
-  await expect(page.locator('[data-preset]')).toHaveCount(9);
+  await expect(page.locator('[data-preset]')).toHaveCount(12);
   for (const id of presetIds) {
     await page.locator(`[data-preset="${id}"]`).click();
     await ready(page);
@@ -85,7 +88,7 @@ test('pause, live controls, rebuilds, captures, and rapid navigation preserve a 
   for (const id of ['silk-in-motion', 'vortex-plume', 'liquid-marble'])
     await page.locator(`[data-preset="${id}"]`).click();
   await ready(page);
-  await expect(page.locator('#panel-name')).toHaveText('Liquid marble');
+  await expect(page.locator('#panel-name')).toHaveText('Liquid Marble');
   await page.locator('#canvas-host canvas').click();
   await page.getByRole('button', { name: 'Restart simulation' }).click();
   await ready(page);
@@ -98,7 +101,7 @@ test('mobile controls, reduced motion, and deep links work', async ({ page }) =>
   await page.goto('/?preset=silk-in-motion');
   await ready(page);
   await expect(page.locator('#sim-state')).toHaveText('PAUSED');
-  await expect(page.locator('#scene-name')).toHaveText('Cloth');
+  await expect(page.locator('#scene-name')).toHaveText('Velvet Curtain');
   await expect(page.locator('#inspector')).toBeHidden();
   await page.getByRole('button', { name: 'Parameters', exact: true }).click();
   await expect(page.locator('#inspector')).toBeVisible();

@@ -30,11 +30,11 @@ import { scaledSubsteps, tank } from './shared.js';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
-const BUNNY_YAW = 2.16;
+export const BUNNY_YAW = 2.16;
 const MESH_MAGIC = 0x4e554242;
 
 /** Decode the quantized Stanford bunny written by `npm run assets:honey`. */
-async function loadBunny(): Promise<{ mesh: Mesh; sdf: SDFData; aim: Vector3 }> {
+export async function loadBunny(): Promise<{ mesh: Mesh; sdf: SDFData; aim: Vector3 }> {
   const base = `${import.meta.env.BASE_URL}models/honey/`;
   const [meshBytes, sdfBytes] = await Promise.all(
     ['bunny.mesh.bin', 'bunny.sdf.bin'].map(async (file) => {

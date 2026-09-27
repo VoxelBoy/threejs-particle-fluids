@@ -1,11 +1,31 @@
-import { DoubleSide, Mesh, PlaneGeometry, SphereGeometry, Vector3 } from 'three';
+import { DoubleSide, Mesh, PlaneGeometry, Quaternion, SphereGeometry, Vector3 } from 'three';
 import { MeshPhysicalNodeMaterial } from 'three/webgpu';
-import { ParticleSystem, PrimitiveSet, SimLoop, createXpbdUniforms } from '../../src/core/index.js';
+import {
+  ParticleSystem,
+  PrimitiveSet,
+  SDFCollider,
+  SimLoop,
+  createXpbdUniforms,
+} from '../../src/core/index.js';
 import { ClothSystem, createClothSurface, fromBufferGeometry } from '../../src/cloth/index.js';
 import { createParticleMesh } from '../../src/render/particles.js';
-import { clothStand } from '../runtime/stage.js';
+import { clothStand, platform } from '../runtime/stage.js';
+import { BUNNY_YAW, loadBunny } from './honey.js';
 import { scaledSubsteps } from './shared.js';
 import type { BuildContext, Experiment, Values } from '../types.js';
+
+function velvet(): MeshPhysicalNodeMaterial {
+  return new MeshPhysicalNodeMaterial({
+    color: 0x870b21,
+    side: DoubleSide,
+    roughness: 0.9,
+    metalness: 0,
+    sheen: 1,
+    sheenColor: 0xd54b5c,
+    sheenRoughness: 0.7,
+    flatShading: false,
+  });
+}
 
 export function buildCloth(ctx: BuildContext, values: Values): Experiment {
   // A (segments + 1)² grid of particles close to the requested count.
@@ -79,22 +99,12 @@ export function buildCloth(ctx: BuildContext, values: Values): Experiment {
   });
   loop.gravity.set(0, -values['gravity']!, 0);
   loop.kernels.floorY.value = 0.05;
-  const mat = new MeshPhysicalNodeMaterial({
-    color: 0x870b21,
-    side: DoubleSide,
-    roughness: 0.9,
-    metalness: 0,
-    sheen: 1,
-    sheenColor: 0xd54b5c,
-    sheenRoughness: 0.7,
-    flatShading: false,
-  });
   const mesh = createClothSurface({
     particles,
     columns: segments + 1,
     rows: segments + 1,
     subdivisions: 3,
-    material: mat,
+    material: velvet(),
   });
   geometry.dispose();
   mesh.frustumCulled = false;
@@ -138,6 +148,120 @@ export function buildCloth(ctx: BuildContext, values: Values): Experiment {
     dispose() {
       particles.destroy();
       colliders.destroy();
+    },
+  };
+}
+
+export async function buildClothDrop(ctx: BuildContext, values: Values): Promise<Experiment> {
+  // A loose square of velvet, lying flat and slightly turned, released above the bunny.
+  const size = 1.1;
+  const segments = Math.max(12, Math.round(Math.sqrt(ctx.particles)) - 1);
+  const geometry = new PlaneGeometry(size, size, segments, segments)
+    .rotateX(-Math.PI / 2)
+    .rotateY(0.35)
+    .translate(0, values['height']!, 0);
+  // A faint ripple keeps the first contact from being perfectly symmetric.
+  const vertices = geometry.getAttribute('position');
+  for (let i = 0; i < vertices.count; i++) {
+    const x = vertices.getX(i),
+      z = vertices.getZ(i);
+    vertices.setY(i, vertices.getY(i) + Math.sin(x * 9 + 0.6) * Math.cos(z * 7) * 0.012);
+  }
+  const graph = fromBufferGeometry(geometry, { surfaceDensity: 0.08 });
+  const spacing = size / segments;
+  const particles = new ParticleSystem(
+    ctx.renderer,
+    graph.positions.length,
+    Math.max(0.008, 0.7 * spacing),
+  );
+  particles.uploadParticles(
+    graph.positions.map((position, i) => ({
+      position,
+      velocity: [0, 0, 0],
+      invMass: graph.invMass[i]!,
+      phase: 1,
+    })),
+  );
+  const xpbd = createXpbdUniforms(1 / 60);
+  const bendCompliance = (softness: number) =>
+    10 ** (-1 + softness * 5) * (segments / 30) ** 4 * (0.35 / 0.08);
+  const cloth = new ClothSystem({
+    particles,
+    xpbd,
+    graph,
+    particleOffset: 0,
+    stretchCompliance: 1e-7,
+    bendCompliance: bendCompliance(values['bend']!),
+    stretchTolerance: 0.06,
+    wind: new Vector3(),
+    // Falling flat, the full drag turns the cloth into a parachute.
+    dragCoeff: 0.04,
+    liftCoeff: 0.005,
+  });
+  const colliders = new PrimitiveSet(particles, { capacity: 1 });
+  colliders.addPlane(new Vector3(0, 1, 0), new Vector3(0, 0.005, 0), { muS: 0.35, muK: 0.3 });
+  colliders.upload();
+  const bunny = await loadBunny();
+  const bunnyCollider = new SDFCollider(particles, bunny.sdf, {
+    rotation: new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), BUNNY_YAW),
+    // Keep the gap between neighbouring particles clear of the bunny, so its
+    // thin ears can't slip between them.
+    thickness: 0.6 * spacing,
+    muS: values['friction']!,
+    muK: values['friction']! * 0.85,
+  });
+  // Thin ears need short steps and frequent collision solves to stay covered.
+  const substeps = scaledSubsteps(12, ctx.particles, 2),
+    iterations = 2;
+  const loop = new SimLoop(particles, {
+    substeps,
+    iterations,
+    xpbd,
+    materials: [cloth],
+    colliders: { colliders, sdfColliders: [bunnyCollider] },
+  });
+  loop.gravity.set(0, -values['gravity']!, 0);
+  loop.kernels.floorY.value = -1e9;
+  const mesh = createClothSurface({
+    particles,
+    columns: segments + 1,
+    rows: segments + 1,
+    subdivisions: 3,
+    material: velvet(),
+  });
+  geometry.dispose();
+  mesh.frustumCulled = false;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  const dots = createParticleMesh({ particles, radius: 0.012, color: 0xd54b5c, castShadow: false });
+  dots.visible = false;
+  return {
+    particles,
+    loop,
+    objects: [mesh, bunny.mesh, dots, platform(1.7, 1.7)],
+    particleCount: particles.capacity,
+    substeps,
+    iterations,
+    setParameter(key, value) {
+      values[key] = value;
+      if (key === 'gravity') loop.gravity.y = -value;
+      if (key === 'bend' && cloth.bending) {
+        (cloth.bending.compliance.value.array as Float32Array).fill(bendCompliance(value));
+        cloth.bending.compliance.value.needsUpdate = true;
+      }
+      if (key === 'friction') {
+        bunnyCollider.muSUniform.value = value;
+        bunnyCollider.muKUniform.value = value * 0.85;
+      }
+    },
+    setParticleView(enabled) {
+      mesh.visible = !enabled;
+      dots.visible = enabled;
+    },
+    dispose() {
+      particles.destroy();
+      colliders.destroy();
+      bunnyCollider.destroy();
     },
   };
 }
