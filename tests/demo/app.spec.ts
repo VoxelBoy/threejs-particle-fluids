@@ -98,7 +98,7 @@ test('mobile controls, reduced motion, and deep links work', async ({ page }) =>
   await page.goto('/?preset=silk-in-motion');
   await ready(page);
   await expect(page.locator('#sim-state')).toHaveText('PAUSED');
-  await expect(page.locator('#scene-name')).toHaveText('Silk in motion');
+  await expect(page.locator('#scene-name')).toHaveText('Cloth');
   await expect(page.locator('#inspector')).toBeHidden();
   await page.getByRole('button', { name: 'Parameters', exact: true }).click();
   await expect(page.locator('#inspector')).toBeVisible();
@@ -126,10 +126,10 @@ test('particle levels keep 20 soft bodies at the requested particle budgets', as
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto('/?preset=elastic-studies');
   await ready(page);
-  await expect(page.locator('#particle-count')).toHaveText('5,000');
+  await expect(page.locator('#particle-count')).toHaveText('10,000');
   await page.getByLabel('Particle count').selectOption('high');
   await ready(page);
-  await expect(page.locator('#particle-count')).toHaveText('10,000');
+  await expect(page.locator('#particle-count')).toHaveText('15,000');
   await expect
     .poll(async () => parseFloat(await page.locator('#sim-time').innerText()))
     .toBeGreaterThan(0.8);

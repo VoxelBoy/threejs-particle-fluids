@@ -317,8 +317,8 @@ export class World {
         frameMs: this.frameMs,
         particles: this.experiment.particleCount,
         time: this.time,
-        substeps: this.experiment.substeps,
-        iterations: this.experiment.iterations,
+        substeps: this.experiment.loop.substeps,
+        iterations: this.experiment.loop.iterations,
         limited,
       });
     }

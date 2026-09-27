@@ -101,7 +101,7 @@ export function buildColliderFrictionVelocityKernel(args: {
           // `grad` is well-defined (except at singular loci — guarded).
           const phi: Any = float(0.0).toVar();
           const grad: Any = vec3(float(0.0), float(0.0), float(0.0)).toVar();
-          emitColliderSdf(colliders, i, xStar, phi, grad);
+          emitColliderSdf(colliders, i, xStar, phi, grad, colliders.motionClock.element(0));
           const gradLen: Any = grad.length().toVar();
           If(gradLen.greaterThan(float(1e-6)), () => {
             // Normalize defensively; `emitColliderSdf` returns unit gradient

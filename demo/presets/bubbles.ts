@@ -18,7 +18,7 @@ import { VolumetricGasRenderer, type SmokeTracers } from '../../src/gas/index.js
 import { basin, material } from '../runtime/stage.js';
 import type { BuildContext, Experiment, Values } from '../types.js';
 import { liquidVisual } from './liquids.js';
-import { fitRadius, lattice, tank } from './shared.js';
+import { fitRadius, lattice, scaledSubsteps, tank } from './shared.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -119,7 +119,8 @@ function smokePuffs(count: number) {
       const goal: Any = swirl.add(vec3(0, rise.mul(float(1).sub(age.div(SMOKE_LIFETIME))), 0));
       v.assign(v.add(goal.sub(v).mul(dt.mul(1.6))));
       const next: Any = p.add(v.mul(dt)).toVar();
-      next.y.assign(next.y.max(LEVEL + 0.01));
+      // Smoke may start just under the surface (hidden by the water) but never sinks.
+      next.y.assign(next.y.max(LEVEL - 0.04));
       tracers.smokePositions.element(i).assign(vec4(next, 0));
       velocities.element(i).assign(vec4(v, 0));
     });
@@ -132,7 +133,7 @@ export async function buildBubbles(ctx: BuildContext, values: Values): Promise<E
   const radius = fitRadius(fill, ctx.particles, 0.017);
   const spacing = radius * 2;
   const initial = fill(radius);
-  const detailed = ctx.particles >= 10000;
+  const detailed = ctx.particles >= 25000;
   const particles = new ParticleSystem(ctx.renderer, initial.length, radius);
   particles.uploadParticles(initial);
   const hashGrid = new HashGrid(particles, { cellSize: radius * 4 });
@@ -166,7 +167,7 @@ export async function buildBubbles(ctx: BuildContext, values: Values): Promise<E
     phase: i * 1.7,
   }));
   colliders.upload();
-  const substeps = 3,
+  const substeps = scaledSubsteps(3, ctx.particles),
     iterations = 2;
   const loop = new SimLoop(particles, {
     substeps,
@@ -194,7 +195,8 @@ export async function buildBubbles(ctx: BuildContext, values: Values): Promise<E
   const puffs = smokePuffs(bubbles.length);
   const smoke = new VolumetricGasRenderer({
     gas: puffs.tracers,
-    min: new Vector3(-HALF_X - 0.1, LEVEL - 0.02, -HALF_Z - 0.1),
+    // Start the grid below the waterline so its edge fade is hidden underwater.
+    min: new Vector3(-HALF_X - 0.1, LEVEL - 0.12, -HALF_Z - 0.1),
     max: new Vector3(HALF_X + 0.1, 1.75, HALF_Z + 0.1),
     resolution: detailed ? [72, 112, 56] : [56, 88, 44],
     steps: detailed ? 96 : 72,
@@ -254,7 +256,8 @@ export async function buildBubbles(ctx: BuildContext, values: Values): Promise<E
           if (b.position.y > LEVEL - b.size * 0.1) {
             b.state = 'pop';
             b.timer = 0.12;
-            puffs.at.value.set(b.position.x, LEVEL + b.size * 0.4, b.position.z);
+            // Release the smoke from the bubble itself as it breaks the surface.
+            puffs.at.value.copy(b.position);
             puffs.radius.value = b.size;
             puffs.bank.value = bubbles.indexOf(b) * PUFF;
             puffs.seed.value = ++seed;
@@ -280,6 +283,7 @@ export async function buildBubbles(ctx: BuildContext, values: Values): Promise<E
       smoke.time.value = time;
       await ctx.renderer.computeAsync(puffs.advect);
     },
+    setReflections: (enabled) => visual.setReflections(enabled),
     async prepareRender() {
       visual.prepareRender();
       await smoke.update(ctx.renderer);

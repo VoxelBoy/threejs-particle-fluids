@@ -6,7 +6,7 @@ import { GasSystem, PointSpritesGasRenderer, VolumetricGasRenderer } from '../..
 import { createParticleMesh } from '../../src/render/particles.js';
 import { material, pedestal } from '../runtime/stage.js';
 import type { BuildContext, Experiment, Values } from '../types.js';
-import { fitRadius, lattice, tank } from './shared.js';
+import { fitRadius, lattice, scaledSubsteps, tank } from './shared.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -15,7 +15,7 @@ export function buildVortex(ctx: BuildContext, values: Values): Experiment {
   const fill = (r: number) => lattice([-0.5, r, -0.5], [0.5, 1.9, 0.5], r * 2);
   const radius = fitRadius(fill, ctx.particles, 0.035);
   const initial = fill(radius);
-  const detailed = ctx.particles >= 10000;
+  const detailed = ctx.particles >= 25000;
   const particles = new ParticleSystem(ctx.renderer, initial.length, radius);
   particles.uploadParticles(initial);
   const hashGrid = new HashGrid(particles, { cellSize: radius * 4 });
@@ -42,7 +42,7 @@ export function buildVortex(ctx: BuildContext, values: Values): Experiment {
   });
   const colliders = tank(particles, 0.52, 0.52);
   colliders.upload();
-  const substeps = 2,
+  const substeps = scaledSubsteps(2, ctx.particles),
     iterations = 2;
   const loop = new SimLoop(particles, {
     substeps,

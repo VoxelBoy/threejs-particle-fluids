@@ -166,9 +166,9 @@ export const presets: readonly Preset[] = [
         label: 'Pour rate',
         description: 'Speed of the stream leaving the nozzle.',
         min: 0.2,
-        max: 2,
+        max: 3,
         step: 0.1,
-        value: 1,
+        value: 2,
       },
       {
         key: 'height',
@@ -179,6 +179,15 @@ export const presets: readonly Preset[] = [
         step: 0.05,
         value: 0.75,
         unit: 'm',
+      },
+      {
+        key: 'friction',
+        label: 'Bunny friction',
+        description: 'How strongly honey grips the bunny. Low values let it slide off.',
+        min: 0,
+        max: 2,
+        step: 0.05,
+        value: 1.2,
       },
       roughness(0.12),
     ],
@@ -216,7 +225,7 @@ export const presets: readonly Preset[] = [
   {
     id: 'elastic-studies',
     number: '06',
-    name: 'Elastic studies',
+    name: 'Soft Body Squeeze',
     category: 'SOFT BODIES',
     description:
       '20 soft forms with holes, curves, and limbs. Moving plates reveal bending, folding, and elastic recovery.',
@@ -262,7 +271,7 @@ export const presets: readonly Preset[] = [
   {
     id: 'silk-in-motion',
     number: '07',
-    name: 'Silk in motion',
+    name: 'Cloth',
     category: 'CLOTH & COLLISION',
     description:
       'A moving sphere pushes through soft red velvet, revealing folds and a grazing-angle sheen.',

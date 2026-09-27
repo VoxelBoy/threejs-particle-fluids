@@ -90,7 +90,7 @@ export function buildColliderSolveKernel(args: {
       ({ i }: { i: Any }) => {
         const phi: Any = float(0.0).toVar();
         const grad: Any = vec3(float(0.0), float(0.0), float(0.0)).toVar();
-        emitColliderSdf(colliders, i, xStar, phi, grad);
+        emitColliderSdf(colliders, i, xStar, phi, grad, colliders.motionClock.element(0));
 
         // Penetration test — paper Macklin 2014 §6.1 eq. (22) with one
         // kinematic side: `phi - r < 0` means the particle's surface has

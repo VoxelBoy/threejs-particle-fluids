@@ -29,13 +29,15 @@ export interface Preset {
 }
 /** Particle budgets offered in the viewport. Presets size their particles to match. */
 export const PARTICLE_LEVELS = [
-  { id: 'low', label: 'Low', count: 1000 },
-  { id: 'medium', label: 'Medium', count: 5000 },
-  { id: 'high', label: 'High', count: 10000 },
-  { id: 'ultra', label: 'Ultra', count: 15000 },
-  { id: 'max', label: 'Max', count: 25000 },
+  { id: 'low', label: 'Low', count: 5000 },
+  { id: 'medium', label: 'Medium', count: 10000 },
+  { id: 'high', label: 'High', count: 15000 },
+  { id: 'ultra', label: 'Ultra', count: 25000 },
+  { id: 'max', label: 'Max', count: 50000 },
 ] as const;
 export type ParticleLevel = (typeof PARTICLE_LEVELS)[number]['id'];
+/** Elastic studies splits each level across 20 bodies; one baked template per level. */
+export const ELASTIC_BODY_BUDGETS = PARTICLE_LEVELS.map((level) => level.count / 20);
 
 export interface BuildContext {
   renderer: WebGPURenderer;
@@ -55,6 +57,8 @@ export interface Experiment {
   prepareRender?(): void | Promise<void>;
   setParameter(key: string, value: number): void;
   setParticleView?(enabled: boolean): void;
+  /** Screen-space reflections on liquid surfaces. */
+  setReflections?(enabled: boolean): void;
   interact?(uv: Vector2): Promise<boolean>;
   dispose(): void;
 }

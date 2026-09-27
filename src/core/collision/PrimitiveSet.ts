@@ -147,6 +147,13 @@ export class PrimitiveSet {
   /** `.xyz` = linear velocity (m/s); `.w` = μ_k. */
   readonly linVel: StorageBufferNode<'vec4'>;
   /**
+   * Seconds left in the current frame, counted down by `SimLoop` once per
+   * substep. The collision solve rewinds moving colliders by this much so a
+   * once-per-frame kinematic update becomes a smooth sweep. Zero outside a
+   * `SimLoop` step.
+   */
+  readonly motionClock: StorageBufferNode<'float'>;
+  /**
    * Per-slot unit quaternion `(x, y, z, w)`. Identity `(0, 0, 0, 1)` for
    * plane / sphere / capsule — the kernel's quat-rotate is a no-op on
    * identity, so non-box colliders pay two cross products per sample
@@ -208,6 +215,7 @@ export class PrimitiveSet {
     this.data0 = instancedArray(options.capacity, 'vec4');
     this.data1 = instancedArray(options.capacity, 'vec4');
     this.linVel = instancedArray(options.capacity, 'vec4');
+    this.motionClock = instancedArray(1, 'float');
     this.lambdaNT = instancedArray(2 * particles.capacity * options.capacity, 'float');
 
     this.cpuPacked = this.packed.value.array as Uint32Array;

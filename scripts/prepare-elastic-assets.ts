@@ -1,8 +1,8 @@
 /** Rebuild the bundled CC0 meshes and particle templates: npm run assets:elastic. */
-export const BODY_BUDGETS = [50, 250, 500, 750, 1250] as const;
 import { copyFile, readFile, writeFile } from 'node:fs/promises';
 import { BufferGeometry, Float32BufferAttribute, Vector2, Vector3 } from 'three';
 import { voxelize, type TriangleMesh, type VoxelizeResult } from '../src/softbody/voxelize.js';
+import { ELASTIC_BODY_BUDGETS as BODY_BUDGETS } from '../demo/types.js';
 
 interface MeshData {
   vertices: Vector3[];
@@ -268,11 +268,16 @@ for (const name of ['donut', 'croissant', 'banana', 'ginger-bread']) {
     vertices: Float32Array.from(mesh.vertices.flatMap((v) => v.toArray())),
     indices: Uint32Array.from(mesh.faces.flat()),
   };
-  // One template per particle-count level: 20 bodies share each level's budget.
-  const templates = Object.fromEntries(
-    BODY_BUDGETS.map((count) => [count, sample(triangles, count)]),
-  );
-  const data = { ...renderMesh(mesh), templates };
+  // One template per particle-count level (20 bodies share each level's
+  // budget), each in its own file so a scene loads only the level it uses.
+  for (const count of BODY_BUDGETS)
+    await writeFile(
+      new URL(`../public/models/elastic/${name}-${count}.json`, import.meta.url),
+      JSON.stringify(sample(triangles, count), (_key, v: unknown) =>
+        typeof v === 'number' ? round(v) : v,
+      ) + '\n',
+    );
+  const data = renderMesh(mesh);
   await writeFile(
     new URL(`../public/models/elastic/${name}.json`, import.meta.url),
     JSON.stringify(data, (_key, v: unknown) => (typeof v === 'number' ? round(v) : v)) + '\n',

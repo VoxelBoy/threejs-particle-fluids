@@ -34,7 +34,7 @@ import { createParticleMesh } from '../../src/render/particles.js';
 import { basin } from '../runtime/stage.js';
 import type { BuildContext, Experiment, Values } from '../types.js';
 import { liquidVisual } from './liquids.js';
-import { fitRadius, lattice, tank, triangleMesh } from './shared.js';
+import { fitRadius, lattice, scaledSubsteps, tank, triangleMesh } from './shared.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -108,8 +108,8 @@ export async function buildBuoyancy(ctx: BuildContext, values: Values): Promise<
     await fluid.registerBoundaryParticles(softbody.surfaceRange(i));
   const colliders = tank(particles, 0.8, 0.55);
   colliders.upload();
-  const substeps = 4,
-    iterations = 3;
+  const substeps = scaledSubsteps(5, ctx.particles),
+    iterations = 2;
   const loop = new SimLoop(particles, {
     substeps,
     iterations,
@@ -225,6 +225,7 @@ export async function buildBuoyancy(ctx: BuildContext, values: Values): Promise<
     particleCount: initial.length,
     substeps,
     iterations,
+    setReflections: (enabled) => visual.setReflections(enabled),
     prepareRender: () => visual.prepareRender(),
     async update(dt) {
       balanceDt.value = dt;

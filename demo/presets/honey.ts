@@ -25,7 +25,7 @@ import { FluidSystem, ViscositySolver } from '../../src/fluids/index.js';
 import { basin, material } from '../runtime/stage.js';
 import type { BuildContext, Experiment, Values } from '../types.js';
 import { liquidVisual } from './liquids.js';
-import { tank } from './shared.js';
+import { scaledSubsteps, tank } from './shared.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -121,11 +121,16 @@ export async function buildHoney(ctx: BuildContext, values: Values): Promise<Exp
   const bunny = await loadBunny();
   const bunnyCollider = new SDFCollider(particles, bunny.sdf, {
     rotation: new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), BUNNY_YAW),
-    muS: 1.2,
-    muK: 1,
+    muS: values['friction']!,
+    muK: values['friction']! * 0.85,
   });
-  const viscosity = new ViscositySolver({ fluid, viscosity: values['viscosity']!, iterations: 16 });
-  const substeps = 3,
+  const viscosity = new ViscositySolver({
+    fluid,
+    viscosity: values['viscosity']!,
+    // Finer particles need more sweeps to diffuse across the same distance.
+    iterations: Math.round(16 * Math.cbrt(count / 10000)),
+  });
+  const substeps = scaledSubsteps(3, ctx.particles),
     iterations = 2;
   const loop = new SimLoop(particles, {
     substeps,
@@ -212,13 +217,12 @@ export async function buildHoney(ctx: BuildContext, values: Values): Promise<Exp
       // The nozzle circles over the bunny's back and head; the stream leaves
       // with the nozzle's sideways velocity.
       const angle = time * 0.9;
-      source.value.set(
-        bunny.aim.x + Math.cos(angle) * 0.07,
-        values['height']!,
-        bunny.aim.z + Math.sin(angle) * 0.07,
-      );
+      // Emit 11 cm up inside the 14 cm nozzle so the start of the flow is hidden.
+      const x = bunny.aim.x + Math.cos(angle) * 0.07,
+        z = bunny.aim.z + Math.sin(angle) * 0.07;
+      source.value.set(x, values['height']! + 0.11, z);
       sweep.value.set(-Math.sin(angle) * 0.063, 0, Math.cos(angle) * 0.063);
-      nozzle.position.set(source.value.x, source.value.y + 0.07, source.value.z);
+      nozzle.position.set(x, values['height']! + 0.07, z);
       speed.value = Math.max(0.05, 0.8 * values['flow']!);
       travelled += speed.value * dt;
       const layers = Math.min(
@@ -233,6 +237,7 @@ export async function buildHoney(ctx: BuildContext, values: Values): Promise<Exp
       released += layers * perLayer;
       await ctx.renderer.computeAsync(emit);
     },
+    setReflections: (enabled) => visual.setReflections(enabled),
     prepareRender: () => visual.prepareRender(),
     setParticleView: (enabled) => visual.setParticleView(enabled),
     setParameter(key, value) {
@@ -241,6 +246,10 @@ export async function buildHoney(ctx: BuildContext, values: Values): Promise<Exp
       if (key === 'viscosity') viscosity.viscosity.value = value;
       if (key === 'tension') fluid.cohesion?.setGamma(value);
       if (key === 'roughness') visual.surface.appearance.roughness.value = value;
+      if (key === 'friction') {
+        bunnyCollider.muSUniform.value = value;
+        bunnyCollider.muKUniform.value = value * 0.85;
+      }
     },
     dispose() {
       visual.dispose();

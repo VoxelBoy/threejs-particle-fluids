@@ -109,15 +109,29 @@ export interface ColliderFields {
    * forward quaternion after. Resolves U-21.
    */
   readonly rotation: Any;
+  /** Per-slot linear velocity (xyz) — required when `rewind` is passed. */
+  readonly linVel?: Any;
 }
 
+/**
+ * @param rewind  Optional seconds to move the collider back along its linear
+ *   velocity. Kinematic colliders are updated once per frame; rewinding by the
+ *   time left in the frame sweeps them smoothly through the substeps instead
+ *   of jumping, which would fling contacting particles away.
+ */
 export function emitColliderSdf(
   fields: ColliderFields,
   colliderSlot: Any,
-  x: Any,
+  xWorld: Any,
   phiVar: Any,
   gradientVar: Any,
+  rewind?: Any,
 ): void {
+  // Evaluating at x + v·t is the same as moving a translating collider back by v·t.
+  const x: Any =
+    rewind !== undefined && fields.linVel
+      ? xWorld.add(fields.linVel.element(colliderSlot).xyz.mul(rewind)).toVar()
+      : xWorld;
   const packedVal: Any = fields.packed.element(colliderSlot);
   const kind: Any = packedVal.shiftRight(uint(16)).bitAnd(uint(0xffff));
   const flags: Any = packedVal.bitAnd(uint(0xffff));

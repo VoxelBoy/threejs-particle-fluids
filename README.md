@@ -19,24 +19,24 @@ A desktop browser and GPU with WebGPU support are required. Enable hardware acce
 
 ## The collection
 
-| Preset              | Explore                                                                |
-| ------------------- | ---------------------------------------------------------------------- |
-| **Tidal chamber**   | Waves spilling over low weirs and through staggered wall gaps          |
-| **Crown impact**    | A falling drop splashing into a shallow pool                           |
-| **Liquid marble**   | Inward gravity, surface tension, and droplets pulled off by clicking   |
-| **Honey bunny**     | A circling nozzle drizzles viscous honey over the Stanford bunny       |
-| **Buoyancy**        | Textured rubber ducks floating or sinking as their density changes     |
-| **Elastic studies** | 20 textured CC0 forms that bend under moving compression plates        |
-| **Silk in motion**  | Soft red velvet displaced by a moving chrome sphere                    |
-| **Vortex plume**    | Lit volumetric smoke with filtered density and correct scene occlusion |
-| **Smoke bubbles**   | Smoke-filled bubbles rise through water and burst into drifting puffs  |
+| Preset                | Explore                                                                |
+| --------------------- | ---------------------------------------------------------------------- |
+| **Tidal chamber**     | Waves spilling over low weirs and through staggered wall gaps          |
+| **Crown impact**      | A falling drop splashing into a shallow pool                           |
+| **Liquid marble**     | Inward gravity, surface tension, and droplets pulled off by clicking   |
+| **Honey bunny**       | A circling nozzle drizzles viscous honey over the Stanford bunny       |
+| **Buoyancy**          | Textured rubber ducks floating or sinking as their density changes     |
+| **Soft Body Squeeze** | 20 textured CC0 forms squeezed between closing plates                  |
+| **Cloth**             | Soft red velvet displaced by a moving chrome sphere                    |
+| **Vortex plume**      | Lit volumetric smoke with filtered density and correct scene occlusion |
+| **Smoke bubbles**     | Smoke-filled bubbles rise through water and burst into drifting puffs  |
 
 Each preset has a focused parameter panel. Sliders apply immediately; controls marked **↻** restart the experiment when released. Settings are remembered per preset during the current session. **Reset all** restores that preset's defaults.
 
 - **Space** pauses or plays; **R** restarts. Shortcuts do not intercept focused controls.
 - **Drag** to orbit, **right-drag** to pan, and **scroll or pinch** to zoom.
 - **Surface / Particles** reveals the simulation beneath the rendering. In Vortex plume, Particles also reveals the carrier fluid.
-- The **Particles** menu in the viewport's upper-right corner sets the particle budget: Low (1,000), Medium (5,000), High (10,000), Ultra (15,000), or Max (25,000). Presets resize their particles to fill the same volume with that count; Elastic studies splits it across its 20 bodies. Changing it restarts the scene.
+- The **Particles** menu in the viewport's upper-right corner sets the particle budget: Low (5,000), Medium (10,000), High (15,000), Ultra (25,000), or Max (50,000). Presets resize their particles to fill the same volume with that count; Soft Body Squeeze splits it across its 20 bodies. Changing it restarts the scene.
 - **Ambient occlusion** adds contact shading and depth to creases. Disable it under Appearance to reduce rendering cost.
 - **Loop experiment** (off by default) replays a study after its duration.
 - **Click the liquid** to apply a local impulse. In Liquid marble, this pulls a cap outward into droplets. Focus the viewport and press **Enter** for a center-screen impulse. Successful interactions resume playback.

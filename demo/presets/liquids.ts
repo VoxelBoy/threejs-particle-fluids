@@ -18,7 +18,7 @@ import {
 import { createParticleMesh } from '../../src/render/particles.js';
 import { basin, block, pedestal } from '../runtime/stage.js';
 import type { BuildContext, Experiment, Values } from '../types.js';
-import { fitRadius, lattice, tank } from './shared.js';
+import { fitRadius, lattice, scaledSubsteps, tank } from './shared.js';
 
 // TSL's generated operator chains need the broad node type at graph boundaries.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -45,7 +45,13 @@ export function liquidVisual(ctx: BuildContext, fluid: FluidSystem, options: Liq
     bounds: options.bounds,
     colliders: options.colliders,
     solids: options.solids,
-    voxelBudget: fluid.fluidParticles.count > 12000 ? 900_000 : 600_000,
+    // Finer particles earn a finer surface grid, within a memory ceiling.
+    voxelBudget:
+      fluid.fluidParticles.count >= 50_000
+        ? 1_200_000
+        : fluid.fluidParticles.count >= 20_000
+          ? 900_000
+          : 600_000,
     appearance: { color: options.color, ...options.appearance },
     cavities: options.cavities,
     sdfColliders: options.sdfColliders,
@@ -68,6 +74,9 @@ export function liquidVisual(ctx: BuildContext, fluid: FluidSystem, options: Liq
     dots,
     prepareRender() {
       if (!particleView) surface.prepareRender();
+    },
+    setReflections(enabled: boolean) {
+      surface.reflections.value = enabled ? 1 : 0;
     },
     setParticleView(enabled: boolean) {
       particleView = enabled;
@@ -170,7 +179,7 @@ export async function buildFluid(
     }
   }
   colliders.upload();
-  const substeps = 3,
+  const substeps = scaledSubsteps(3, ctx.particles),
     iterations = 2;
   const loop = new SimLoop(particles, {
     substeps,
@@ -217,7 +226,7 @@ export async function buildFluid(
   })().compute(initial.length);
   // The marble takes a broad pull; pools get a tighter splash.
   const pullRadius = kind === 'marble' ? 0.4 : 0.22;
-  const strength = kind === 'marble' ? 2.4 : 3.8;
+  const strength = kind === 'marble' ? 0.8 : 3.8;
   const impulse = Fn(() => {
     const i: Any = instanceIndex;
     const pos: Any = particles.positions.element(i).xyz;
@@ -244,6 +253,7 @@ export async function buildFluid(
         await ctx.renderer.computeAsync(attraction);
       }
     },
+    setReflections: (enabled) => visual.setReflections(enabled),
     prepareRender: () => visual.prepareRender(),
     setParticleView: (enabled) => visual.setParticleView(enabled),
     setParameter(key, value) {

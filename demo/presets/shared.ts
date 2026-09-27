@@ -61,3 +61,14 @@ export function fitRadius(
   for (let i = 0; i < 5; i++) radius *= Math.cbrt(Math.max(1, fill(radius).length) / target);
   return radius;
 }
+
+/**
+ * Substeps for a particle budget. Presets fill a fixed volume (or area, for
+ * cloth), so spacing shrinks as the count grows while speeds stay the same;
+ * keeping motion per substep a fixed fraction of the spacing means scaling
+ * substeps by 1/spacing. `base` is the preset's setting at Medium (10k).
+ */
+export function scaledSubsteps(base: number, particles: number, dimensions: 2 | 3 = 3): number {
+  const scale = (particles / 10000) ** (1 / dimensions);
+  return Math.max(base, Math.ceil(base * scale - 0.1));
+}

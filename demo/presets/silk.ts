@@ -4,6 +4,7 @@ import { ParticleSystem, PrimitiveSet, SimLoop, createXpbdUniforms } from '../..
 import { ClothSystem, createClothSurface, fromBufferGeometry } from '../../src/cloth/index.js';
 import { createParticleMesh } from '../../src/render/particles.js';
 import { clothStand } from '../runtime/stage.js';
+import { scaledSubsteps } from './shared.js';
 import type { BuildContext, Experiment, Values } from '../types.js';
 
 export function buildCloth(ctx: BuildContext, values: Values): Experiment {
@@ -19,10 +20,11 @@ export function buildCloth(ctx: BuildContext, values: Values): Experiment {
     vertices.setZ(i, Math.sin(vertices.getX(i) * 18) * 0.018 * drape);
   }
   const graph = fromBufferGeometry(geometry, { surfaceDensity: 0.08, pinnedIndices });
+  // Collision thickness: about 0.7 grid spacings, so contacts overlap smoothly.
   const particles = new ParticleSystem(
     ctx.renderer,
     graph.positions.length,
-    0.018 * (30 / segments),
+    Math.max(0.008, 0.7 * (1.26 / segments)),
   );
   particles.uploadParticles(
     graph.positions.map((position, i) => ({
@@ -49,8 +51,8 @@ export function buildCloth(ctx: BuildContext, values: Values): Experiment {
     dragCoeff: 0.18,
     liftCoeff: 0.02,
   });
-  const substeps = 4,
-    iterations = 3;
+  const substeps = scaledSubsteps(5, ctx.particles, 2),
+    iterations = 2;
   const ball = new Mesh(
     new SphereGeometry(0.23, 64, 48),
     new MeshPhysicalNodeMaterial({
@@ -64,7 +66,8 @@ export function buildCloth(ctx: BuildContext, values: Values): Experiment {
   ball.castShadow = true;
   const colliders = new PrimitiveSet(particles, { capacity: 2 });
   colliders.addPlane(new Vector3(0, 1, 0), new Vector3(0, 0.01, 0));
-  const sphere = colliders.addSphere(ball.position, 0.23, { muS: 0.08, muK: 0.04 });
+  // Enough grip that contacting cloth moves with the ball instead of chattering over it.
+  const sphere = colliders.addSphere(ball.position, 0.23, { muS: 0.4, muK: 0.3 });
   colliders.attachToObject3D(sphere, ball);
   colliders.upload();
   const loop = new SimLoop(particles, {

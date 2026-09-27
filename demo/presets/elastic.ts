@@ -19,10 +19,10 @@ import {
 import { SoftbodyMesh, SoftbodySystem, type SoftbodyDef } from '../../src/softbody/index.js';
 import { createParticleMesh } from '../../src/render/particles.js';
 import { basin, block, panelFrame } from '../runtime/stage.js';
-import type { BuildContext, Experiment, Values } from '../types.js';
-import { tank } from './shared.js';
+import { ELASTIC_BODY_BUDGETS, type BuildContext, type Experiment, type Values } from '../types.js';
+import { scaledSubsteps, tank } from './shared.js';
 
-interface SampledBody {
+export interface SampledBody {
   scale: number;
   positions: number[];
   surface: number[];
@@ -33,8 +33,6 @@ export interface ElasticAsset {
   normals: number[];
   uvs: number[];
   indices: number[];
-  /** Particle templates keyed by per-body budget (see prepare-elastic-assets). */
-  templates: Record<string, SampledBody>;
 }
 
 const names = ['donut', 'croissant', 'banana', 'ginger-bread'] as const;
@@ -42,11 +40,22 @@ const names = ['donut', 'croissant', 'banana', 'ginger-bread'] as const;
 export async function buildElastic(ctx: BuildContext, values: Values): Promise<Experiment> {
   // Local CC0 assets are smoothed and voxelized ahead of time. No runtime asset
   // service or CPU voxelization is needed when switching presets or quality.
+  // Twenty bodies share the budget; use the closest baked template.
+  const perBody = ELASTIC_BODY_BUDGETS.reduce((best, b) =>
+    Math.abs(b - ctx.particles / 20) < Math.abs(best - ctx.particles / 20) ? b : best,
+  );
+  const load = async <T>(file: string): Promise<T> => {
+    const response = await fetch(`${import.meta.env.BASE_URL}models/elastic/${file}.json`);
+    if (!response.ok) throw new Error(`Could not load the ${file} soft-body asset.`);
+    return (await response.json()) as T;
+  };
   const assets = await Promise.all(
     names.map(async (name) => {
-      const response = await fetch(`${import.meta.env.BASE_URL}models/elastic/${name}.json`);
-      if (!response.ok) throw new Error(`Could not load the ${name} soft-body mesh.`);
-      return (await response.json()) as ElasticAsset;
+      const [mesh, shape] = await Promise.all([
+        load<ElasticAsset>(name),
+        load<SampledBody>(`${name}-${perBody}`),
+      ]);
+      return { ...mesh, shape };
     }),
   );
   const texture = await new TextureLoader().loadAsync(
@@ -62,26 +71,36 @@ export async function buildElastic(ctx: BuildContext, values: Values): Promise<E
     roughness: 0.62,
     metalness: 0,
   });
-  // Twenty bodies share the budget; use the closest baked template.
-  const budgets = Object.keys(assets[0]!.templates).map(Number);
-  const perBody = budgets.reduce((best, b) =>
-    Math.abs(b - ctx.particles / 20) < Math.abs(best - ctx.particles / 20) ? b : best,
-  );
   const radius = 0.015 * Math.cbrt(200 / perBody);
   const initial: ParticleInit[] = [];
+  // Seeded so every run (and every particle level) starts from the same layout.
+  let seed = 0x9e3779b9;
+  const random = () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
   const bodies: SoftbodyDef[] = [];
   const geometries: BufferGeometry[] = [];
   for (let n = 0; n < 20; n++) {
     const asset = assets[n % assets.length]!;
-    const shape = asset.templates[perBody]!;
+    const shape = asset.shape;
     const count = shape.positions.length / 3;
     const start = initial.length;
+    // Stagger the grid, jitter each form, and tumble it so rings (donuts)
+    // don't stack in register and thread through each other as they fall.
+    const layer = Math.floor(n / 12);
     const center = new Vector3(
-      ((n % 4) - 1.5) * 0.44,
-      values['height']! + Math.floor(n / 12) * 0.48,
-      ((Math.floor(n / 4) % 3) - 1) * 0.47,
+      ((n % 4) - 1.5) * 0.44 + (layer ? 0.22 : 0) + (random() - 0.5) * 0.12,
+      values['height']! + layer * 0.55 + random() * 0.14,
+      ((Math.floor(n / 4) % 3) - 1) * 0.47 + (random() - 0.5) * 0.12,
     );
-    const rotation = new Euler(0.4 + (n % 3) * 0.32, (n % 5) * 0.42 - 0.8, ((n % 4) - 1.5) * 0.23);
+    const rotation = new Euler(
+      random() * Math.PI * 2,
+      random() * Math.PI * 2,
+      random() * Math.PI * 2,
+    );
     const rest = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
       const p = new Vector3()
@@ -148,8 +167,8 @@ export async function buildElastic(ctx: BuildContext, values: Values): Promise<E
     return plate;
   });
   colliders.upload();
-  const substeps = 4,
-    iterations = 4;
+  const substeps = scaledSubsteps(6, ctx.particles),
+    iterations = 2;
   const loop = new SimLoop(particles, {
     substeps,
     iterations,
@@ -189,7 +208,8 @@ export async function buildElastic(ctx: BuildContext, values: Values): Promise<E
     iterations,
     update(dt, time) {
       const cycle = (1 - Math.cos(Math.max(0, time - 1) * 1.05)) / 2;
-      const distance = 1.06 - cycle * values['compression']! * 0.85;
+      // At the default compression (0.8) the plates close to 0.19 m from centre.
+      const distance = Math.max(0.1, 1.06 - cycle * values['compression']! * 1.0875);
       plates[0]!.position.x = -distance;
       plates[1]!.position.x = distance;
       colliders.updateKinematics(dt);

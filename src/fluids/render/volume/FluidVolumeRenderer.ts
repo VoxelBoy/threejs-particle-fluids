@@ -105,6 +105,7 @@ export interface FluidVolumeRendererOptions {
 
 const MAX_STEPS = 128;
 const THICKNESS_STEPS = 32;
+const SSR_STEPS = 24;
 
 /**
  * Ray-marched liquid surface.
@@ -120,6 +121,8 @@ const THICKNESS_STEPS = 32;
 export class FluidVolumeRenderer {
   readonly mesh: Mesh;
   readonly field: SurfaceField;
+  /** 1 traces screen-space reflections of the scene; 0 reflects only the environment. */
+  readonly reflections = uniform(1, 'float');
   readonly appearance: {
     readonly color: ReturnType<typeof uniform<'color', Color>>;
     readonly attenuationDistance: ReturnType<typeof uniform<'float', number>>;
@@ -339,9 +342,13 @@ export class FluidVolumeRenderer {
             wasInside.assign(0);
           });
         }
-        If(s.r.greaterThan(cavities ? 3.5 : 1.5).or(travel.greaterThan(exitInterval.y)), () => {
-          Break();
-        });
+        // In cavity mode keep marching through bubbles as large as the field band.
+        If(
+          s.r.greaterThan(cavities ? FIELD_BAND - 0.5 : 1.5).or(travel.greaterThan(exitInterval.y)),
+          () => {
+            Break();
+          },
+        );
       });
       // Find where the bent ray meets the opaque scene: start from the
       // straight-through distance, then re-project against the depth buffer
@@ -364,17 +371,25 @@ export class FluidVolumeRenderer {
         .toVar();
       for (let k = 0; k < 2; k++) {
         const guess: Any = opaqueAt(toUV(hitPoint.add(transmitted.mul(reach))));
+        const along: Any = guess.sub(hitPoint).dot(transmitted);
+        // A step that lands on something in front of the surface (a floating
+        // duck, say) says nothing about the bent ray; keep the last estimate.
+        const behindSurface: Any = guess.sub(cameraPosition).length().greaterThan(surface);
         reach.assign(
-          guess
-            .sub(hitPoint)
-            .dot(transmitted)
-            .clamp(0, travel.add(voxel * 4)),
+          select(behindSurface.and(along.greaterThan(0)), along.min(travel.add(voxel * 4)), reach),
         );
       }
+      // Prefer the refined point, then the liquid exit point; never pull colour
+      // from geometry in front of the surface.
+      const occluded = (uv: Any): Any =>
+        opaqueAt(uv).sub(cameraPosition).length().lessThan(surface);
       const bentUV: Any = toUV(hitPoint.add(transmitted.mul(reach))).toVar();
-      // Never pull colour from geometry in front of the surface.
-      const bentDistance: Any = opaqueAt(bentUV).sub(cameraPosition).length();
-      const refractUV: Any = select(bentDistance.lessThan(surface), screenUV, bentUV);
+      const exitUV: Any = toUV(hitPoint.add(transmitted.mul(travel))).toVar();
+      const refractUV: Any = select(
+        occluded(bentUV).not(),
+        bentUV,
+        select(occluded(exitUV).not(), exitUV, screenUV),
+      );
       const behind: Any = viewportSharedTexture(refractUV).rgb;
       const depth: Any = optical.div(attenuation);
       const transmittance: Any = tint.pow(vec3(depth));
@@ -401,7 +416,62 @@ export class FluidVolumeRenderer {
       // Surface reflection: environment plus a GGX highlight from the key light.
       const f0: Any = a.ior.sub(1).div(a.ior.add(1)).pow(2);
       const fresnel: Any = f0.add(f0.oneMinus().mul(cosV.oneMinus().pow(5)));
-      const reflected: Any = envSample(reflect(viewDirection, n), roughness).mul(a.envIntensity);
+      const reflectDirection: Any = reflect(viewDirection, n).toVar();
+      const reflected: Any = envSample(reflectDirection, roughness).mul(a.envIntensity).toVar();
+      // Screen-space reflections: march the reflected ray against the depth
+      // buffer with growing steps, refine the crossing, and fade toward the
+      // environment where the ray leaves the screen or finds nothing.
+      If(this.reflections.greaterThan(0.5), () => {
+        const t: Any = float(voxel).toVar();
+        const previous: Any = float(0).toVar();
+        const found: Any = float(0).toVar();
+        const hitUV: Any = vec2(0).toVar();
+        Loop(SSR_STEPS, () => {
+          const p: Any = hitPoint.add(reflectDirection.mul(t));
+          const clip: Any = cameraProjectionMatrix.mul(cameraViewMatrix).mul(vec4(p, 1));
+          If(clip.w.lessThanEqual(0), () => {
+            Break();
+          });
+          const uv: Any = vec2(
+            clip.x.div(clip.w).mul(0.5).add(0.5),
+            clip.y.div(clip.w).mul(-0.5).add(0.5),
+          );
+          If(
+            uv.x.lessThan(0).or(uv.x.greaterThan(1)).or(uv.y.lessThan(0)).or(uv.y.greaterThan(1)),
+            () => {
+              Break();
+            },
+          );
+          const sceneDistance: Any = opaqueAt(uv).sub(cameraPosition).length();
+          const depth: Any = p.sub(cameraPosition).length().sub(sceneDistance);
+          If(depth.greaterThan(0).and(depth.lessThan(t.mul(0.35).add(0.05))), () => {
+            // Bisect between the last point in front and this one behind.
+            const lo: Any = previous.toVar();
+            const hi: Any = t.toVar();
+            for (let k = 0; k < 4; k++) {
+              const mid: Any = lo.add(hi).mul(0.5);
+              const q: Any = hitPoint.add(reflectDirection.mul(mid));
+              const qUV: Any = toUV(q);
+              const behindScene: Any = q
+                .sub(cameraPosition)
+                .length()
+                .greaterThan(opaqueAt(qUV).sub(cameraPosition).length());
+              hi.assign(select(behindScene, mid, hi));
+              lo.assign(select(behindScene, lo, mid));
+            }
+            hitUV.assign(toUV(hitPoint.add(reflectDirection.mul(hi))));
+            found.assign(1);
+            Break();
+          });
+          previous.assign(t);
+          t.mulAssign(1.3);
+        });
+        const edge: Any = hitUV.min(vec2(1).sub(hitUV)).mul(12).clamp(0, 1);
+        const confidence: Any = found
+          .mul(edge.x.mul(edge.y))
+          .mul(roughness.mul(-2.5).add(1).clamp(0, 1));
+        reflected.assign(mix(reflected, viewportSharedTexture(hitUV).rgb, confidence));
+      });
       const l: Any = this.sunDirection;
       const h: Any = l.add(v).normalize();
       const nl: Any = n.dot(l).max(0);

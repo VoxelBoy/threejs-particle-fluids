@@ -55,8 +55,14 @@ app.innerHTML = `
       <div class="render-settings">
         <div class="section-label"><span>APPEARANCE</span></div>
         <fieldset class="segmented"><legend class="sr-only">Render mode</legend><label><input type="radio" name="render-mode" value="surface" checked><span>Surface</span></label><label><input type="radio" name="render-mode" value="particles"><span>Particles</span></label></fieldset>
+        <label class="setting-row switch-row" for="reflections"><span>Reflections</span><input type="checkbox" id="reflections" checked><span class="switch" aria-hidden="true"></span></label>
         <label class="setting-row switch-row" for="ambient-occlusion"><span>Ambient occlusion</span><input type="checkbox" id="ambient-occlusion" checked><span class="switch" aria-hidden="true"></span></label>
         <label class="setting-row switch-row" for="loop"><span>Loop experiment</span><input type="checkbox" id="loop"><span class="switch" aria-hidden="true"></span></label>
+        <div class="section-label"><span>ADVANCED</span></div>
+        <div class="setting-row"><label for="substeps" title="Solver substeps per frame. Auto scales with the particle count so finer particles stay stable.">Substeps</label><select id="substeps"><option value="auto">Auto</option>${Array.from(
+          { length: 16 },
+          (_, i) => `<option value="${i + 1}">${i + 1}</option>`,
+        ).join('')}</select></div>
       </div>
     </aside>
   </main>
@@ -77,7 +83,10 @@ let playing = !matchMedia('(prefers-reduced-motion: reduce)').matches;
 let looping = false;
 let particleLevel: ParticleLevel = 'medium';
 let particleView = false;
+/** Fixed solver substeps, or null to use the preset's count-scaled default. */
+let substepOverride: number | null = null;
 let ambientOcclusion = true;
+let reflections = true;
 let loading = true;
 let toastTimer = 0;
 let structuralTimer = 0;
@@ -176,7 +185,11 @@ function rebuild(preserveCamera = true): void {
         next.playing = playing;
         next.looping = looping;
         next.ambientOcclusion = ambientOcclusion;
+        el('substeps').querySelector('option[value="auto"]')!.textContent =
+          `Auto (${next.experiment.substeps})`;
+        if (substepOverride !== null) next.experiment.loop.substeps = substepOverride;
         next.experiment.setParticleView?.(particleView);
+        next.experiment.setReflections?.(reflections);
         host.replaceChildren(next.canvas);
         el('interaction-hint').textContent = next.experiment.interact
           ? 'Click the liquid to splash · Drag to orbit · Scroll to zoom'
@@ -281,9 +294,19 @@ el<HTMLSelectElement>('particle-level').addEventListener('change', (event) => {
   particleLevel = (event.target as HTMLSelectElement).value as ParticleLevel;
   rebuild();
 });
+el<HTMLSelectElement>('substeps').addEventListener('change', (event) => {
+  const value = (event.target as HTMLSelectElement).value;
+  substepOverride = value === 'auto' ? null : Number(value);
+  // Applies live: the solver only re-chains its kernels.
+  if (world) world.experiment.loop.substeps = substepOverride ?? world.experiment.substeps;
+});
 el<HTMLInputElement>('loop').addEventListener('change', (event) => {
   looping = (event.target as HTMLInputElement).checked;
   if (world) world.looping = looping;
+});
+el<HTMLInputElement>('reflections').addEventListener('change', (event) => {
+  reflections = (event.target as HTMLInputElement).checked;
+  world?.experiment.setReflections?.(reflections);
 });
 el<HTMLInputElement>('ambient-occlusion').addEventListener('change', (event) => {
   ambientOcclusion = (event.target as HTMLInputElement).checked;

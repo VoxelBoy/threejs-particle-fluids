@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
-import type { ElasticAsset } from '../../../demo/presets/elastic.js';
+import type { ElasticAsset, SampledBody } from '../../../demo/presets/elastic.js';
+import { ELASTIC_BODY_BUDGETS } from '../../../demo/types.js';
 
 for (const name of ['donut', 'croissant', 'banana', 'ginger-bread']) {
   const asset = JSON.parse(
@@ -26,9 +27,14 @@ for (const name of ['donut', 'croissant', 'banana', 'ginger-bread']) {
       else shared.set(key, normal);
     }
   });
-  for (const budget of [50, 250, 500, 750, 1250]) {
+  for (const budget of ELASTIC_BODY_BUDGETS) {
     it(`${name} has a connected, non-overlapping ${budget}-particle template`, () => {
-      const body = asset.templates[budget]!;
+      const body = JSON.parse(
+        readFileSync(
+          new URL(`../../../public/models/elastic/${name}-${budget}.json`, import.meta.url),
+          'utf8',
+        ),
+      ) as SampledBody;
       const count = body.positions.length / 3;
       // Thin limbs may keep a few samples beyond tiny budgets rather than split.
       expect(count).toBeGreaterThanOrEqual(budget);

@@ -1,5 +1,5 @@
 import type { Vector3 } from 'three';
-import { instancedArray } from 'three/tsl';
+import { Fn, instancedArray, uniform } from 'three/tsl';
 import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 
 import { buildIntegrationKernels, type IntegrationKernels } from './integrate.js';
@@ -40,6 +40,9 @@ import {
   type PrimitiveSet,
   type SDFCollider,
 } from './collision/index.js';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Any = any;
 
 export interface ContactOptions {
   /**
@@ -337,7 +340,6 @@ export class SimLoop {
   readonly kernels: IntegrationKernels;
   readonly xpbd: XpbdUniforms;
   readonly scheduler: ConstraintScheduler;
-  readonly substeps: number;
   readonly iterations: number;
 
   /** Phase 05 — present if and only if `contact` was passed to the ctor. */
@@ -377,7 +379,15 @@ export class SimLoop {
    */
   readonly colliderKernels?: SimLoopColliderKernels;
 
-  private readonly pipeline: ComputeNode[];
+  private pipeline: ComputeNode[];
+  /** One substep's kernels; the frame pipeline repeats it `substeps` times. */
+  private readonly substepChain: ComputeNode[];
+  private substepCount: number;
+  private readonly substepsUniform = uniform(1, 'float');
+  /** Dispatched once at the start of every frame, before the first substep. */
+  private readonly frameStartKernels: ComputeNode[] = [];
+  /** Dispatched after every substep. */
+  private readonly substepEndKernels: ComputeNode[] = [];
 
   constructor(particles: ParticleSystem, options: SimLoopOptions = {}) {
     const substeps = options.substeps ?? 4;
@@ -392,7 +402,7 @@ export class SimLoop {
     this.particles = particles;
     this.kernels = buildIntegrationKernels(particles);
     this.xpbd = options.xpbd ?? createXpbdUniforms(1 / 60);
-    this.substeps = substeps;
+    this.substepCount = substeps;
     this.iterations = iterations;
     this.scheduler = new ConstraintScheduler();
 
@@ -681,6 +691,19 @@ export class SimLoop {
         preIterKernels.push(primitives.resetLambdaKernel);
         perIterKernels.push(colliderSolve);
         postIterKernels.push(colliderVelocityFriction);
+        // Sweep moving colliders through the frame: the clock starts at the
+        // time left after the first substep and ticks down once per substep.
+        const clock: Any = primitives.motionClock.element(0);
+        this.frameStartKernels.push(
+          Fn(() => {
+            clock.assign(this.xpbd.dt.mul(this.substepsUniform.sub(1)));
+          })().compute(1),
+        );
+        this.substepEndKernels.push(
+          Fn(() => {
+            clock.assign(clock.sub(this.xpbd.dt).max(0));
+          })().compute(1),
+        );
         primitiveTriple = {
           resetLambda: primitives.resetLambdaKernel,
           solve: colliderSolve,
@@ -848,9 +871,28 @@ export class SimLoop {
 
     // Repeat the substep chain S times. The one-`computeAsync` pattern for
     // the whole frame is preserved.
-    const frameChain: ComputeNode[] = [];
-    for (let s = 0; s < substeps; s++) frameChain.push(...substepChain);
-    this.pipeline = frameChain;
+    this.substepChain = substepChain;
+    this.pipeline = this.buildFramePipeline();
+  }
+
+  /** Substeps per frame. Assigning rebuilds the frame pipeline; no kernels recompile. */
+  get substeps(): number {
+    return this.substepCount;
+  }
+
+  set substeps(value: number) {
+    if (!Number.isInteger(value) || value <= 0)
+      throw new Error(`SimLoop: substeps must be a positive integer, got ${value}`);
+    this.substepCount = value;
+    this.pipeline = this.buildFramePipeline();
+  }
+
+  private buildFramePipeline(): ComputeNode[] {
+    this.substepsUniform.value = this.substepCount;
+    const frameChain: ComputeNode[] = [...this.frameStartKernels];
+    for (let s = 0; s < this.substepCount; s++)
+      frameChain.push(...this.substepChain, ...this.substepEndKernels);
+    return frameChain;
   }
 
   /** Mutable gravity vector — see {@link IntegrationKernels.gravity}. */
