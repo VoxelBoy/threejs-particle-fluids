@@ -27,6 +27,8 @@ export interface Preset {
   target: readonly [number, number, number];
   duration: number;
   controls: readonly Control[];
+  /** Particle count per level, when the defaults don't suit the material. */
+  particleCounts?: Readonly<Record<ParticleLevel, number>>;
   build(context: BuildContext, values: Values): Promise<Experiment> | Experiment;
 }
 /** Particle budgets offered in the viewport. Presets size their particles to match. */
@@ -38,6 +40,11 @@ export const PARTICLE_LEVELS = [
   { id: 'max', label: 'Max', count: 50000 },
 ] as const;
 export type ParticleLevel = (typeof PARTICLE_LEVELS)[number]['id'];
+export function particleCount(preset: Preset, level: ParticleLevel): number {
+  return (
+    preset.particleCounts?.[level] ?? PARTICLE_LEVELS.find((entry) => entry.id === level)!.count
+  );
+}
 /** Elastic studies splits each level across 20 bodies; one baked template per level. */
 export const ELASTIC_BODY_BUDGETS = PARTICLE_LEVELS.map((level) => level.count / 20);
 

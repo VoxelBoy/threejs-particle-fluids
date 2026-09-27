@@ -311,6 +311,7 @@ export const presets: readonly Preset[] = [
         restart: true,
       },
     ],
+    particleCounts: { low: 5000, medium: 10000, high: 15000, ultra: 20000, max: 25000 },
     build: buildBunnyLineup,
   },
   {
@@ -394,6 +395,7 @@ export const presets: readonly Preset[] = [
       },
       gravity(6),
     ],
+    particleCounts: { low: 5000, medium: 10000, high: 12500, ultra: 15000, max: 20000 },
     build: buildCloth,
   },
   {
@@ -428,7 +430,7 @@ export const presets: readonly Preset[] = [
         min: 0,
         max: 1,
         step: 0.05,
-        value: 0.9,
+        value: 0.8,
       },
       {
         key: 'friction',
@@ -437,9 +439,19 @@ export const presets: readonly Preset[] = [
         min: 0,
         max: 1.5,
         step: 0.05,
-        value: 0.25,
+        value: 1,
+      },
+      {
+        key: 'damping',
+        label: 'Damping',
+        description: 'Calms ripples in stretched fabric so it settles sooner.',
+        min: 0,
+        max: 0.6,
+        step: 0.02,
+        value: 0.2,
       },
     ],
+    particleCounts: { low: 5000, medium: 10000, high: 12500, ultra: 15000, max: 20000 },
     build: buildClothDrop,
   },
   {

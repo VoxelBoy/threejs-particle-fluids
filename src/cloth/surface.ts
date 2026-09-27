@@ -25,14 +25,21 @@ export interface ClothSurfaceOptions {
   readonly offset?: number;
   readonly subdivisions?: number;
   readonly material?: MeshPhysicalNodeMaterial;
+  /**
+   * Fit a cubic B-spline through the particles instead of a Catmull-Rom
+   * spline. Catmull-Rom passes through every particle, so grid-scale buckling
+   * shows as lumps; the B-spline stays close to the particles and filters that
+   * out while keeping larger folds. Default `false`.
+   */
+  readonly smooth?: boolean;
 }
 
 /** Bicubic geometry and analytic smooth normals from the live simulation grid. */
 export function createClothSurface(options: ClothSurfaceOptions): Mesh {
-  const { particles, columns, rows, offset = 0, subdivisions = 3 } = options;
+  const { particles, columns, rows, offset = 0, subdivisions = 3, smooth = false } = options;
   if (columns < 2 || rows < 2 || offset < 0 || offset + columns * rows > particles.capacity)
     throw new Error('Cloth surface grid must fit in the particle buffer.');
-  const weights = (t: Any) => {
+  const catmullRom = (t: Any) => {
     const t2 = t.mul(t),
       t3 = t2.mul(t);
     return [
@@ -42,12 +49,36 @@ export function createClothSurface(options: ClothSurfaceOptions): Mesh {
       t3.sub(t2).mul(0.5),
     ];
   };
-  const derivatives = (t: Any) => [
+  const catmullRomDerivatives = (t: Any) => [
     t.mul(2).sub(t.mul(t).mul(1.5)).sub(0.5),
     t.mul(-5).add(t.mul(t).mul(4.5)),
     t.mul(4).sub(t.mul(t).mul(4.5)).add(0.5),
     t.mul(t).mul(1.5).sub(t),
   ];
+  // Uniform cubic B-spline basis and its derivative.
+  const bSpline = (t: Any) => {
+    const t2 = t.mul(t),
+      t3 = t2.mul(t),
+      s = float(1).sub(t);
+    return [
+      s.mul(s).mul(s).div(6),
+      t3.mul(3).sub(t2.mul(6)).add(4).div(6),
+      t3.mul(-3).add(t2.mul(3)).add(t.mul(3)).add(1).div(6),
+      t3.div(6),
+    ];
+  };
+  const bSplineDerivatives = (t: Any) => {
+    const t2 = t.mul(t),
+      s = float(1).sub(t);
+    return [
+      s.mul(s).mul(-0.5),
+      t2.mul(1.5).sub(t.mul(2)),
+      t2.mul(-1.5).add(t).add(0.5),
+      t2.mul(0.5),
+    ];
+  };
+  const weights = smooth ? bSpline : catmullRom;
+  const derivatives = smooth ? bSplineDerivatives : catmullRomDerivatives;
   const frame: Any = Fn(() => {
     const x: Any = uv()
       .x.mul(columns - 1)

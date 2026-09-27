@@ -1,6 +1,8 @@
 import { DoubleSide, Mesh, PlaneGeometry, Quaternion, SphereGeometry, Vector3 } from 'three';
+import { Fn, instanceIndex, instancedArray, mix, select, uniform, vec4 } from 'three/tsl';
 import { MeshPhysicalNodeMaterial } from 'three/webgpu';
 import {
+  HashGrid,
   ParticleSystem,
   PrimitiveSet,
   SDFCollider,
@@ -13,6 +15,10 @@ import { clothStand, platform } from '../runtime/stage.js';
 import { BUNNY_YAW, loadBunny } from './honey.js';
 import { scaledSubsteps } from './shared.js';
 import type { BuildContext, Experiment, Values } from '../types.js';
+
+// TSL's generated operator chains need the broad node type at graph boundaries.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Any = any;
 
 function velvet(): MeshPhysicalNodeMaterial {
   return new MeshPhysicalNodeMaterial({
@@ -104,6 +110,7 @@ export function buildCloth(ctx: BuildContext, values: Values): Experiment {
     columns: segments + 1,
     rows: segments + 1,
     subdivisions: 3,
+    smooth: true,
     material: velvet(),
   });
   geometry.dispose();
@@ -169,11 +176,11 @@ export async function buildClothDrop(ctx: BuildContext, values: Values): Promise
   }
   const graph = fromBufferGeometry(geometry, { surfaceDensity: 0.08 });
   const spacing = size / segments;
-  const particles = new ParticleSystem(
-    ctx.renderer,
-    graph.positions.length,
-    Math.max(0.008, 0.7 * spacing),
-  );
+  // Under half the grid spacing, so neighbouring particles never touch and
+  // cloth-on-cloth contacts only fire between separate folds. A particle from
+  // another fold still can't pass through a grid cell's centre.
+  const radius = 0.45 * spacing;
+  const particles = new ParticleSystem(ctx.renderer, graph.positions.length, radius);
   particles.uploadParticles(
     graph.positions.map((position, i) => ({
       position,
@@ -206,18 +213,47 @@ export async function buildClothDrop(ctx: BuildContext, values: Values): Promise
     rotation: new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), BUNNY_YAW),
     // Keep the gap between neighbouring particles clear of the bunny, so its
     // thin ears can't slip between them.
-    thickness: 0.6 * spacing,
+    thickness: 1.3 * spacing - radius,
     muS: values['friction']!,
     muK: values['friction']! * 0.85,
   });
   // Thin ears need short steps and frequent collision solves to stay covered.
+  // Pull each particle's velocity toward its four grid neighbours' after every
+  // substep. This bleeds off the jitter where stretched cloth fights the
+  // bunny, without slowing the cloth's fall or slide as a whole.
+  const columns = segments + 1;
+  const damping = uniform(values['damping']!);
+  const smoothed = instancedArray(particles.capacity, 'vec4');
+  const smooth = Fn(() => {
+    const i: Any = instanceIndex;
+    const column: Any = i.mod(columns);
+    const row: Any = i.div(columns);
+    const at = (valid: Any, j: Any): Any => particles.velocities.element(select(valid, j, i)).xyz;
+    const v: Any = particles.velocities.element(i);
+    const average: Any = at(column.greaterThan(0), i.sub(1))
+      .add(at(column.lessThan(columns - 1), i.add(1)))
+      .add(at(row.greaterThan(0), i.sub(columns)))
+      .add(at(row.lessThan(columns - 1), i.add(columns)))
+      .mul(0.25);
+    smoothed.element(i).assign(vec4(mix(v.xyz, average, damping), v.w));
+  })().compute(particles.capacity);
+  const apply = Fn(() => {
+    particles.velocities.element(instanceIndex).assign(smoothed.element(instanceIndex));
+  })().compute(particles.capacity);
+  const hashGrid = new HashGrid(particles, { cellSize: radius * 4 });
   const substeps = scaledSubsteps(12, ctx.particles, 2),
     iterations = 2;
   const loop = new SimLoop(particles, {
     substeps,
     iterations,
     xpbd,
-    materials: [cloth],
+    hashGrid,
+    materials: [cloth, { postAdvectKernels: [smooth, apply] }],
+    contact: {
+      hashGrid,
+      maxContacts: particles.capacity * 8,
+      friction: { muS: 0.3, muK: 0.2 },
+    },
     colliders: { colliders, sdfColliders: [bunnyCollider] },
   });
   loop.gravity.set(0, -values['gravity']!, 0);
@@ -227,6 +263,7 @@ export async function buildClothDrop(ctx: BuildContext, values: Values): Promise
     columns: segments + 1,
     rows: segments + 1,
     subdivisions: 3,
+    smooth: true,
     material: velvet(),
   });
   geometry.dispose();
@@ -253,6 +290,7 @@ export async function buildClothDrop(ctx: BuildContext, values: Values): Promise
         bunnyCollider.muSUniform.value = value;
         bunnyCollider.muKUniform.value = value * 0.85;
       }
+      if (key === 'damping') damping.value = value;
     },
     setParticleView(enabled) {
       mesh.visible = !enabled;
@@ -262,6 +300,7 @@ export async function buildClothDrop(ctx: BuildContext, values: Values): Promise
       particles.destroy();
       colliders.destroy();
       bunnyCollider.destroy();
+      hashGrid.destroy();
     },
   };
 }

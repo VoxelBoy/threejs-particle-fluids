@@ -2,7 +2,13 @@ import './style.css';
 import { icon } from './icons.js';
 import { defaults, presets } from './presets/index.js';
 import { World, type Diagnostics } from './runtime/world.js';
-import { PARTICLE_LEVELS, type ParticleLevel, type Preset, type Values } from './types.js';
+import {
+  PARTICLE_LEVELS,
+  particleCount,
+  type ParticleLevel,
+  type Preset,
+  type Values,
+} from './types.js';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `
@@ -149,7 +155,7 @@ function rebuild(preserveCamera = true): void {
   const token = ++generation;
   const preset = selected;
   const config = { ...values };
-  const count = PARTICLE_LEVELS.find((level) => level.id === particleLevel)!.count;
+  const count = particleCount(preset, particleLevel);
   const camera = preserveCamera ? world?.cameraState() : undefined;
   setBusy(true);
   el('error').hidden = true;
@@ -262,6 +268,11 @@ function selectPreset(preset: Preset, updateUrl = true): void {
   el('description').textContent = preset.description;
   el('preset-index').textContent = `${preset.number} / ${String(presets.length).padStart(2, '0')}`;
   document.title = `${preset.name} — Three.js Particle Fluids`;
+  // Each preset lists its own counts for the shared quality levels.
+  for (const option of el<HTMLSelectElement>('particle-level').options) {
+    const level = PARTICLE_LEVELS.find((entry) => entry.id === option.value)!;
+    option.textContent = `${level.label} · ${particleCount(preset, level.id).toLocaleString('en-US')}`;
+  }
   document
     .querySelectorAll<HTMLButtonElement>('[data-preset]')
     .forEach((button) =>
