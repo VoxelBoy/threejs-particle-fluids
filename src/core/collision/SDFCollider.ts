@@ -77,6 +77,14 @@ export interface SDFColliderOptions extends SDFColliderFriction {
    * anyway. Defaults to `1`. Must be strictly positive.
    */
   readonly scale?: number;
+  /**
+   * Extra contact distance beyond the particle radius, in metres. Default
+   * `0`. Sparse particle surfaces such as cloth leave gaps between
+   * particles that thin features (ears, fins) can slip through; a margin
+   * of about half the particle spacing lets neighbouring particles cover
+   * those gaps.
+   */
+  readonly thickness?: number;
 }
 
 /** Normalized SDF data, compatible with the output of `src/sdf/bake.ts`. */
@@ -150,6 +158,8 @@ export class SDFCollider {
    */
   readonly muSUniform: UniformNode<'float', number>;
   readonly muKUniform: UniformNode<'float', number>;
+  /** Contact margin beyond the particle radius; see {@link SDFColliderOptions.thickness}. */
+  readonly thicknessUniform: UniformNode<'float', number>;
   readonly positionUniform: UniformNode<'vec3', Vector3>;
   readonly rotationUniform: UniformNode<'mat3', Matrix3>;
   readonly invRotationUniform: UniformNode<'mat3', Matrix3>;
@@ -195,6 +205,12 @@ export class SDFCollider {
   constructor(particles: ParticleSystem, sdf: SDFData, options: SDFColliderOptions = {}) {
     const muS = options.muS ?? 0.5;
     const muK = options.muK ?? 0.4;
+    const thickness = options.thickness ?? 0;
+    if (!(thickness >= 0) || !Number.isFinite(thickness)) {
+      throw new Error(
+        `SDFCollider: thickness must be a non-negative finite number, got ${thickness}`,
+      );
+    }
     if (!(muS >= 0) || !(muK >= 0)) {
       throw new Error(`SDFCollider: μ_s and μ_k must be non-negative (got μ_s=${muS}, μ_k=${muK})`);
     }
@@ -295,6 +311,7 @@ export class SDFCollider {
     this.invScaleUniform = uniform(1 / initialScale, 'float');
     this.muSUniform = uniform(muS, 'float');
     this.muKUniform = uniform(muK, 'float');
+    this.thicknessUniform = uniform(thickness, 'float');
 
     this.fields = {
       texture: this.textureNode,
@@ -443,7 +460,7 @@ export function buildSdfSolveKernel(args: {
 }): ComputeNode {
   const { sdf, accumulator } = args;
   const particles = sdf.particles;
-  const r = particles.particleRadius;
+  const r: Any = float(particles.particleRadius).add(sdf.thicknessUniform);
   const muSUniform: Any = sdf.muSUniform;
   const fields = sdf.fields;
   const lambdaNT = sdf.lambdaNT;
@@ -463,8 +480,8 @@ export function buildSdfSolveKernel(args: {
     const grad: Any = vec3(float(0.0), float(0.0), float(0.0)).toVar();
     emitSampleSdf(fields, xStar, phi, grad);
 
-    If(phi.lessThan(float(r)), () => {
-      const d: Any = float(r).sub(phi).toVar();
+    If(phi.lessThan(r), () => {
+      const d: Any = r.sub(phi).toVar();
 
       // Normalize gradient — for an SDF `|∇φ| ≈ 1`, but central
       // differences introduce measurable error (plan §Validation G1

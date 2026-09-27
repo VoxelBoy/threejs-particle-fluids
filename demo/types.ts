@@ -18,6 +18,8 @@ export interface Preset {
   id: string;
   name: string;
   category: string;
+  /** Sidebar section the preset is listed under. */
+  group: 'Liquids' | 'Soft Body' | 'Cloth' | 'Gases';
   description: string;
   accent: string;
   number: string;

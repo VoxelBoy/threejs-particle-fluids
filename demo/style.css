@@ -633,92 +633,84 @@ select {
 }
 
 .gallery {
-  padding: 26px 12px;
+  padding: 24px 14px;
   background: #11161c;
   border-right: 1px solid var(--line);
   overflow-y: auto;
   scrollbar-width: thin;
   overscroll-behavior: contain;
 }
-.gallery-heading {
-  display: flex;
-  justify-content: space-between;
-  padding: 0 10px;
-  margin-bottom: 22px;
-  color: #738196;
-  font-size: 10px;
+.preset-group + .preset-group {
+  margin-top: 26px;
+}
+.preset-group h2 {
+  margin: 0 5px 8px;
+  text-transform: uppercase;
 }
 .preset-grid {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 .preset-card {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 11px;
-  min-height: 70px;
+  gap: 12px;
   width: 100%;
-  padding: 9px;
-  background: transparent;
-  border: 1px solid transparent;
+  min-width: 0;
+  padding: 5px;
+  background: none;
+  border: 0;
   border-radius: 8px;
   text-align: left;
+  cursor: pointer;
 }
 .preset-card:hover {
-  background: #ffffff05;
-}
-.preset-card[aria-pressed='true'] {
-  background: #ffffff07;
-  border-color: #ffffff13;
-}
-.preset-card[aria-pressed='true']:before {
-  content: '';
-  position: absolute;
-  left: -1px;
-  top: 20px;
-  bottom: 20px;
-  width: 2px;
-  background: var(--card-accent);
-  border-radius: 2px;
+  background: #ffffff06;
 }
 .preset-preview {
-  width: 52px;
-  height: 46px;
+  display: block;
   flex-shrink: 0;
+  width: 64px;
+  aspect-ratio: 5 / 4;
   overflow: hidden;
-  border-radius: 5px;
+  border-radius: 6px;
   background: #1b2430;
+  box-shadow: inset 0 0 0 1px var(--line);
 }
 .preset-preview img {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
-  opacity: 0.65;
+  opacity: 0.72;
+  transition:
+    opacity 0.15s,
+    transform 0.25s;
 }
-.preset-card[aria-pressed='true'] img,
 .preset-card:hover img {
   opacity: 1;
+  transform: scale(1.04);
 }
-.preset-info {
-  min-width: 0;
+.preset-card[aria-pressed='true'] .preset-preview {
+  outline: 2px solid var(--card-accent);
+  outline-offset: 2px;
+}
+.preset-card[aria-pressed='true'] img {
+  opacity: 1;
 }
 .preset-title {
-  display: block;
-  color: #b3becc;
-  font-size: 11px;
-  line-height: 1.4;
+  min-width: 0;
+  color: #a4afbd;
+  font-size: 12px;
+  line-height: 1.3;
+}
+.preset-card:hover .preset-title {
+  color: #d3dbe5;
 }
 .preset-card[aria-pressed='true'] .preset-title {
   color: #eef3f9;
-}
-.preset-category {
-  display: block;
-  color: #78869b;
-  font-size: 7px;
-  letter-spacing: 0.55px;
-  margin-top: 6px;
 }
 .preset-number {
   display: none;
@@ -745,15 +737,11 @@ select {
   .workspace {
     grid-template-columns: 246px minmax(0, 1fr) 306px;
   }
-  .preset-card {
-    min-height: 79px;
-  }
   .preset-preview {
-    width: 62px;
-    height: 52px;
+    width: 72px;
   }
   .preset-title {
-    font-size: 12px;
+    font-size: 13px;
   }
   .inspector {
     padding: 28px;
@@ -764,21 +752,16 @@ select {
     grid-template-columns: 180px minmax(0, 1fr) 255px;
   }
   .gallery {
-    padding: 24px 8px;
+    padding: 22px 10px;
   }
   .preset-card {
-    gap: 8px;
-    padding: 8px;
+    gap: 9px;
   }
   .preset-preview {
-    width: 35px;
-    height: 39px;
+    width: 48px;
   }
   .preset-title {
-    font-size: 10px;
-  }
-  .preset-category {
-    font-size: 6px;
+    font-size: 11px;
   }
   .scene-label {
     bottom: 115px;
@@ -866,30 +849,21 @@ select {
     grid-template-columns: 66px minmax(0, 1fr);
   }
   .gallery {
-    padding: 20px 6px;
+    padding: 16px 8px;
   }
-  .gallery-heading {
-    padding: 0;
-    justify-content: center;
+  .preset-group + .preset-group {
+    margin-top: 16px;
   }
-  .gallery-heading .eyebrow {
-    font-size: 7px;
-    letter-spacing: 0.7px;
-  }
-  .gallery-heading > span:last-child {
+  .preset-group h2,
+  .preset-title {
     display: none;
   }
   .preset-card {
-    min-height: 56px;
-    padding: 5px;
-    justify-content: center;
+    padding: 0;
   }
   .preset-preview {
-    width: 42px;
-    height: 42px;
-  }
-  .preset-info {
-    display: none;
+    width: 100%;
+    aspect-ratio: 1;
   }
   .preset-number {
     display: block;
@@ -901,7 +875,7 @@ select {
     text-shadow: 0 1px 3px #000;
   }
   .preset-grid {
-    gap: 5px;
+    gap: 8px;
   }
   .diagnostics {
     left: 15px;

@@ -101,6 +101,12 @@ export interface FluidVolumeRendererOptions {
    * optional smoke fill. Costs a longer transmitted-ray march.
    */
   readonly cavities?: { readonly smokeColor: number; readonly smokeDensity: number } | undefined;
+  /**
+   * Bend the transmitted ray at the surface. Default `true`. With `false`
+   * the scene behind shows straight through, which avoids dark smears where
+   * bodies cross the surface; reflections and absorption are unchanged.
+   */
+  readonly refraction?: boolean | undefined;
 }
 
 const MAX_STEPS = 128;
@@ -287,7 +293,9 @@ export class FluidVolumeRenderer {
 
       // Refraction and absorption along the transmitted ray.
       const eta: Any = float(1).div(a.ior);
-      const transmitted: Any = refract(viewDirection, n, eta).toVar();
+      const transmitted: Any = (
+        options.refraction === false ? viewDirection : refract(viewDirection, n, eta)
+      ).toVar();
       const optical: Any = float(0).toVar();
       const travel: Any = float(voxel * 0.5).toVar();
       const exitInterval: Any = boxInterval(hitPoint, transmitted);

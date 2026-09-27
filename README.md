@@ -2,7 +2,7 @@
 
 Interactive particle simulations built with **Three.js, WebGPU, and the Three.js Shading Language (TSL)**. Nine curated presets explore fluid, form, and motion, with live controls and GPU performance diagnostics.
 
-![Tidal chamber](public/previews/cover.png)
+![Wave Chamber](public/previews/cover.png)
 
 ## Run locally
 
@@ -21,15 +21,18 @@ A desktop browser and GPU with WebGPU support are required. Enable hardware acce
 
 | Preset                | Explore                                                                |
 | --------------------- | ---------------------------------------------------------------------- |
-| **Tidal chamber**     | Waves spilling over low weirs and through staggered wall gaps          |
-| **Crown impact**      | A falling drop splashing into a shallow pool                           |
-| **Liquid marble**     | Inward gravity, surface tension, and droplets pulled off by clicking   |
-| **Honey bunny**       | A circling nozzle drizzles viscous honey over the Stanford bunny       |
+| **Wave Chamber**      | A sealed tank turning end over end, driving water through its walls    |
+| **Water Drop**        | A falling drop splashing into a shallow pool                           |
+| **Liquid Marble**     | Inward gravity pulling a drop back together after a click bursts it    |
+| **Honey Bunny**       | A circling nozzle drizzles viscous honey over the Stanford bunny       |
 | **Buoyancy**          | Textured rubber ducks floating or sinking as their density changes     |
 | **Soft Body Squeeze** | 20 textured CC0 forms squeezed between closing plates                  |
-| **Cloth**             | Soft red velvet displaced by a moving chrome sphere                    |
-| **Vortex plume**      | Lit volumetric smoke with filtered density and correct scene occlusion |
-| **Smoke bubbles**     | Smoke-filled bubbles rise through water and burst into drifting puffs  |
+| **Bunny Lineup**      | Five jelly bunnies dropped side by side, from firm to very soft        |
+| **Banana Blender**    | Soft bananas as dense as the liquid, swirled by a tall paddle          |
+| **Velvet Curtain**    | Soft red velvet displaced by a moving chrome sphere                    |
+| **Velvet Drape**      | A square of red velvet dropped onto the Stanford bunny                 |
+| **Vortex Plume**      | Lit volumetric smoke with filtered density and correct scene occlusion |
+| **Smoke Bubbles**     | Smoke-filled bubbles rise through water and burst into drifting puffs  |
 
 Each preset has a focused parameter panel. Sliders apply immediately; controls marked **↻** restart the experiment when released. Settings are remembered per preset during the current session. **Reset all** restores that preset's defaults.
 

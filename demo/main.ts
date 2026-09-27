@@ -11,15 +11,21 @@ app.innerHTML = `
     <span class="gpu-badge"><span></span> WebGPU</span>
   </header>
   <main class="workspace">
-  <nav class="gallery" aria-label="Choose a preset"><div class="gallery-heading"><span class="eyebrow">PRESETS</span><span>${String(presets.length).padStart(2, '0')}</span></div><div class="preset-grid">${presets
+  <nav class="gallery" aria-label="Choose a preset">${[...new Set(presets.map((p) => p.group))]
     .map(
-      (preset) => `
-    <button class="preset-card" data-preset="${preset.id}" aria-label="${preset.number}. ${preset.name}" aria-pressed="false" style="--card-accent:${preset.accent}">
-      <div class="preset-preview preview-${preset.id}"><img src="${import.meta.env.BASE_URL}previews/${preset.id}.png" alt="" width="60" height="48" loading="lazy"></div>
-      <span class="preset-info"><span class="preset-title">${preset.name}</span><span class="preset-category">${preset.category}</span></span><span class="preset-number">${preset.number}</span>
-    </button>`,
+      (group) => `
+    <section class="preset-group"><h2 class="eyebrow">${group}</h2><div class="preset-grid">${presets
+      .filter((preset) => preset.group === group)
+      .map(
+        (preset) => `
+      <button class="preset-card" data-preset="${preset.id}" aria-label="${preset.number}. ${preset.name}" aria-pressed="false" title="${preset.category}" style="--card-accent:${preset.accent}">
+        <span class="preset-preview"><img src="${import.meta.env.BASE_URL}previews/${preset.id}.png" alt="" width="862" height="690" loading="lazy"></span>
+        <span class="preset-title">${preset.name}</span><span class="preset-number">${preset.number}</span>
+      </button>`,
+      )
+      .join('')}</div></section>`,
     )
-    .join('')}</div></nav>
+    .join('')}</nav>
     <section class="viewport" aria-label="Simulation viewport">
       <div id="canvas-host"></div>
       <aside class="diagnostics" aria-label="Live performance diagnostics">

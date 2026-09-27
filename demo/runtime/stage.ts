@@ -117,31 +117,98 @@ export function platform(width: number, depth: number): Group {
   return group;
 }
 
-export function basin(width = 1.65, depth = 1.15, glassHeight = 0): Group {
-  const group = platform(width + 0.13, depth + 0.13);
+/** Clear walls from `base` up, with a top rim and optional lid, around a `width` × `depth` floor. */
+function glassShell(
+  width: number,
+  depth: number,
+  height: number,
+  lid: boolean,
+  base = 0.012,
+  opacity = 0.1,
+): Group {
+  const group = new Group();
+  const shell = roundedOutline(width + 0.065, depth + 0.065, 0.055);
+  shell.holes.push(roundedOutline(width + 0.045, depth + 0.045, 0.045));
+  const glass = extruded(shell, height, 0.001, 0xb9dce5, 0.1, 0);
+  const glassMaterial = glass.material as MeshStandardMaterial;
+  glassMaterial.transparent = true;
+  glassMaterial.opacity = opacity;
+  glassMaterial.depthWrite = false;
+  glassMaterial.side = DoubleSide;
+  glass.castShadow = false;
+  glass.rotation.x = -Math.PI / 2;
+  glass.position.y = base;
+  group.add(glass);
+  const cap = extruded(shell, 0.003, 0.001, 0xa4bec8, 0.22, 0.5);
+  cap.rotation.x = -Math.PI / 2;
+  cap.position.y = base + height + 0.001;
+  group.add(cap);
+  if (lid) group.add(glassPane(width, depth, base + height + 0.001, opacity * 0.8));
+  return group;
+}
+
+/** A flat, clear panel covering a `width` × `depth` opening at height `y`. */
+function glassPane(width: number, depth: number, y: number, opacity = 0.08): Mesh {
+  const pane = extruded(
+    roundedOutline(width + 0.065, depth + 0.065, 0.055),
+    0.003,
+    0.001,
+    0xb9dce5,
+    0.1,
+    0,
+  );
+  const paneMaterial = pane.material as MeshStandardMaterial;
+  paneMaterial.transparent = true;
+  paneMaterial.opacity = opacity;
+  paneMaterial.depthWrite = false;
+  paneMaterial.side = DoubleSide;
+  pane.castShadow = false;
+  pane.rotation.x = -Math.PI / 2;
+  pane.position.y = y;
+  return pane;
+}
+
+function basinRim(width: number, depth: number): Mesh {
   const outline = roundedOutline(width + 0.1, depth + 0.1, 0.078);
   outline.holes.push(roundedOutline(width + 0.035, depth + 0.035, 0.043));
   const rim = extruded(outline, 0.024, 0.004, 0x7f949d, 0.28, 0.7);
   rim.rotation.x = -Math.PI / 2;
   rim.position.y = 0.003;
-  group.add(rim);
-  if (glassHeight > 0) {
-    const shell = roundedOutline(width + 0.065, depth + 0.065, 0.055);
-    shell.holes.push(roundedOutline(width + 0.045, depth + 0.045, 0.045));
-    const glass = extruded(shell, glassHeight, 0.001, 0xb9dce5, 0.1, 0);
-    const glassMaterial = glass.material as MeshStandardMaterial;
-    glassMaterial.transparent = true;
-    glassMaterial.opacity = 0.1;
-    glassMaterial.depthWrite = false;
-    glassMaterial.side = DoubleSide;
-    glass.castShadow = false;
-    glass.rotation.x = -Math.PI / 2;
-    glass.position.y = 0.012;
-    group.add(glass);
-    const cap = extruded(shell, 0.003, 0.001, 0xa4bec8, 0.22, 0.5);
-    cap.rotation.x = -Math.PI / 2;
-    cap.position.y = glassHeight + 0.013;
-    group.add(cap);
+  return rim;
+}
+
+export function basin(width = 1.65, depth = 1.15, glassHeight = 0): Group {
+  const group = platform(width + 0.13, depth + 0.13);
+  group.add(basinRim(width, depth));
+  if (glassHeight > 0) group.add(glassShell(width, depth, glassHeight, false));
+  return group;
+}
+
+/** A sealed, fully clear tank, light enough to tip on a pivot. Floor is y=0. */
+export function glassTank(width: number, depth: number, height: number): Group {
+  const group = new Group();
+  // Fainter than the basins' glass: every view ray crosses several panes.
+  group.add(
+    glassPane(width, depth, -0.003, 0.025),
+    glassShell(width, depth, height, true, 0, 0.03),
+  );
+  return group;
+}
+
+/** Plinth with two posts that carry a tank on a pivot running along z. */
+export function pivotStand(depth: number, pivotHeight: number): Group {
+  const group = platform(0.62, depth + 0.42);
+  const hubMaterial = material(0xb1bdc3, 0.3, 0.8);
+  for (const side of [-1, 1]) {
+    const z = side * (depth / 2 + 0.1);
+    group.add(
+      block([0.09, pivotHeight + 0.05, 0.05], [0, (pivotHeight + 0.05) / 2, z], 0x526b79, 0.012),
+    );
+    const hub = new Mesh(new CylinderGeometry(0.045, 0.045, 0.05, 32), hubMaterial);
+    hub.rotation.x = Math.PI / 2;
+    hub.position.set(0, pivotHeight, side * (depth / 2 + 0.055));
+    hub.castShadow = true;
+    group.add(hub);
   }
   return group;
 }
