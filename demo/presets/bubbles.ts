@@ -38,7 +38,7 @@ const VENTS: readonly [number, number][] = [
   [0.34, -0.05],
   [-0.36, 0.18],
 ];
-const PUFF = 320;
+const PUFF = 1000;
 const SMOKE_LIFETIME = 5.5;
 
 interface Bubble {
@@ -119,6 +119,15 @@ function smokePuffs(count: number) {
           .mul(cos(p.z.mul(8)))
           .mul(0.05),
         cos(phase.add(p.x.mul(7))).mul(0.09),
+      ).toVar();
+      // Finer eddies curl the puffs into folds that travel with the smoke.
+      const fine: Any = p.y.mul(19).sub(time.mul(1.7));
+      swirl.addAssign(
+        vec3(
+          sin(fine.add(p.z.mul(21))).mul(0.05),
+          sin(p.x.mul(23).add(p.z.mul(17)).add(time.mul(1.3))).mul(0.03),
+          cos(fine.add(p.x.mul(21))).mul(0.05),
+        ),
       );
       const goal: Any = swirl.add(vec3(0, rise.mul(float(1).sub(age.div(SMOKE_LIFETIME))), 0));
       v.assign(v.add(goal.sub(v).mul(dt.mul(1.6))));
@@ -187,7 +196,7 @@ export async function buildBubbles(ctx: BuildContext, values: Values): Promise<E
     max: new Vector3(HALF_X + 0.1, 1.75, HALF_Z + 0.1),
     resolution: detailed ? [72, 112, 56] : [56, 88, 44],
     steps: detailed ? 96 : 72,
-    density: values['density']! * 0.6,
+    density: values['density']! * 0.3,
   });
 
   const vents = new Group();
@@ -266,7 +275,6 @@ export async function buildBubbles(ctx: BuildContext, values: Values): Promise<E
       puffs.dt.value = dt;
       puffs.time.value = time;
       puffs.rise.value = 0.05 + values['rise']! * 0.15;
-      smoke.time = time;
       await ctx.renderer.computeAsync(puffs.advect);
     },
     setReflections: (enabled) => (visual.surface.reflections = enabled),
@@ -278,7 +286,7 @@ export async function buildBubbles(ctx: BuildContext, values: Values): Promise<E
     setParameter(key, value) {
       values[key] = value;
       if (key === 'density') {
-        smoke.density = value * 0.6;
+        smoke.density = value * 0.3;
         visual.surface.smokeDensity = value * 45;
       }
     },

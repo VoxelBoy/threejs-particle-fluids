@@ -1,14 +1,4 @@
-import {
-  BackSide,
-  BoxGeometry,
-  Data3DTexture,
-  HalfFloatType,
-  LinearFilter,
-  Mesh,
-  RedFormat,
-  RepeatWrapping,
-  Vector3,
-} from 'three';
+import { BackSide, BoxGeometry, HalfFloatType, Mesh, Vector3 } from 'three';
 import { MeshBasicNodeMaterial, Storage3DTexture, type WebGPURenderer } from 'three/webgpu';
 import {
   Break,
@@ -27,7 +17,6 @@ import {
   instancedArray,
   ivec3,
   mix,
-  mx_noise_float,
   positionWorld,
   screenCoordinate,
   screenUV,
@@ -45,54 +34,6 @@ import type { SmokeTracers } from './types.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
-
-/** Small, seamless density-detail texture; generated once and advected during rendering. */
-function createDetailTexture(): Data3DTexture {
-  const size = 64;
-  const data = new Uint8Array(size ** 3);
-  const hash = (x: number, y: number, z: number, period: number) => {
-    let n =
-      Math.imul(x % period, 374761393) +
-      Math.imul(y % period, 668265263) +
-      Math.imul(z % period, 2147483647);
-    n = Math.imul(n ^ (n >>> 13), 1274126177);
-    return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
-  };
-  for (let z = 0; z < size; z++)
-    for (let y = 0; y < size; y++)
-      for (let x = 0; x < size; x++) {
-        let value = 0;
-        for (const [period, weight] of [
-          [8, 0.55],
-          [16, 0.3],
-          [32, 0.15],
-        ]) {
-          const p = [x, y, z].map((v) => (v / size) * period!);
-          const base = p.map(Math.floor);
-          const f = p.map((v) => {
-            const t = v - Math.floor(v);
-            return t * t * (3 - 2 * t);
-          });
-          for (let dz = 0; dz < 2; dz++)
-            for (let dy = 0; dy < 2; dy++)
-              for (let dx = 0; dx < 2; dx++) {
-                value +=
-                  weight! *
-                  hash(base[0]! + dx, base[1]! + dy, base[2]! + dz, period!) *
-                  (dx ? f[0]! : 1 - f[0]!) *
-                  (dy ? f[1]! : 1 - f[1]!) *
-                  (dz ? f[2]! : 1 - f[2]!);
-              }
-        }
-        data[x + y * size + z * size * size] = Math.round(value * 255);
-      }
-  const texture = new Data3DTexture(data, size, size, size);
-  texture.format = RedFormat;
-  texture.minFilter = texture.magFilter = LinearFilter;
-  texture.wrapS = texture.wrapT = texture.wrapR = RepeatWrapping;
-  texture.needsUpdate = true;
-  return texture;
-}
 
 export interface GasVolumeRendererOptions {
   readonly renderer: WebGPURenderer;
@@ -123,9 +64,8 @@ export class GasVolumeRenderer {
   readonly object: Mesh;
   private readonly renderer: WebGPURenderer;
   private readonly densityUniform: UniformNode<'float', number>;
-  private readonly timeUniform = uniform(0, 'float');
   private readonly kernels: ComputeNode[];
-  private readonly textures: (Storage3DTexture | Data3DTexture)[];
+  private readonly textures: Storage3DTexture[];
 
   constructor(gas: SmokeTracers, options: GasVolumeRendererOptions) {
     const { min, max, resolution = [32, 56, 32], steps = 56 } = options;
@@ -176,7 +116,20 @@ export class GasVolumeRenderer {
           () => {
             const base = p.floor(),
               f = p.fract();
-            const fade: Any = float(1).sub(gas.smokeAge.element(i).div(gas.lifetime)).max(0);
+            // Each tracer carries a fixed random weight, so the smoke's grain is
+            // attached to the smoke and moves with it.
+            const weight: Any = i
+              .toFloat()
+              .mul(12.9898)
+              .sin()
+              .mul(43758.5453)
+              .fract()
+              .mul(1.2)
+              .add(0.4);
+            const fade: Any = float(1)
+              .sub(gas.smokeAge.element(i).div(gas.lifetime))
+              .max(0)
+              .mul(weight);
             for (let z = 0; z < 2; z++)
               for (let y = 0; y < 2; y++)
                 for (let x = 0; x < 2; x++) {
@@ -194,7 +147,7 @@ export class GasVolumeRenderer {
       Fn(() => {
         const cell: Any = cellOf(instanceIndex).toVar();
         const sum: Any = float(0).toVar();
-        const weights = [0.0366, 0.1113, 0.2167, 0.2708, 0.2167, 0.1113, 0.0366];
+        const weights = [0.006, 0.0606, 0.2417, 0.3829, 0.2417, 0.0606, 0.006];
         for (let k = -3; k <= 3; k++) {
           const offset = [0, 0, 0];
           offset[axis] = k;
@@ -233,14 +186,13 @@ export class GasVolumeRenderer {
     });
     const densityTexture = new Storage3DTexture(nx, ny, nz);
     const volumeTexture = new Storage3DTexture(nx, ny, nz);
-    const detailTexture = createDetailTexture();
     for (const texture of [densityTexture, volumeTexture]) texture.type = HalfFloatType;
-    this.textures = [densityTexture, volumeTexture, detailTexture];
+    this.textures = [densityTexture, volumeTexture];
     const densityAt = (world: Any): Any =>
       (texture3D(densityTexture, world.sub(minimum).div(extent)) as Any).level(0).r;
-    // Build detail and incident light once per voxel. The ray marcher then uses
-    // one hardware-filtered 3D sample per step rather than dozens of buffer reads.
-    const detail = Fn(() => {
+    // Resolve density and incident light once per voxel. The ray marcher then
+    // uses one hardware-filtered 3D sample per step rather than dozens of buffer reads.
+    const resolve = Fn(() => {
       const cell: Any = cellOf(instanceIndex);
       const p: Any = minimum.add(
         cell
@@ -248,11 +200,7 @@ export class GasVolumeRenderer {
           .div(vec3(nx, ny, nz))
           .mul(extent),
       );
-      const flow: Any = p.add(vec3(0, this.timeUniform.mul(-0.16), 0));
-      const coarse: Any = mx_noise_float(flow.mul(8));
-      const fine: Any = mx_noise_float(flow.mul(19).add(17));
-      const modulation: Any = coarse.mul(0.95).add(fine.mul(0.35)).add(0.65).max(0.08);
-      const density: Any = sampleParticles(p).mul(modulation.mul(modulation).mul(1.8));
+      const density: Any = sampleParticles(p);
       textureStore(densityTexture, ivec3(cell), vec4(density, 0, 0, 1)).toWriteOnly();
     })().compute(count);
     const sun = vec3((options.lightDirection ?? new Vector3(-0.35, 0.8, 0.4)).clone().normalize());
@@ -264,12 +212,15 @@ export class GasVolumeRenderer {
           .div(vec3(nx, ny, nz))
           .mul(extent),
       );
-      const shadow: Any = densityAt(p.add(sun.mul(0.06)))
-        .mul(0.08)
-        .add(densityAt(p.add(sun.mul(0.18))).mul(0.14))
-        .add(densityAt(p.add(sun.mul(0.36))).mul(0.22))
-        .add(densityAt(p.add(sun.mul(0.62))).mul(0.28));
-      const light: Any = shadow.mul(-1.6).exp();
+      const shadow: Any = float(0).toVar();
+      const taps = [0.03, 0.07, 0.13, 0.22, 0.36, 0.58];
+      taps.forEach((distance, k) => {
+        const length = distance - (taps[k - 1] ?? 0);
+        shadow.addAssign(densityAt(p.add(sun.mul(distance))).mul(length));
+      });
+      // Beer–Lambert with a softer second lobe standing in for multiple scattering,
+      // so shadowed smoke darkens gradually instead of going flat.
+      const light: Any = shadow.mul(-2.5).exp().mul(0.7).add(shadow.mul(-0.35).exp().mul(0.3));
       textureStore(volumeTexture, ivec3(cell), vec4(densityAt(p), light, 0, 1)).toWriteOnly();
     })().compute(count);
     this.kernels = [
@@ -278,7 +229,7 @@ export class GasVolumeRenderer {
       blur(0, ticks, a, true),
       blur(1, a, b),
       blur(2, b, a),
-      detail,
+      resolve,
       lighting,
     ];
     const material = new MeshBasicNodeMaterial({
@@ -320,14 +271,12 @@ export class GasVolumeRenderer {
         const field: Any = (texture3D(volumeTexture, p.sub(minimum).div(extent)) as Any)
           .level(0)
           .toVar();
-        const detailUV: Any = p.mul(1.2).add(vec3(0, this.timeUniform.mul(-0.12), 0));
-        const grain: Any = (texture3D(detailTexture, detailUV) as Any).level(0).r;
-        const density: Any = field.r.mul(grain.mul(2.8).sub(0.7).max(0.08).pow(1.5).mul(1.6));
+        const density: Any = field.r;
         If(density.greaterThan(0.005), () => {
           const shade: Any = mix(
             color(options.shadowColor ?? 0x3b4758),
             color(options.color ?? 0xd8dfe6),
-            field.g.mul(0.82).add(0.18),
+            field.g,
           );
           const alpha: Any = float(1).sub(density.mul(step).negate().exp());
           radiance.addAssign(shade.mul(alpha).mul(transmittance));
@@ -353,14 +302,6 @@ export class GasVolumeRenderer {
   }
   set density(value: number) {
     this.densityUniform.value = value;
-  }
-
-  /** Seconds, driving the drifting detail noise. Set it to the simulation time. */
-  get time(): number {
-    return this.timeUniform.value;
-  }
-  set time(value: number) {
-    this.timeUniform.value = value;
   }
 
   /** Rebuild the density volume from the tracers. Call once per frame before rendering. */

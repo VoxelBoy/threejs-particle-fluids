@@ -1,3 +1,4 @@
+import type { Box3 } from 'three';
 import { Fn, If, float, instanceIndex, uint, vec3, vec4 } from 'three/tsl';
 import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import type UniformNode from 'three/src/nodes/core/UniformNode.js';
@@ -17,7 +18,7 @@ type Any = any;
 /**
  * Move each live tracer with the fluid's velocity at its position,
  * `v(x) = Σ_j v_j W(x − x_j) / Σ_j W(x − x_j)` (Macklin et al. 2014, eq. 28),
- * and retire tracers older than `lifetime`. Tracers aren't particles in the
+ * and retire tracers older than `lifetime` or outside `bounds`. Tracers aren't particles in the
  * grid; they only query it.
  */
 export function buildSmokeAdvectKernel(args: {
@@ -27,8 +28,9 @@ export function buildSmokeAdvectKernel(args: {
   readonly sph: SphKernelUniforms;
   readonly dt: UniformNode<'float', number>;
   readonly lifetime: number;
+  readonly bounds?: Box3 | undefined;
 }): ComputeNode {
-  const { tracers, fluid, hashGrid, sph, dt, lifetime } = args;
+  const { tracers, fluid, hashGrid, sph, dt, lifetime, bounds } = args;
   const { particles, range } = fluid;
   const end = range.start + range.count;
 
@@ -37,7 +39,14 @@ export function buildSmokeAdvectKernel(args: {
     If(tracers.smokeAlive.element(s).greaterThan(uint(0)), () => {
       const position: Any = tracers.smokePositions.element(s).xyz.toVar();
       const age: Any = tracers.smokeAge.element(s).add(dt).toVar();
-      If(age.greaterThanEqual(lifetime), () => {
+      let expired: Any = age.greaterThanEqual(lifetime);
+      if (bounds) {
+        const { min, max } = bounds;
+        expired = expired
+          .or(position.lessThan(vec3(min.x, min.y, min.z)).any())
+          .or(position.greaterThan(vec3(max.x, max.y, max.z)).any());
+      }
+      If(expired, () => {
         tracers.smokeAlive.element(s).assign(uint(0));
       }).Else(() => {
         const velocitySum: Any = vec3(0).toVar();

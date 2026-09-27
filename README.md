@@ -79,7 +79,7 @@ The complete version, with a camera and lights, is [`examples/fluid.ts`](example
   - `FluidSystem`: liquids and gases (Position Based Fluids), with optional viscosity, vorticity confinement, surface tension, and adhesion. `ViscositySolver` adds implicit viscosity for very thick liquids such as honey.
   - `SoftbodySystem`: soft and near-rigid bodies by shape matching, either per body (`'global'`) or per particle neighborhood (`'local'`, which bends and folds). Global matching respects per-particle mass, so a body with a heavy base floats upright. `voxelize` fills a mesh or distance field with particles.
   - `ClothSystem`: cloth with stretch, bending, and long-range attachment constraints, plus wind. `createClothGraph` builds it from any indexed geometry.
-  - `GasSystem`: smoke tracers carried by a fluid's velocity field.
+  - `GasSystem`: smoke tracers carried by a fluid's velocity field, with optional heat sources that make hot air rise (Boussinesq buoyancy).
   - Anything with a `build(context)` method, for your own TSL kernels.
 - **Colliders** are shapes particles can't enter: `PrimitiveSet` (planes, spheres, boxes, capsules that can follow `Object3D`s) and `SDFCollider` (any mesh, through a baked distance field from `bakeMeshToSdf`).
 - **`SimLoop`** advances everything with substepped XPBD. Pass `contact: true` to make particles collide with each other, which soft bodies and cloth need to touch one another.
@@ -105,21 +105,21 @@ npm ci
 npm run dev
 ```
 
-| Preset                | Shows                                                                  |
-| --------------------- | ---------------------------------------------------------------------- |
-| **Wave Chamber**      | A sealed tank turning end over end, driving water through its walls    |
-| **Water Drop**        | A falling drop splashing into a shallow pool                           |
-| **Liquid Marble**     | Inward gravity pulling a drop back together after a click bursts it    |
-| **Honey Bunny**       | A circling nozzle drizzles viscous honey over the Stanford bunny       |
-| **Buoyancy**          | Textured rubber ducks floating or sinking as their density changes     |
-| **Soft Body Squeeze** | 20 textured CC0 forms squeezed between closing plates                  |
-| **Bunny Lineup**      | Five jelly bunnies dropped side by side, from firm to very soft        |
-| **Banana Blender**    | Soft bananas as dense as the liquid, swirled by a tall paddle          |
-| **Velvet Curtain**    | Soft red velvet displaced by a moving chrome sphere                    |
-| **Velvet Drape**      | A square of red velvet dropped onto the Stanford bunny                 |
-| **Tarp Runoff**       | Red liquid pouring onto a sloped canvas tarp and spilling off its edge |
-| **Vortex Plume**      | Lit volumetric smoke with filtered density and correct scene occlusion |
-| **Smoke Bubbles**     | Smoke-filled bubbles rise through water and burst into drifting puffs  |
+| Preset                | Shows                                                                            |
+| --------------------- | -------------------------------------------------------------------------------- |
+| **Wave Chamber**      | A sealed tank turning end over end, driving water through its walls              |
+| **Water Drop**        | A falling drop splashing into a shallow pool                                     |
+| **Liquid Marble**     | Inward gravity pulling a drop back together after a click bursts it              |
+| **Honey Bunny**       | A circling nozzle drizzles viscous honey over the Stanford bunny                 |
+| **Buoyancy**          | Textured rubber ducks floating or sinking as their density changes               |
+| **Soft Body Squeeze** | 20 textured CC0 forms squeezed between closing plates                            |
+| **Bunny Lineup**      | Five jelly bunnies dropped side by side, from firm to very soft                  |
+| **Banana Blender**    | Soft bananas as dense as the liquid, swirled by a tall paddle                    |
+| **Velvet Curtain**    | Soft red velvet displaced by a moving chrome sphere                              |
+| **Velvet Drape**      | A square of red velvet dropped onto the Stanford bunny                           |
+| **Tarp Runoff**       | Red liquid pouring onto a sloped canvas tarp and spilling off its edge           |
+| **Vortex Plume**      | A heated vent drives a buoyant, swirling plume that carries lit volumetric smoke |
+| **Smoke Bubbles**     | Smoke-filled bubbles rise through water and burst into drifting puffs            |
 
 Each preset has live controls; controls marked **↻** restart it. **Space** pauses, **R** restarts, dragging orbits, and clicking the liquid splashes it. The **Particles** menu sets the particle budget from 5,000 to 50,000, and **Surface / Particles** shows the particles under the rendering. The overlay reports frame rate, frame time, particle count, and solver settings.
 
