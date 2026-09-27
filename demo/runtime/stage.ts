@@ -119,10 +119,6 @@ export function platform(width: number, depth: number, deckMap?: Texture): Group
       foot.position.set(x * (width / 2 - 0.15), -0.128, z * (depth / 2 - 0.15));
       group.add(foot);
     }
-  // A small inlaid index mark gives the front edge a finished, manufactured detail.
-  group.add(
-    block([0.095, 0.006, 0.002], [-width / 2 + 0.19, -0.06, depth / 2 + 0.012], 0xb1bdc3, 0),
-  );
   return group;
 }
 

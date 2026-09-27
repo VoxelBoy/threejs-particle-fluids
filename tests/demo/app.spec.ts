@@ -12,6 +12,7 @@ const presetIds = [
   'banana-blender',
   'silk-in-motion',
   'velvet-drape',
+  'tarp-runoff',
   'vortex-plume',
   'smoke-bubbles',
 ];
@@ -23,14 +24,16 @@ async function ready(page: Page): Promise<void> {
   await expect(page.locator('#fps')).not.toHaveText('—');
 }
 
-test('all twelve presets render, advance, and switch without browser errors', async ({ page }) => {
+test('all thirteen presets render, advance, and switch without browser errors', async ({
+  page,
+}) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
     if (message.type() === 'error') errors.push(message.text());
   });
   await page.goto('/');
-  await expect(page.locator('[data-preset]')).toHaveCount(12);
+  await expect(page.locator('[data-preset]')).toHaveCount(13);
   for (const id of presetIds) {
     await page.locator(`[data-preset="${id}"]`).click();
     await ready(page);

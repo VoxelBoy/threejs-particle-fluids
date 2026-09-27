@@ -98,7 +98,7 @@ The API is young and may change before 1.0. The solvers are built for interactiv
 
 ## Demo
 
-The repository includes a demo of twelve presets. Install Node.js 22.12 or newer, then:
+The repository includes a demo of thirteen presets. Install Node.js 22.12 or newer, then:
 
 ```sh
 npm ci
@@ -117,6 +117,7 @@ npm run dev
 | **Banana Blender**    | Soft bananas as dense as the liquid, swirled by a tall paddle          |
 | **Velvet Curtain**    | Soft red velvet displaced by a moving chrome sphere                    |
 | **Velvet Drape**      | A square of red velvet dropped onto the Stanford bunny                 |
+| **Tarp Runoff**       | Red liquid pouring onto a sloped canvas tarp and spilling off its edge |
 | **Vortex Plume**      | Lit volumetric smoke with filtered density and correct scene occlusion |
 | **Smoke Bubbles**     | Smoke-filled bubbles rise through water and burst into drifting puffs  |
 

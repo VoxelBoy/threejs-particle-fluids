@@ -7,6 +7,7 @@ import { buildElastic } from './elastic.js';
 import { buildBlender, buildBunnyLineup } from './softbodies.js';
 import { buildCloth, buildClothDrop } from './silk.js';
 import { buildVortex } from './vortex.js';
+import { buildTarp } from './tarp.js';
 
 const gravity = (value = 9.81): Control => ({
   key: 'gravity',
@@ -455,8 +456,60 @@ export const presets: readonly Preset[] = [
     build: buildClothDrop,
   },
   {
-    id: 'vortex-plume',
+    id: 'tarp-runoff',
     number: '11',
+    name: 'Tarp Runoff',
+    category: 'CLOTH & FLUID',
+    group: 'Cloth',
+    description:
+      'Red liquid pours onto a yellow canvas tarp pinned to four posts, runs down its slope, and spills off the front edge.',
+    accent: '#e0525c',
+    camera: [1.75, 1.45, 2.05],
+    target: [0, 0.5, 0],
+    duration: 30,
+    controls: [
+      {
+        key: 'nozzle',
+        label: 'Nozzle width',
+        description: 'Wider nozzles pour more liquid.',
+        min: 0.03,
+        max: 0.1,
+        step: 0.005,
+        value: 0.07,
+        unit: 'm',
+        restart: true,
+      },
+      {
+        key: 'height',
+        label: 'Pour height',
+        description: 'How far above the tarp the nozzle hangs.',
+        min: 0.05,
+        max: 0.4,
+        step: 0.01,
+        value: 0.15,
+        unit: 'm',
+      },
+      {
+        key: 'slope',
+        label: 'Tarp slope',
+        description: 'How much higher the back posts are than the front ones.',
+        min: 0.1,
+        max: 0.45,
+        step: 0.05,
+        value: 0.3,
+        unit: 'm',
+        restart: true,
+      },
+      // Stronger tension flings particles off the thin stream at the nozzle.
+      tension(0.03),
+      gravity(),
+    ],
+    particleCounts: { low: 5000, medium: 10000, high: 15000, ultra: 20000, max: 30000 },
+    build: buildTarp,
+  },
+  {
+    id: 'vortex-plume',
+    number: '12',
     name: 'Vortex Plume',
     category: 'GAS & ADVECTION',
     group: 'Gases',
@@ -509,7 +562,7 @@ export const presets: readonly Preset[] = [
   },
   {
     id: 'smoke-bubbles',
-    number: '12',
+    number: '13',
     name: 'Smoke Bubbles',
     category: 'GAS & LIQUID',
     group: 'Gases',
