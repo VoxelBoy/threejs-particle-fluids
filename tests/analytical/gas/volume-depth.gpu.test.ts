@@ -2,8 +2,11 @@ import { expect, it } from 'vitest';
 import { BoxGeometry, Mesh, PerspectiveCamera, RenderTarget, Scene, Vector3 } from 'three';
 import { MeshBasicNodeMaterial } from 'three/webgpu';
 import { instancedArray } from 'three/tsl';
-import { createParticleRenderer } from '../../../src/core/index.js';
-import { VolumetricGasRenderer, type GasSystem } from '../../../src/gas/index.js';
+import {
+  GasVolumeRenderer,
+  createParticleRenderer,
+  type SmokeTracers,
+} from '../../../src/index.js';
 
 it('smoke blends in front of an intersecting solid and stays behind a foreground solid', async () => {
   const renderer = await createParticleRenderer();
@@ -25,15 +28,16 @@ it('smoke blends in front of an intersecting solid and stays behind a foreground
     for (let y = -0.4; y <= 0.4; y += 0.06)
       for (let x = -0.4; x <= 0.4; x += 0.06) positions.push(x, y, z, 0);
   const count = positions.length / 4;
-  const gas = {
+  // A hand-filled tracer set: the renderer only needs the SmokeTracers buffers.
+  const gas: SmokeTracers = {
     capacity: count,
     lifetime: 8,
     smokePositions: instancedArray(Float32Array.from(positions), 'vec4'),
     smokeAlive: instancedArray(new Uint32Array(count).fill(1), 'uint'),
     smokeAge: instancedArray(count, 'float'),
-  } as unknown as GasSystem;
-  const volume = new VolumetricGasRenderer({
-    gas,
+  };
+  const volume = new GasVolumeRenderer(gas, {
+    renderer,
     min: new Vector3(-0.5, -0.5, -0.5),
     max: new Vector3(0.5, 0.5, 0.5),
     resolution: [32, 32, 32],
@@ -46,7 +50,7 @@ it('smoke blends in front of an intersecting solid and stays behind a foreground
   };
   try {
     const before = await capture();
-    await volume.update(renderer);
+    await volume.update();
     scene.add(volume.object);
     const after = await capture();
     const channelDelta = (point: Vector3, channel: number) => {
@@ -65,7 +69,8 @@ it('smoke blends in front of an intersecting solid and stays behind a foreground
     expect(channelDelta(front.position, 0)).toBeLessThan(2);
     expect(channelDelta(front.position, 1)).toBeLessThan(2);
     // The middle object's depth is before the box exit, but smoke occupies the
-    // segment in front of it. Testing the box faces used to erase that segment.
+    // segment in front of it. Clipping each ray to scene depth (rather than
+    // depth-testing the box faces) keeps that segment.
     expect(channelDelta(middle.position, 1)).toBeGreaterThan(8);
     expect(channelDelta(new Vector3(), 1)).toBeGreaterThan(8);
   } finally {

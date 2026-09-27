@@ -1,8 +1,8 @@
+import type UniformNode from 'three/src/nodes/core/UniformNode.js';
 import {
   createDistanceConstraints,
   type ConstraintType,
   type ParticleSystem,
-  type XpbdUniforms,
 } from '../core/index.js';
 
 /** Translate cloth-local edges into shared particle slots for the core distance solver. */
@@ -23,14 +23,12 @@ export function createClothDistanceConstraints(args: {
    */
   readonly restLengths: readonly number[];
   /**
-   * XPBD compliance `α` (s²/kg). Scalar broadcast to every edge.
-   * Phase 18 default for stretch is `1e-7` — measured to keep edge stretch
-   * < 1 % of rest length for a 32×32 sheet at MVP S/I (8/1).
+   * XPBD compliance `α` (s²/kg), the same for every edge.
    */
   readonly compliance: number;
-  readonly xpbd: XpbdUniforms;
+  readonly dt: UniformNode<'float', number>;
 }): ConstraintType {
-  const { particles, particleOffset, edges, restLengths, compliance, xpbd } = args;
+  const { particles, particleOffset, edges, restLengths, compliance, dt } = args;
   if (!Number.isInteger(particleOffset) || particleOffset < 0) {
     throw new Error(
       `createClothDistanceConstraints: particleOffset must be a non-negative integer, got ${particleOffset}`,
@@ -50,6 +48,6 @@ export function createClothDistanceConstraints(args: {
     pairs: absolutePairs,
     compliance,
     restLength: [...restLengths],
-    xpbd,
+    dt,
   });
 }

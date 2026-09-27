@@ -1,36 +1,35 @@
 import { describe, expect, it } from 'vitest';
-import { BufferGeometry, Float32BufferAttribute, Uint32BufferAttribute } from 'three';
+import { BufferGeometry, Float32BufferAttribute, Uint32BufferAttribute, Vector3 } from 'three';
 
 import {
+  ClothSystem,
   ParticleSystem,
   SimLoop,
+  createClothGraph,
   createParticleRenderer,
-  createXpbdUniforms,
-  type ParticleInit,
-} from '../../../src/core/index.js';
-import { ClothSystem, fromBufferGeometry } from '../../../src/cloth/index.js';
+} from '../../../src/index.js';
 
-// Phase 19 G1 #1 — tether prevents stretch.
+// Tethers (long-range attachments, Kim et al. 2012) prevent stretch.
 //
-// Plan §"Validation/Automatic G1": "32×32 sheet pinned at top edge,
-// 100× gravity. With tethers active: max edge stretch < 5% of rest
-// length. Without tethers (distance constraints alone): will exceed
-// 20% at this load — documents the value of tethers."
+// A 32×32 sheet pinned along its top edge under 100× gravity. With
+// tethers active, max edge stretch stays < 5 % of rest length. Without
+// tethers (distance constraints alone) it exceeds 20 % at this load,
+// which documents the value of tethers.
 //
-// Why this matters: Phase 18's drape test exit report (memory note
-// 2026-05-04) documented that corner-pin edges sit at 12.8% stretch
-// at 1×g without tethers because the per-iter info propagation
-// through the graph-coloring distance solve is bounded. Kim 2012
-// LRAs propagate the entire stretch correction in a single pass per
-// iter (Algorithm 1, paragraph 1: "Enforcing this simple constraint
-// allows tensile pressure waves to propagate immediately from the
-// source (attachment) to all the free particles in a single step").
-// At 100×g this gap is dramatic: tethers cap the column stretch at
-// well under 5 %; without them the cloth either over-stretches or
-// requires an order of magnitude more substeps to settle.
+// Why this matters: without tethers, stretch corrections propagate
+// through the graph-colored distance solve only a few edges per
+// iteration; a sheet hung from its two top corners shows ~13 % stretch
+// at the corner-pin edges even at 1×g.
+// Tethers propagate the entire stretch correction in a single pass per
+// iteration (Kim et al. 2012, Algorithm 1: "Enforcing this simple
+// constraint allows tensile pressure waves to propagate immediately from
+// the source (attachment) to all the free particles in a single step").
+// At 100×g this gap is dramatic: tethers cap the column stretch well
+// under 5 %; without them the cloth either over-stretches or needs an
+// order of magnitude more substeps to settle.
 //
-// Test mesh size is M = 32 (matches plan). Both cases run at the
-// same S, I budget so the comparison is apples-to-apples.
+// Both cases run at the same S, I budget so the comparison is
+// apples-to-apples.
 
 interface SheetData {
   readonly geometry: BufferGeometry;
@@ -58,11 +57,10 @@ function buildTopPinnedSheet(M: number): SheetData {
       indices.push(a, d, b);
     }
   }
-  // Pin the entire TOP row (j = 0). Single connected island per
-  // Kim 2012 §3.4: every top-row pinned vertex is graph-connected
-  // to its left/right pinned neighbour through one cloth edge. So
-  // every free particle ends up with N=1 LRA constraints (the
-  // multi-island Jacobi-vs-GS deviation is moot in this scene).
+  // Pin the entire TOP row (j = 0). A single connected island (Kim
+  // et al. 2012 §3.4): every top-row pinned vertex is graph-connected
+  // to its left/right pinned neighbour through one cloth edge, so every
+  // free particle ends up with exactly one tether.
   for (let i = 0; i < M; i++) pinnedIndices.push(i);
 
   const geom = new BufferGeometry();
@@ -86,30 +84,14 @@ async function runStretchScene(args: {
   const renderer = await createParticleRenderer();
   try {
     const { geometry, pinnedIndices } = buildTopPinnedSheet(args.M);
-    const graph = fromBufferGeometry(geometry, {
+    const graph = createClothGraph(geometry, {
       surfaceDensity: 0.2,
       pinnedIndices,
     });
 
-    const initial: ParticleInit[] = [];
-    for (let i = 0; i < graph.positions.length; i++) {
-      const p = graph.positions[i]!;
-      initial.push({
-        position: [p[0], p[1], p[2]],
-        velocity: [0, 0, 0],
-        invMass: graph.invMass[i]!,
-        phase: 1,
-      });
-    }
     const particles = new ParticleSystem(renderer, graph.positions.length, 0.05);
-    particles.uploadParticles(initial);
-
-    const xpbd = createXpbdUniforms(1 / 60);
-    const cloth = new ClothSystem({
-      particles,
-      xpbd,
+    const cloth = new ClothSystem(particles, {
       graph,
-      particleOffset: 0,
       stretchCompliance: 1e-7,
       bendCompliance: 1.0, // effectively no bend stiffness — tether vs. distance is the focus
       tetherCompliance: args.tetherCompliance,
@@ -118,11 +100,9 @@ async function runStretchScene(args: {
     const loop = new SimLoop(particles, {
       substeps: args.substeps,
       iterations: args.iterations,
-      xpbd,
+      gravity: new Vector3(0, args.gravity, 0),
       materials: [cloth],
     });
-    loop.kernels.floorY.value = -1e9;
-    loop.gravity.set(0, args.gravity, 0);
 
     const frameDt = 1 / 60;
     const damp = 0.9;
@@ -154,14 +134,15 @@ async function runStretchScene(args: {
       if (abs > maxStretch) maxStretch = abs;
     }
 
-    particles.destroy();
-    return { maxStretch, nanFree, nTethers: cloth.nTethers };
+    loop.dispose();
+    particles.dispose();
+    return { maxStretch, nanFree, nTethers: cloth.tethers.length };
   } finally {
     renderer.dispose();
   }
 }
 
-describe('Phase 19 G1 #1 — tether prevents stretch (Kim 2012)', () => {
+describe('cloth tethers prevent stretch (Kim et al. 2012)', () => {
   it('32×32 sheet at 100× gravity — with tethers max stretch < 5%; without tethers exceeds 20%', async () => {
     const M = 32;
     const heavyG = -981; // 100× standard g
@@ -178,20 +159,19 @@ describe('Phase 19 G1 #1 — tether prevents stretch (Kim 2012)', () => {
       frames,
       gravity: heavyG,
     });
-    // eslint-disable-next-line no-console
     console.info(
       `[tether-stretch with-tethers] M=${M} S=${S} I=${I} g=${heavyG} maxStretch=${(withTethers.maxStretch * 100).toFixed(2)}% NaN-free=${withTethers.nanFree} nTethers=${withTethers.nTethers}`,
     );
     expect(withTethers.nanFree).toBe(true);
-    // Plan target: < 5 %.
+    // Target: < 5 %.
     expect(withTethers.maxStretch).toBeLessThan(0.05);
     // Sanity: tethers were actually built (top row M=32 pinned →
-    // M*(M-1) = 992 free particles → 992 LRAs at N=1).
+    // M*(M-1) = 992 free particles → 992 tethers, one each).
     expect(withTethers.nTethers).toBe(M * (M - 1));
 
     // Without tethers (effectively disabled via large α — XPBD
-    // compliance makes the LRA constraint produce vanishing Δλ).
-    // Plan target: stretch > 20 %.
+    // compliance makes the tether constraint produce vanishing Δλ).
+    // Target: stretch > 20 %.
     const withoutTethers = await runStretchScene({
       M,
       tetherCompliance: 1e10,
@@ -200,7 +180,6 @@ describe('Phase 19 G1 #1 — tether prevents stretch (Kim 2012)', () => {
       frames,
       gravity: heavyG,
     });
-    // eslint-disable-next-line no-console
     console.info(
       `[tether-stretch without-tethers] M=${M} S=${S} I=${I} g=${heavyG} maxStretch=${(withoutTethers.maxStretch * 100).toFixed(2)}% NaN-free=${withoutTethers.nanFree}`,
     );
@@ -208,7 +187,7 @@ describe('Phase 19 G1 #1 — tether prevents stretch (Kim 2012)', () => {
     // becomes catastrophic; we accept either explosion (NaN) or
     // measurable over-stretch (> 20%) as evidence that tethers
     // are the load-bearing constraint at 100×g. The point of the
-    // gate is "tethers matter", not "the unconstrained version
+    // check is "tethers matter", not "the unconstrained version
     // is well-behaved".
     const exceededLimit = !withoutTethers.nanFree || withoutTethers.maxStretch > 0.2;
     expect(exceededLimit).toBe(true);

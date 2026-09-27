@@ -1,31 +1,52 @@
 import { describe, expect, it } from 'vitest';
+import { instancedArray, uniform } from 'three/tsl';
 
 import {
   ParticleSystem,
+  SoftbodySystem,
   createParticleRenderer,
-  createXpbdUniforms,
-} from '../../../src/core/index.js';
-import { SoftbodySystem } from '../../../src/softbody/index.js';
+  type SolverContext,
+} from '../../../src/index.js';
+import {
+  buildCenterOfMassKernel,
+  buildMomentAndPolarDecompKernel,
+  buildResetLambdaKernel,
+  buildShapeMatchDeltaApplyKernel,
+} from '../../../src/softbody/shapeMatch.js';
 
-// Phase 10 G1 — Pass 3 (Δx apply) correctness.
+// Global shape matching: the per-particle Δx correction.
 //
-// Pass 3 computes goal_i = R · r_i + c per iter and applies the XPBD
-// per-component λ update (Macklin 2016 eq. 18 with identity Jacobian).
-// Tests here cover:
-//   (1) at rest configuration, Δx = 0 exactly;
+// Every iteration the solver computes goal_i = R · r_i + c and applies the
+// XPBD per-component λ update (Macklin et al. 2016 eq. 18 with an identity
+// Jacobian). Tests here cover:
+//   (1) at the rest configuration, Δx = 0 exactly;
 //   (2) rigid translation matches goal → Δx = 0;
 //   (3) rigid rotation matches goal → Δx = 0;
 //   (4) single-particle perturbation at zero compliance collapses back
-//       in one iter (high stiffness = goal-snap);
+//       in one iteration (high stiffness = goal-snap);
 //   (5) high compliance barely corrects (bounded Δx);
-//   (6) iterated solve converges to shape-matched configuration.
+//   (6) iterated solve converges to the shape-matched configuration;
+//   (7) kinematic particles are never corrected;
+//   (8) λ accumulates within a substep and is reset at the next one.
 //
-// dt is fixed at 1/240 s across tests — Pass 3's α̃ = α / dt² and the
-// compliance values in each test are chosen so the rigid-like (α = 1e-12)
-// and soft (α = 1e-4) regimes exercise distinct behaviors.
+// dt is fixed at 1/240 s across tests: the correction uses α̃ = α / dt², and
+// the compliance values in each test are chosen so the rigid-like
+// (α = 1e-12) and soft (α = 1e-2) regimes exercise distinct behaviors.
 
 const DT = 1 / 240;
-const XPBD = createXpbdUniforms(DT);
+
+/** The solver state SimLoop hands a material, so its kernels can run without a loop. */
+function solverContext(particles: ParticleSystem, dt: number): SolverContext {
+  let group = 0;
+  return {
+    particles,
+    dt: uniform(dt, 'float'),
+    get hashGrid(): never {
+      throw new Error('soft bodies do not use the neighbor grid');
+    },
+    allocateCollisionGroup: () => ++group,
+  };
+}
 
 function unitCubeRest(): [number, number, number][] {
   // 8-corner unit cube around origin (rest COM = 0 simplifies reasoning).
@@ -54,14 +75,35 @@ function matVec(
 function rotZ(theta: number): number[] {
   const c = Math.cos(theta);
   const s = Math.sin(theta);
-  // eslint-disable-next-line prettier/prettier
   return [c, -s, 0, s, c, 0, 0, 0, 1];
+}
+
+/** Upload `rest` as committed positions, then overwrite the predicted positions. */
+function uploadDeformed(
+  particles: ParticleSystem,
+  rest: readonly [number, number, number][],
+  predicted: readonly [number, number, number][],
+  invMass: number,
+): void {
+  if (rest.length !== predicted.length) {
+    throw new Error('uploadDeformed: rest and predicted length mismatch');
+  }
+  particles.uploadParticles(rest.map((p) => ({ position: p, invMass })));
+  const pp = particles.predictedPositions.value.array as Float32Array;
+  predicted.forEach((q, i) => pp.set([q[0], q[1], q[2], 0], 4 * i));
+  particles.predictedPositions.value.needsUpdate = true;
+}
+
+function flatten(points: readonly (readonly [number, number, number])[]): Float32Array {
+  const out = new Float32Array(points.length * 3);
+  points.forEach((p, i) => out.set(p, i * 3));
+  return out;
 }
 
 interface RunArgs {
   readonly rest: readonly [number, number, number][];
   readonly initialPredicted: readonly [number, number, number][];
-  readonly matchCompliance: number;
+  readonly compliance: number;
   readonly invMass?: number;
   readonly iters?: number;
 }
@@ -73,66 +115,26 @@ interface RunResult {
 }
 
 /**
- * Helper: run {@link SoftbodySystem}'s preIter + perIter kernels the
- * specified number of times and read back the particle state.
+ * Run one substep of the soft body's kernels, without a SimLoop: its
+ * pre-solve kernels, then `iters` solver iterations. Reads back the
+ * predicted positions and the body frame fitted in the last iteration.
  */
 async function runPass3(args: RunArgs): Promise<RunResult> {
-  const { rest, initialPredicted, matchCompliance } = args;
-  const invMass = args.invMass ?? 1;
+  const { rest, initialPredicted, compliance } = args;
   const iters = args.iters ?? 1;
-  if (rest.length !== initialPredicted.length) {
-    throw new Error('runPass3: rest and initialPredicted length mismatch');
-  }
   const n = rest.length;
   const renderer = await createParticleRenderer();
   try {
     const particles = new ParticleSystem(renderer, n, 0.05);
-    particles.uploadParticles(
-      rest.map((p) => ({
-        position: [p[0], p[1], p[2]] as [number, number, number],
-        velocity: [0, 0, 0] as [number, number, number],
-        invMass,
-        phase: 1,
-      })),
-    );
-    // Override predictedPositions.
-    const pp = particles.predictedPositions.value.array as Float32Array;
-    for (let i = 0; i < n; i++) {
-      const q = initialPredicted[i]!;
-      pp[4 * i + 0] = q[0];
-      pp[4 * i + 1] = q[1];
-      pp[4 * i + 2] = q[2];
-      pp[4 * i + 3] = 0;
-    }
-    particles.predictedPositions.value.needsUpdate = true;
+    uploadDeformed(particles, rest, initialPredicted, args.invMass ?? 1);
 
-    const restFlat = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) {
-      const p = rest[i]!;
-      restFlat[3 * i + 0] = p[0];
-      restFlat[3 * i + 1] = p[1];
-      restFlat[3 * i + 2] = p[2];
-    }
-
-    const softbody = new SoftbodySystem({
-      particles,
-      xpbd: XPBD,
-      bodies: [
-        {
-          particleRange: { start: 0, count: n },
-          restPositions: restFlat,
-          surfaceFlag: new Uint8Array(n).fill(1),
-          phaseId: 1,
-          matchCompliance,
-        },
-      ],
+    const softbody = new SoftbodySystem(particles, {
+      bodies: [{ range: { start: 0, count: n }, restPositions: flatten(rest), compliance }],
     });
-
-    // One substep: preIterKernels (reset λ + Pass 1 + Pass 2), then
-    // `iters` iterations of perIterKernels (Pass 3).
+    const kernels = softbody.build(solverContext(particles, DT));
     const pipeline = [
-      ...softbody.preIterKernels,
-      ...Array.from({ length: iters }).flatMap(() => [...softbody.perIterKernels]),
+      ...(kernels.preSolve ?? []),
+      ...Array.from({ length: iters }).flatMap(() => [...(kernels.solve ?? [])]),
     ];
     await renderer.computeAsync(pipeline);
 
@@ -153,15 +155,15 @@ async function runPass3(args: RunArgs): Promise<RunResult> {
     const bodyRotation: number[] = [
       rotBuf[0]!,
       rotBuf[1]!,
-      rotBuf[2]!, // eslint-disable-line prettier/prettier
+      rotBuf[2]!,
       rotBuf[4]!,
       rotBuf[5]!,
-      rotBuf[6]!, // eslint-disable-line prettier/prettier
+      rotBuf[6]!,
       rotBuf[8]!,
       rotBuf[9]!,
-      rotBuf[10]!, // eslint-disable-line prettier/prettier
+      rotBuf[10]!,
     ];
-    particles.destroy();
+    particles.dispose();
     return { finalPredicted, bodyCenter, bodyRotation };
   } finally {
     renderer.dispose();
@@ -182,13 +184,13 @@ function maxPerParticleDiff(
   return d;
 }
 
-describe('Phase 10 — SoftbodySystem Pass 3 (Δx apply)', () => {
+describe('SoftbodySystem shape-matching correction (Δx apply)', () => {
   it('rest configuration: Δx = 0 exactly', async () => {
     const rest = unitCubeRest();
     const { finalPredicted } = await runPass3({
       rest,
       initialPredicted: rest,
-      matchCompliance: 1e-12,
+      compliance: 1e-12,
     });
     expect(maxPerParticleDiff(finalPredicted, rest)).toBeLessThan(1e-5);
   });
@@ -202,7 +204,7 @@ describe('Phase 10 — SoftbodySystem Pass 3 (Δx apply)', () => {
     const { finalPredicted } = await runPass3({
       rest,
       initialPredicted: translated,
-      matchCompliance: 1e-12,
+      compliance: 1e-12,
     });
     // All particles stay at their translated positions — goal matches x*.
     expect(maxPerParticleDiff(finalPredicted, translated)).toBeLessThan(1e-4);
@@ -215,9 +217,9 @@ describe('Phase 10 — SoftbodySystem Pass 3 (Δx apply)', () => {
     const { finalPredicted, bodyRotation } = await runPass3({
       rest,
       initialPredicted: rotated,
-      matchCompliance: 1e-12,
+      compliance: 1e-12,
     });
-    // Pass 2 should recover R_known; Pass 3 then has goal = x* so no
+    // The fit should recover R_known, so goal = x* and there is no
     // correction.
     expect(maxPerParticleDiff(finalPredicted, rotated)).toBeLessThan(1e-4);
     // Sanity: the recovered rotation matches the applied rotation.
@@ -226,21 +228,21 @@ describe('Phase 10 — SoftbodySystem Pass 3 (Δx apply)', () => {
     }
   });
 
-  it('one perturbed particle at near-zero compliance: single iter snaps to the shape-matched goal', async () => {
-    // Near-rigid compliance → one iter should drive every particle
-    // essentially to its shape-matched goal (Macklin 2016 eq. 18 with
-    // identity Jacobian converges in one iter when α → 0). The final
+  it('one perturbed particle at near-zero compliance: single iteration snaps to the shape-matched goal', async () => {
+    // Near-rigid compliance → one iteration should drive every particle
+    // essentially to its shape-matched goal (Macklin et al. 2016 eq. 18 with
+    // identity Jacobian converges in one iteration when α → 0). The final
     // residual against the goal — NOT against rest — is the correct
-    // convergence metric, because shape matching absorbs rigid motion
-    // but leaves a per-particle residual for single-particle
-    // perturbations (the best-fit (R, c) are biased by the perturbation).
+    // convergence metric, because shape matching absorbs rigid motion but
+    // leaves a per-particle residual for single-particle perturbations (the
+    // best-fit (R, c) are biased by the perturbation).
     const rest = unitCubeRest();
     const initialPredicted = rest.map((r) => [r[0], r[1], r[2]] as [number, number, number]);
     initialPredicted[0] = [rest[0]![0] + 0.5, rest[0]![1], rest[0]![2]];
     const { finalPredicted, bodyCenter, bodyRotation } = await runPass3({
       rest,
       initialPredicted,
-      matchCompliance: 1e-12,
+      compliance: 1e-12,
       iters: 1,
     });
     // Compute shape-matched goals CPU-side: goal_i = R · r_i + c.
@@ -256,10 +258,10 @@ describe('Phase 10 — SoftbodySystem Pass 3 (Δx apply)', () => {
     expect(maxPerParticleDiff(finalPredicted, goals)).toBeLessThan(1e-4);
   });
 
-  it('one perturbed particle at high compliance: single iter barely moves it', async () => {
-    // Soft compliance — α = 1e-2, α̃ = 5760. w = 1.
-    //   Δλ = −C / (w + α̃) = −C / 5761 → very small Δx.
-    // After one iter the particle should still be near its initial
+  it('one perturbed particle at high compliance: single iteration barely moves it', async () => {
+    // Soft compliance — α = 1e-2, α̃ = α / dt² = 576, w = 1.
+    //   Δλ = −C / (w + α̃) = −C / 577 → very small Δx.
+    // After one iteration the particle should still be near its initial
     // (perturbed) position.
     const rest = unitCubeRest();
     const initialPredicted = rest.map((r) => [r[0], r[1], r[2]] as [number, number, number]);
@@ -267,19 +269,19 @@ describe('Phase 10 — SoftbodySystem Pass 3 (Δx apply)', () => {
     const { finalPredicted } = await runPass3({
       rest,
       initialPredicted,
-      matchCompliance: 1e-2,
+      compliance: 1e-2,
       iters: 1,
     });
-    // The soft-body correction in one iter is at most a few percent
-    // of the perturbation.
+    // The soft-body correction in one iteration is at most a few percent of
+    // the perturbation.
     const delta0After = Math.abs(finalPredicted[0]![0] - initialPredicted[0]![0]);
     expect(delta0After).toBeLessThan(0.05);
   });
 
-  it('multi-iter solve at zero compliance converges to the shape-matched goal', async () => {
-    // Ten iters, α → 0. XPBD with identity Jacobian is already at
-    // fixed point after iter 1; further iters should leave the
-    // per-particle residual against goal at f32 noise.
+  it('multi-iteration solve at zero compliance converges to the shape-matched goal', async () => {
+    // Ten iterations, α → 0. XPBD with identity Jacobian is already at its
+    // fixed point after the first iteration; further iterations should leave
+    // the per-particle residual against the goal at f32 noise.
     const rest = unitCubeRest();
     const initialPredicted = rest.map((r) => [r[0], r[1], r[2]] as [number, number, number]);
     initialPredicted[0] = [rest[0]![0] + 0.5, rest[0]![1], rest[0]![2]];
@@ -287,7 +289,7 @@ describe('Phase 10 — SoftbodySystem Pass 3 (Δx apply)', () => {
     const { finalPredicted, bodyCenter, bodyRotation } = await runPass3({
       rest,
       initialPredicted,
-      matchCompliance: 1e-12,
+      compliance: 1e-12,
       iters: 10,
     });
 
@@ -305,82 +307,76 @@ describe('Phase 10 — SoftbodySystem Pass 3 (Δx apply)', () => {
   });
 
   it('kinematic particle (invMass = 0) is not corrected', async () => {
-    // XPBD Δx = w · Δλ with w = 0 gives Δx = 0. Verify a kinematic
-    // pinned body does not drift under shape matching.
+    // XPBD Δx = w · Δλ with w = 0 gives Δx = 0. Verify a kinematic body does
+    // not drift under shape matching.
     const rest = unitCubeRest();
     const translated = rest.map((r) => [r[0] + 1, r[1], r[2]] as [number, number, number]);
     const { finalPredicted } = await runPass3({
       rest,
       initialPredicted: translated,
-      matchCompliance: 1e-12,
+      compliance: 1e-12,
       invMass: 0,
     });
     // Even at near-zero compliance, w = 0 means Δx = 0 per particle.
     expect(maxPerParticleDiff(finalPredicted, translated)).toBeLessThan(1e-5);
   });
 
-  it('per-substep λ reset: λ is written during an iter and zeroed at the next substep start', async () => {
-    // Correctness check on λ reset. Perturb a single particle (rigid
-    // motion leaves C = 0 → zero λ, so we need a non-rigid config to
-    // exercise the λ write). After an iter, some λ slots hold non-zero
-    // Δλ; after the next substep's preIterKernels fire, λ is all zero.
+  it('per-substep λ reset: λ is written during an iteration and zeroed at the next substep start', async () => {
+    // Correctness check on the λ reset. Perturb a single particle (rigid
+    // motion leaves C = 0 → zero λ, so a non-rigid configuration is needed
+    // to exercise the λ write). After an iteration, some λ slots hold a
+    // non-zero Δλ; after the next substep's reset kernel, λ is all zero.
+    //
+    // λ is private to SoftbodySystem, so this test assembles the same
+    // kernels from their builders around a λ buffer it can read.
     const rest = unitCubeRest();
+    const n = rest.length;
     const initialPredicted = rest.map((r) => [r[0], r[1], r[2]] as [number, number, number]);
     initialPredicted[0] = [rest[0]![0] + 0.3, rest[0]![1], rest[0]![2]];
 
-    // Run two back-to-back single-iter substeps. The λ reset at the
-    // start of each preIter should make substep 2 begin from its
-    // (already-corrected) predictedPositions as if it were a fresh
-    // substep — no accumulated λ carry.
     const renderer = await createParticleRenderer();
     try {
-      const particles = new ParticleSystem(renderer, rest.length, 0.05);
-      particles.uploadParticles(
-        rest.map((p) => ({
-          position: [p[0], p[1], p[2]] as [number, number, number],
-          velocity: [0, 0, 0] as [number, number, number],
-          invMass: 1,
-          phase: 1,
-        })),
+      const particles = new ParticleSystem(renderer, n, 0.05);
+      uploadDeformed(particles, rest, initialPredicted, 1);
+
+      // The unit cube's rest centroid is the origin, so its rest positions
+      // are already the centered rest offsets.
+      const restOffsets = instancedArray(n, 'vec4');
+      rest.forEach((r, i) =>
+        (restOffsets.value.array as Float32Array).set([r[0], r[1], r[2], 0], 4 * i),
       );
-      const pp = particles.predictedPositions.value.array as Float32Array;
-      for (let i = 0; i < rest.length; i++) {
-        const q = initialPredicted[i]!;
-        pp[4 * i + 0] = q[0];
-        pp[4 * i + 1] = q[1];
-        pp[4 * i + 2] = q[2];
-        pp[4 * i + 3] = 0;
-      }
-      particles.predictedPositions.value.needsUpdate = true;
-
-      const restFlat = new Float32Array(rest.length * 3);
-      for (let i = 0; i < rest.length; i++) {
-        const p = rest[i]!;
-        restFlat[3 * i + 0] = p[0];
-        restFlat[3 * i + 1] = p[1];
-        restFlat[3 * i + 2] = p[2];
-      }
-      const softbody = new SoftbodySystem({
+      restOffsets.value.needsUpdate = true;
+      const lambda = instancedArray(n, 'vec4');
+      const bodyCenters = instancedArray(1, 'vec4');
+      const bodyRotations = instancedArray(3, 'vec4');
+      const weights = instancedArray(new Float32Array(n).fill(1), 'float');
+      const shared = {
         particles,
-        xpbd: XPBD,
-        bodies: [
-          {
-            particleRange: { start: 0, count: rest.length },
-            restPositions: restFlat,
-            surfaceFlag: new Uint8Array(rest.length).fill(1),
-            phaseId: 1,
-            matchCompliance: 1e-6,
-          },
-        ],
-      });
+        bodyStart: instancedArray(new Uint32Array([0]), 'uint'),
+        bodyCount: instancedArray(new Uint32Array([n]), 'uint'),
+        numBodies: 1,
+      };
+      const resetLambda = buildResetLambdaKernel({ particles, lambda });
+      const iteration = [
+        buildCenterOfMassKernel({ ...shared, weights, bodyCenters }),
+        buildMomentAndPolarDecompKernel({ ...shared, weights, restOffsets, bodyRotations }),
+        buildShapeMatchDeltaApplyKernel({
+          ...shared,
+          restOffsets,
+          bodyCenters,
+          bodyRotations,
+          bodyCompliance: instancedArray(new Float32Array([1e-6]), 'float'),
+          lambda,
+          dt: uniform(DT, 'float'),
+        }),
+      ];
 
-      // Substep 1
-      await renderer.computeAsync([...softbody.preIterKernels, ...softbody.perIterKernels]);
-      // Read lambda mid-way
-      const lambdaMid = new Float32Array(await renderer.getArrayBufferAsync(softbody.lambda.value));
-      // Find a softbody slot with non-zero lambda (confirms Pass 3 did write)
+      // Substep 1: reset, then one iteration.
+      await renderer.computeAsync([resetLambda, ...iteration]);
+      const lambdaMid = new Float32Array(await renderer.getArrayBufferAsync(lambda.value));
+      // Find a slot with non-zero λ (confirms the correction wrote it).
       let anyNonZero = false;
-      for (let i = 0; i < rest.length * 4; i++) {
+      for (let i = 0; i < n * 4; i++) {
         if (Math.abs(lambdaMid[i]!) > 1e-10) {
           anyNonZero = true;
           break;
@@ -388,15 +384,13 @@ describe('Phase 10 — SoftbodySystem Pass 3 (Δx apply)', () => {
       }
       expect(anyNonZero).toBe(true);
 
-      // Substep 2 — triggers lambda reset at start, should zero lambda
-      await renderer.computeAsync([...softbody.preIterKernels]);
-      const lambdaAfterReset = new Float32Array(
-        await renderer.getArrayBufferAsync(softbody.lambda.value),
-      );
-      for (let i = 0; i < rest.length * 4; i++) {
+      // Substep 2 starts with the reset, which must zero λ.
+      await renderer.computeAsync([resetLambda]);
+      const lambdaAfterReset = new Float32Array(await renderer.getArrayBufferAsync(lambda.value));
+      for (let i = 0; i < n * 4; i++) {
         expect(lambdaAfterReset[i]).toBe(0);
       }
-      particles.destroy();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

@@ -12,33 +12,44 @@ import {
   vec3,
   vec4,
 } from 'three/tsl';
-import type { ParticleSystem } from '../core/particles.js';
+import type { ClothSystem } from './ClothSystem.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
 export interface ClothSurfaceOptions {
-  readonly particles: ParticleSystem;
-  /** Number of simulation vertices in each row and column, in row-major order. */
+  /** Grid size of the cloth: particles per row and number of rows, in row-major order. */
   readonly columns: number;
   readonly rows: number;
-  readonly offset?: number;
+  /** Mesh vertices per grid cell along each axis. Default 3. */
   readonly subdivisions?: number;
+  /**
+   * Material to draw with. Its position and normal nodes are replaced.
+   * Default: a double-sided sheen material.
+   */
   readonly material?: MeshPhysicalNodeMaterial;
   /**
-   * Fit a cubic B-spline through the particles instead of a Catmull-Rom
-   * spline. Catmull-Rom passes through every particle, so grid-scale buckling
-   * shows as lumps; the B-spline stays close to the particles and filters that
-   * out while keeping larger folds. Default `false`.
+   * Fit a cubic B-spline near the particles (default) instead of a
+   * Catmull-Rom spline through them. Catmull-Rom shows grid-scale buckling
+   * as lumps; the B-spline filters it out while keeping larger folds.
    */
   readonly smooth?: boolean;
 }
 
-/** Bicubic geometry and analytic smooth normals from the live simulation grid. */
-export function createClothSurface(options: ClothSurfaceOptions): Mesh {
-  const { particles, columns, rows, offset = 0, subdivisions = 3, smooth = false } = options;
-  if (columns < 2 || rows < 2 || offset < 0 || offset + columns * rows > particles.capacity)
-    throw new Error('Cloth surface grid must fit in the particle buffer.');
+/**
+ * A mesh that follows a grid-shaped cloth on the GPU, as a bicubic surface
+ * through the particles with analytic normals. The cloth must come from a
+ * grid (such as a `PlaneGeometry`) whose vertices are in row-major order.
+ */
+export function createClothSurface(cloth: ClothSystem, options: ClothSurfaceOptions): Mesh {
+  const { particles } = cloth;
+  const { columns, rows, subdivisions = 3, smooth = true } = options;
+  const offset = cloth.range.start;
+  if (columns < 2 || rows < 2 || columns * rows !== cloth.range.count) {
+    throw new Error(
+      `createClothSurface: a ${columns}×${rows} grid does not match the cloth's ${cloth.range.count} particles`,
+    );
+  }
   const catmullRom = (t: Any) => {
     const t2 = t.mul(t),
       t3 = t2.mul(t);
@@ -117,7 +128,6 @@ export function createClothSurface(options: ClothSurfaceOptions): Mesh {
   const material =
     options.material ??
     new MeshPhysicalNodeMaterial({ side: DoubleSide, roughness: 0.4, sheen: 1 });
-  material.flatShading = false;
   material.positionNode = frame.element(0);
   const normal = normalize(cross(frame.element(2), frame.element(1))).toVarying();
   // Custom normalNode bypasses the built-in two-sided normal adjustment.

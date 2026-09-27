@@ -15,26 +15,15 @@ import {
 import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import type StorageBufferNode from 'three/src/nodes/accessors/StorageBufferNode.js';
 
-// TSL's @types surface many GPGPU nodes as bare `Node`. See Phase 02
-// `integrate.ts` and Phase 01 `tests/_helpers/probes/scan.ts` for the same escape hatch.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
-/**
- * Workgroup size for the prefix-scan. Matches the Phase 01 Blelloch probe at
- * `tests/_helpers/probes/scan.ts` — the `createParticleRenderer` helper
- * requests `maxComputeInvocationsPerWorkgroup: 1024` so this size is always
- * available before dispatch.
- */
+/** Threads per workgroup in the prefix scan. `createParticleRenderer` requests the 1024-invocation limit this needs. */
 export const SCAN_WORKGROUP_SIZE = 1024;
 
 /**
- * Hard cap on the number of grid cells the count-sort pipeline can scan in a
- * single rebuild. Implied by `SCAN_WORKGROUP_SIZE² = 1,048,576`: the block-sum
- * scan runs in a single workgroup of `W` threads over up to `W` block sums, so
- * `paddedN = numBlocks · W ≤ W · W`. Raising this ceiling requires a recursive
- * (multi-level) scan; file a fresh UNKNOWN with measurements if a real scene
- * needs it.
+ * Most hash buckets one rebuild can scan: the second scan pass runs in a
+ * single workgroup over the per-block sums, so buckets ≤ W².
  */
 export const MAX_CELLS_SINGLE_LEVEL_SCAN = SCAN_WORKGROUP_SIZE * SCAN_WORKGROUP_SIZE;
 
@@ -48,27 +37,15 @@ export function padToScanWorkgroup(n: number): number {
   return Math.ceil(n / W) * W;
 }
 
-/**
- * The count-sort kernel chain.
- *
- *
-
- *
- */
+/** Kernels of the counting sort, in dispatch order. */
 export interface CountSortKernels {
   /** Dispatched over `nCellsPadded` after the histogram kernel. */
   readonly blockScan: ComputeNode;
   /** Dispatched as a single W-thread workgroup. Reads/writes `blockSums`. */
   readonly blockSumScan: ComputeNode;
   /**
-   * Dispatched over `nCellsPadded`. Fuses three same-shape passes that
-   * each finalize per-cell range bookkeeping after the block scans:
-   *   (1) addPrefix       : fold each block's scanned prefix back onto
-   *                         `cellStart[i]`.
-   *   (2) resetWriteCursor: initialize the per-cell scatter cursor from
-   *                         the finalized `cellStart[i]`.
-   *   (3) cellBounds      : derive `cellEnd[i] = cellStart[i] + counts[i]`.
-   *
+   * Adds each block's prefix into `cellStart`, then derives the scatter
+   * cursor and `cellEnd = cellStart + counts` for every bucket.
    */
   readonly finalizeCellRanges: ComputeNode;
   /** Dispatched over `capacity`. Fills `sortedIndices`. */
@@ -90,9 +67,8 @@ export function buildCountSortKernels(
 
   // Pass 1 — per-block Blelloch exclusive scan of `counts` into `cellStart`;
   // writes each block's total to `blockSums` before the down-sweep clears it.
-  // Algorithm mirrors _probe/scan.ts; the S-02 loop-variable-capture hazard
-  // is handled the same way (snapshot `offset` into
-  // `off` inside each JS loop iteration before the `If()` callback).
+  // Each JS loop iteration snapshots `offset` into `off` before the `If()`
+  // callback captures it.
   const blockScan = Fn(() => {
     const tid: Any = localId.x;
     const wg: Any = workgroupId.x;
@@ -183,18 +159,8 @@ export function buildCountSortKernels(
     blockSums.element(tid).assign(s.element(tid));
   })().compute(W, [W]);
 
-  // Pass 3 — fused finalize. Three same-shape kernels collapsed into one
-  // dispatch over `nCellsPadded`:
-  //   (a) addPrefix        : fold blockSums prefix back onto cellStart.
-  //   (b) resetWriteCursor : initialize per-cell scatter cursor.
-  //   (c) cellBounds       : cellEnd = cellStart + counts.
-  // All three operate on the same `i = instanceIndex` and only touch
-  // i-indexed buffers — no cross-thread sync needed. The relative
-  // ordering of the cellEnd write vs the scatter write changes (cellEnd
-  // is now produced before scatter runs); this is observably equivalent
-  // because cellEnd reads `counts[i]` (frozen by histogram) and the
-  // finalized `cellStart[i]` (just computed by this thread), neither of
-  // which scatter writes. Phase Perf-17.
+  // Pass 3 — per bucket: add the block prefix to cellStart, start the
+  // scatter cursor there, and set cellEnd = cellStart + counts.
   const finalizeCellRanges = Fn(() => {
     const i: Any = instanceIndex;
     const wg: Any = i.div(uint(W));

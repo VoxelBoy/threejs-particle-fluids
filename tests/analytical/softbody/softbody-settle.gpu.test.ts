@@ -2,18 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
 
 import {
-  HashGrid,
   ParticleSystem,
   PrimitiveSet,
   SimLoop,
+  SoftbodySystem,
   createParticleRenderer,
-  createXpbdUniforms,
   type ParticleInit,
-} from '../../../src/core/index.js';
-import { SoftbodySystem } from '../../../src/softbody/index.js';
+} from '../../../src/index.js';
 
-// Phase 10 G1 — stiffness-vs-substeps + I-independence (U-35 gate).
-//
+// A soft-body cube dropped onto a floor: it settles without blowing up, and
+// its peak impact compression converges as the timestep is refined and is
+// independent of the solver iteration count.
 
 function buildLattice(
   dim: number,
@@ -31,12 +30,7 @@ function buildLattice(
         const ry = (iy - half) * spacing;
         const rz = (iz - half) * spacing;
         rest.push([rx, ry, rz]);
-        initial.push({
-          position: [rx, ry + comY, rz],
-          velocity: [0, 0, 0],
-          invMass: 1,
-          phase: 1,
-        });
+        initial.push({ position: [rx, ry + comY, rz] });
       }
     }
   }
@@ -46,7 +40,7 @@ function buildLattice(
 interface RunSettleArgs {
   readonly substeps: number;
   readonly iterations: number;
-  readonly matchCompliance: number;
+  readonly compliance: number;
   readonly frames: number;
 }
 
@@ -67,8 +61,8 @@ async function runSettle(args: RunSettleArgs): Promise<RunSettleResult> {
   try {
     const spacing = 0.1;
     const r = 0.049; // slightly less than spacing/2 so particles don't
-    //                  overlap — contact pipeline is omitted (contact-
-    //                  free test; plane collider handles floor).
+    //                  overlap — particle contacts are off (the plane
+    //                  collider handles the floor).
     const dim = 3;
     const count = dim * dim * dim;
     // Drop from a modest height so impact velocity stays in a regime
@@ -89,40 +83,25 @@ async function runSettle(args: RunSettleArgs): Promise<RunSettleResult> {
       restFlat[3 * i + 2] = rest[i]![2];
     }
 
-    const xpbd = createXpbdUniforms(1 / 60);
-    const softbody = new SoftbodySystem({
-      particles,
-      xpbd,
+    const softbody = new SoftbodySystem(particles, {
       bodies: [
-        {
-          particleRange: { start: 0, count },
-          restPositions: restFlat,
-          surfaceFlag: new Uint8Array(count).fill(1),
-          phaseId: 1,
-          matchCompliance: args.matchCompliance,
-        },
+        { range: { start: 0, count }, restPositions: restFlat, compliance: args.compliance },
       ],
     });
 
-    const colliders = new PrimitiveSet(particles, { capacity: 1 });
+    const colliders = new PrimitiveSet(particles);
     colliders.addPlane(new Vector3(0, 1, 0), new Vector3(0, 0, 0), {
       muS: 0.3,
       muK: 0.2,
     });
-    colliders.upload();
-
-    const hashGrid = new HashGrid(particles, { cellSize: r * 2 });
 
     const loop = new SimLoop(particles, {
       substeps: args.substeps,
       iterations: args.iterations,
-      xpbd,
-      hashGrid,
-      colliders: { colliders },
+      gravity: new Vector3(0, -9.81, 0),
+      colliders: [colliders],
       materials: [softbody],
     });
-    loop.kernels.floorY.value = -1e9;
-    loop.gravity.set(0, -9.81, 0);
 
     const restExtent = (dim - 1) * spacing;
     let minExtentDuringImpact = restExtent;
@@ -144,8 +123,9 @@ async function runSettle(args: RunSettleArgs): Promise<RunSettleResult> {
       settledExtent = extent;
     }
 
-    particles.destroy();
-    colliders.destroy();
+    loop.dispose();
+    colliders.dispose();
+    particles.dispose();
 
     const peakCompressionRatio = (restExtent - minExtentDuringImpact) / restExtent;
     return { peakCompressionRatio, settledExtent, restExtent };
@@ -154,12 +134,12 @@ async function runSettle(args: RunSettleArgs): Promise<RunSettleResult> {
   }
 }
 
-describe('Phase 10 — SoftbodySystem settle + stiffness tests (G1)', () => {
+describe('SoftbodySystem settling and impact stiffness', () => {
   it('body drops + settles without NaN or blow-up (smoke)', async () => {
     const result = await runSettle({
       substeps: 8,
       iterations: 2,
-      matchCompliance: 1e-4,
+      compliance: 1e-4,
       frames: 180, // 3 s — ample for fall + multiple bounces + settle.
     });
     expect(Number.isFinite(result.peakCompressionRatio)).toBe(true);
@@ -171,14 +151,13 @@ describe('Phase 10 — SoftbodySystem settle + stiffness tests (G1)', () => {
     // Settle position: the body rests on the floor, so min_y should
     // be near the particle radius. The final extent should be near
     // rest extent (body has relaxed to its shape-matched rest shape).
-    // eslint-disable-next-line no-console
     console.info(
       `[softbody-settle-smoke] restExtent=${result.restExtent.toFixed(4)} peakCompression=${result.peakCompressionRatio.toFixed(4)} settledExtent=${result.settledExtent.toFixed(4)}`,
     );
   }, 60_000);
 
   it('impact compression converges as the timestep is refined', async () => {
-    // Iterations fixed at 2 (SimLoop default). matchCompliance = 1e-4
+    // Iterations fixed at 2 (SimLoop default). compliance = 1e-4
     // — soft enough to show measurable compression on impact. Frames
     // chosen to cover the full first-bounce impact window.
     const frames = 120; // 2 s — covers fall (~0.25 s) + multiple
@@ -188,19 +167,19 @@ describe('Phase 10 — SoftbodySystem settle + stiffness tests (G1)', () => {
       runSettle({
         substeps: 4,
         iterations: 2,
-        matchCompliance: 1e-4,
+        compliance: 1e-4,
         frames,
       }),
       runSettle({
         substeps: 8,
         iterations: 2,
-        matchCompliance: 1e-4,
+        compliance: 1e-4,
         frames,
       }),
       runSettle({
         substeps: 16,
         iterations: 2,
-        matchCompliance: 1e-4,
+        compliance: 1e-4,
         frames,
       }),
     ]);
@@ -209,54 +188,51 @@ describe('Phase 10 — SoftbodySystem settle + stiffness tests (G1)', () => {
       s8.peakCompressionRatio,
       s16.peakCompressionRatio,
     ];
-    // eslint-disable-next-line no-console
     console.info(
       `[stiffness-vs-substeps] S=4: ${s4.peakCompressionRatio.toFixed(5)}  S=8: ${s8.peakCompressionRatio.toFixed(5)}  S=16: ${s16.peakCompressionRatio.toFixed(5)}`,
     );
     const maxC = Math.max(...compressions);
     const minC = Math.min(...compressions);
     const spread = maxC > 0 ? (maxC - minC) / maxC : 0;
-    // eslint-disable-next-line no-console
     console.info(`[stiffness-vs-substeps] spread=${(spread * 100).toFixed(2)}%`);
     // All three runs must see SOME compression (otherwise the test
     // is trivial — confirms the scene is actually exercising the
     // shape-matching compliance).
     expect(minC).toBeGreaterThan(0.01);
-    // Refitting the body frame removes the old artificial positional anchor.
-    // Floor impacts now require temporal convergence; coarse and fine impacts
-    // need not have identical peak compression at a fixed iteration budget.
+    // The body frame is refit every iteration, so nothing anchors the body's
+    // position: floor impacts converge with the timestep, and coarse and fine
+    // impacts need not have identical peak compression at a fixed iteration
+    // budget. Refining must not move the result further, though.
     const coarseError = Math.abs(s8.peakCompressionRatio - s4.peakCompressionRatio);
     const fineError = Math.abs(s16.peakCompressionRatio - s8.peakCompressionRatio);
     expect(maxC).toBeLessThan(0.5);
     expect(fineError).toBeLessThan(coarseError + 0.001);
   }, 120_000);
 
-  it('I-independence (U-35 resolution gate): peak compression within 3% across I ∈ {1, 2, 4}', async () => {
-    // Substeps fixed at S = 8; iterations swept over {1, 2, 4}.
-    // matchCompliance = 1e-4. Per the per-substep polar-decomp
-    // cadence decision, peak compression must be I-independent —
-    // Pass 1 + Pass 2 produce the same (c, R) regardless of I, and
-    // Pass 3's per-iter Δλ accumulation should converge the same
-    // total displacement regardless of iter count (XPBD's small-step
-    // premise).
+  it('peak compression is independent of the iteration count (within 3% across I ∈ {1, 2, 4})', async () => {
+    // Substeps fixed at S = 8; iterations swept over {1, 2, 4};
+    // compliance = 1e-4. The fitted body frame (c, R) is the same
+    // regardless of I, and the per-iteration Δλ accumulation should
+    // converge to the same total displacement regardless of the
+    // iteration count (XPBD's small-step premise).
     const frames = 60;
     const [i1, i2, i4] = await Promise.all([
       runSettle({
         substeps: 8,
         iterations: 1,
-        matchCompliance: 1e-4,
+        compliance: 1e-4,
         frames,
       }),
       runSettle({
         substeps: 8,
         iterations: 2,
-        matchCompliance: 1e-4,
+        compliance: 1e-4,
         frames,
       }),
       runSettle({
         substeps: 8,
         iterations: 4,
-        matchCompliance: 1e-4,
+        compliance: 1e-4,
         frames,
       }),
     ]);
@@ -265,14 +241,12 @@ describe('Phase 10 — SoftbodySystem settle + stiffness tests (G1)', () => {
       i2.peakCompressionRatio,
       i4.peakCompressionRatio,
     ];
-    // eslint-disable-next-line no-console
     console.info(
       `[I-independence] I=1: ${i1.peakCompressionRatio.toFixed(5)}  I=2: ${i2.peakCompressionRatio.toFixed(5)}  I=4: ${i4.peakCompressionRatio.toFixed(5)}`,
     );
     const maxC = Math.max(...compressions);
     const minC = Math.min(...compressions);
     const spread = maxC > 0 ? (maxC - minC) / maxC : 0;
-    // eslint-disable-next-line no-console
     console.info(`[I-independence] spread=${(spread * 100).toFixed(2)}% (target < 3%)`);
     expect(minC).toBeGreaterThan(0.01);
     expect(spread).toBeLessThan(0.03);

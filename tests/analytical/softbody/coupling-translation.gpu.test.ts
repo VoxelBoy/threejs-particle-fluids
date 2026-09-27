@@ -1,16 +1,29 @@
 import { describe, expect, it } from 'vitest';
-import { Fn, instanceIndex, vec3, vec4 } from 'three/tsl';
+import { Fn, instanceIndex, uniform, vec3, vec4 } from 'three/tsl';
 import {
   ParticleSystem,
+  SoftbodySystem,
   createParticleRenderer,
-  createXpbdUniforms,
-} from '../../../src/core/index.js';
-import { SoftbodySystem } from '../../../src/softbody/index.js';
+  type SolverContext,
+} from '../../../src/index.js';
+
+/** The solver state SimLoop hands a material, so its kernels can run without a loop. */
+function solverContext(particles: ParticleSystem, dt: number): SolverContext {
+  let group = 0;
+  return {
+    particles,
+    dt: uniform(dt, 'float'),
+    get hashGrid(): never {
+      throw new Error('soft bodies do not use the neighbor grid');
+    },
+    allocateCollisionGroup: () => ++group,
+  };
+}
 
 // Internal shape constraints must not undo a translation introduced by another
 // material between iterations (for example, the reaction from fluid pressure).
 describe('soft-body coupling preserves external translations', () => {
-  for (const mode of ['explicit', 'implicit'] as const)
+  for (const mode of ['global', 'local'] as const)
     it(mode, async () => {
       const renderer = await createParticleRenderer();
       const particles = new ParticleSystem(renderer, 27, 0.02);
@@ -29,33 +42,29 @@ describe('soft-body coupling preserves external translations', () => {
         particles.uploadParticles(
           Array.from({ length: 27 }, (_, i) => ({
             position: [rest[i * 3]!, rest[i * 3 + 1]!, rest[i * 3 + 2]!] as const,
-            velocity: [0, 0, 0] as const,
             invMass: 10,
-            phase: 0,
           })),
         );
-        const body = new SoftbodySystem({
-          particles,
-          xpbd: createXpbdUniforms(1 / 60),
-          shapeMatchMode: mode,
+        const body = new SoftbodySystem(particles, {
+          shapeMatching: mode,
+          selfCollision: true,
           bodies: [
             {
-              particleRange: { start: 0, count: 27 },
+              range: { start: 0, count: 27 },
               restPositions: rest,
-              surfaceFlag: new Uint8Array(27).fill(1),
-              phaseId: 0,
-              matchCompliance: 1e-9,
+              compliance: 1e-9,
               edges: Uint32Array.from(edges),
             },
           ],
         });
-        await renderer.computeAsync([...body.preIterKernels]);
+        const kernels = body.build(solverContext(particles, 1 / 60));
+        await renderer.computeAsync([...(kernels.preSolve ?? [])]);
         const translate = Fn(() => {
           const p = particles.predictedPositions.element(instanceIndex);
           p.assign(vec4(p.xyz.add(vec3(0.12, 0.23, -0.08)), p.w));
         })().compute(27);
         await renderer.computeAsync(translate);
-        for (let i = 0; i < 4; i++) await renderer.computeAsync([...body.perIterKernels]);
+        for (let i = 0; i < 4; i++) await renderer.computeAsync([...(kernels.solve ?? [])]);
         const data = new Float32Array(
           await renderer.getArrayBufferAsync(particles.predictedPositions.value),
         );
@@ -65,7 +74,7 @@ describe('soft-body coupling preserves external translations', () => {
         expect(mean[1]).toBeCloseTo(0.23, 4);
         expect(mean[2]).toBeCloseTo(-0.08, 4);
       } finally {
-        particles.destroy();
+        particles.dispose();
         renderer.dispose();
       }
     });

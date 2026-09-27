@@ -1,34 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
 import {
-  HashGrid,
+  FluidSystem,
   ParticleSystem,
   PrimitiveSet,
   SimLoop,
   createParticleRenderer,
-  createXpbdUniforms,
   type ParticleInit,
-} from '../../../src/core/index.js';
-import { FluidSystem } from '../../../src/fluids/index.js';
+} from '../../../src/index.js';
 
-// Phase 08 G1 — hydrostatic column.
+// Hydrostatic column.
 //
-// Plan:
-//   A rectangular fluid column, settled under gravity inside a sealed box
-//   of analytic Plane colliders (Phase 06). After 5 s of settle, measure
-//   per-particle density at several depth bins (excluding the top 10%
-//   surface and the bottom 10% floor artefacts), and verify the density
-//   *excess* `ρ − ρ_0` grows monotonically with depth — the PBF signature
-//   of hydrostatic pressure support.
+// A rectangular fluid column settles under gravity inside a sealed box
+// of analytic plane colliders. After 5 s of settle, measure per-particle
+// density at several depth bins (excluding the top 10% surface and the
+// bottom 10% floor artefacts), and verify the density *excess* `ρ − ρ_0`
+// grows monotonically with depth — the PBF signature of hydrostatic
+// pressure support.
 //
-// Physics note (worth capturing because the plan's "pressure ∝ ρgd
-// within 5%" phrasing is slightly misleading for a constraint-based
-// solver):
+// Physics note ("pressure ∝ ρgd within 5%" is slightly misleading for a
+// constraint-based solver):
 //   PBF drives `ρ_i → ρ_0` via a position-level constraint, not via an
 //   explicit pressure field. At equilibrium every particle sits near
 //   `ρ_0`; the residual density excess is what the finite-α̃ XPBD
 //   compliance tolerates. The *ratio* between per-depth excess and
-//   depth is what matches paper hydrostatics, not the absolute excess.
+//   depth is what matches hydrostatics, not the absolute excess.
 //   We therefore check monotonic ordering + a positive depth-vs-excess
 //   linear fit, NOT an absolute pressure match.
 //
@@ -37,18 +33,18 @@ import { FluidSystem } from '../../../src/fluids/index.js';
 //   ρ_0 = 1000 kg/m³,    g = 9.81 m/s²
 //   Column: 8 × 12 × 8 = 768 particles, packed in `[−0.1, 0.1] × [0, 0.3]
 //     × [−0.1, 0.1]` m (x × y × z).
-//   Tank: five Plane colliders — floor at y=0, walls at x=±0.15, z=±0.15.
+//   Tank: five plane colliders — floor at y=0, walls at x=±0.15, z=±0.15.
 //     No ceiling; the column surface is free.
-//   Solver: substeps=4, iterations=2, compliance=1e-6, vorticity OFF
+//   Solver: substeps=4, iterations=2, compliance=1e-4, vorticity OFF
 //     (settle test — we want stillness).
 
-describe('Phase 08 — fluid hydrostatic column', () => {
+describe('fluid hydrostatic column', () => {
   it('density excess grows monotonically with depth after 5 s settle', async () => {
     const renderer = await createParticleRenderer();
     try {
       const spacing = 0.025;
       const h = 0.05;
-      const r = spacing * 0.5; // half-spacing per the Phase 08 plan decision.
+      const r = spacing * 0.5; // particle radius = half the rest spacing.
       const restDensity = 1000;
 
       const nx = 8;
@@ -63,12 +59,8 @@ describe('Phase 08 — fluid hydrostatic column', () => {
             const x = -((nx * spacing) / 2) + spacing * 0.5 + i * spacing;
             const y = spacing * 0.5 + j * spacing;
             const z = -((nz * spacing) / 2) + spacing * 0.5 + k * spacing;
-            initial.push({
-              position: [x, y, z],
-              velocity: [0, 0, 0],
-              invMass: 1, // overwritten by FluidSystem at construction
-              phase: 0,
-            });
+            // invMass is set by FluidSystem at construction.
+            initial.push({ position: [x, y, z] });
           }
         }
       }
@@ -80,42 +72,29 @@ describe('Phase 08 — fluid hydrostatic column', () => {
       // can self-pack without hitting walls until it wants to spread.
       const tankHalfX = 0.15;
       const tankHalfZ = 0.15;
-      const colliders = new PrimitiveSet(particles, { capacity: 5 });
+      const colliders = new PrimitiveSet(particles);
       colliders.addPlane(new Vector3(0, 1, 0), new Vector3(0, 0, 0));
       colliders.addPlane(new Vector3(1, 0, 0), new Vector3(-tankHalfX, 0, 0));
       colliders.addPlane(new Vector3(-1, 0, 0), new Vector3(tankHalfX, 0, 0));
       colliders.addPlane(new Vector3(0, 0, 1), new Vector3(0, 0, -tankHalfZ));
       colliders.addPlane(new Vector3(0, 0, -1), new Vector3(0, 0, tankHalfZ));
-      colliders.upload();
 
-      const hashGrid = new HashGrid(particles, { cellSize: h });
-
-      const xpbd = createXpbdUniforms(1 / 60);
-      const fluid = new FluidSystem({
-        particles,
-        hashGrid,
-        xpbd,
+      // Vorticity and viscosity are left out (off) for a settle test.
+      const fluid = new FluidSystem(particles, {
         restDensity,
-        h,
+        smoothingRadius: h,
         particleSpacing: spacing,
         compliance: 1e-4,
-        fluidParticles: { start: 0, count },
-        // vorticity omitted → would default on; force strength=0 for settle.
-        vorticity: { strength: 0 },
       });
 
       const loop = new SimLoop(particles, {
         substeps: 4,
         iterations: 2,
-        xpbd,
-        hashGrid,
-        colliders: { colliders },
+        gravity: new Vector3(0, -9.81, 0),
+        colliders: [colliders],
         materials: [fluid],
       });
-      loop.kernels.floorY.value = -1e9;
-      loop.gravity.set(0, -9.81, 0);
 
-      // eslint-disable-next-line no-console
       console.info(
         `[hydrostatic-setup] particleMass=${fluid.mass.toExponential(3)} expectedInvMass=${(1 / fluid.mass).toExponential(3)} spacing=${spacing} h=${h}`,
       );
@@ -123,10 +102,10 @@ describe('Phase 08 — fluid hydrostatic column', () => {
       // few early frames so any blow-up is visible before the long run.
       const frames = 300;
       const frameDt = 1 / 60;
+      const probeFrames = [0, 1, 2, 4, 9, 19, 29, 59, 119, 179, 299];
       let firstNanFrame = -1;
       for (let n = 0; n < frames; n++) {
         await loop.step(frameDt);
-        const probeFrames = [0, 1, 2, 4, 9, 19, 29, 59, 119, 179, 299];
         if (probeFrames.includes(n)) {
           const snap0 = await particles.readback();
           const rho0 = new Float32Array(await renderer.getArrayBufferAsync(fluid.density.value));
@@ -154,7 +133,6 @@ describe('Phase 08 — fluid hydrostatic column', () => {
             if (Math.abs(vy) > maxVyFrame) maxVyFrame = Math.abs(vy);
           }
           meanRho /= Math.max(1, count - nanPos);
-          // eslint-disable-next-line no-console
           console.info(
             `[hydrostatic-trace] frame=${n} nanPos=${nanPos} y=[${minYFrame.toFixed(4)}, ${maxYFrame.toFixed(4)}] rho=[${minRhoFrame.toFixed(1)}, ${maxRhoFrame.toFixed(1)}] meanRho=${meanRho.toFixed(1)} maxVy=${maxVyFrame.toFixed(2)}`,
           );
@@ -164,7 +142,6 @@ describe('Phase 08 — fluid hydrostatic column', () => {
           }
         }
       }
-      // eslint-disable-next-line no-console
       console.info(`[hydrostatic-trace] firstNanFrame=${firstNanFrame}`);
 
       const snap = await particles.readback();
@@ -200,7 +177,6 @@ describe('Phase 08 — fluid hydrostatic column', () => {
         if (rho > maxRho) maxRho = rho;
         if (rho < minRho) minRho = rho;
       }
-      // eslint-disable-next-line no-console
       console.info(
         `[hydrostatic-pre] nanCount=${nanCount} xRange=[${xMin.toFixed(3)}, ${xMax.toFixed(3)}] yRangeAll=[${yMinAll.toFixed(3)}, ${yMaxAll.toFixed(3)}] zRange=[${zMin.toFixed(3)}, ${zMax.toFixed(3)}] rhoRange=[${minRho.toFixed(2)}, ${maxRho.toFixed(2)}] firstPos=(${snap.positions[0]!.toFixed(4)}, ${snap.positions[1]!.toFixed(4)}, ${snap.positions[2]!.toFixed(4)}) firstRho=${densityBuf[0]!.toFixed(2)}`,
       );
@@ -236,12 +212,10 @@ describe('Phase 08 — fluid hydrostatic column', () => {
         (_, b) => yMax - (binEdges[b]! + binEdges[b + 1]!) / 2,
       );
 
-      // eslint-disable-next-line no-console
       console.info(
         `[hydrostatic] nSamples=${samples.length} yRange=[${yMin.toFixed(4)}, ${yMax.toFixed(4)}] rhoRange=[${minRho.toFixed(2)}, ${maxRho.toFixed(2)}]`,
       );
       for (let b = 0; b < nBins; b++) {
-        // eslint-disable-next-line no-console
         console.info(
           `[hydrostatic] bin[${b}] depth=${binDepth[b]!.toFixed(4)} meanRho=${binMean[b] !== null ? binMean[b]!.toFixed(2) : 'n/a'} n=${binCounts[b]}`,
         );
@@ -271,7 +245,6 @@ describe('Phase 08 — fluid hydrostatic column', () => {
       }
       const slope = sxx > 0 ? sxy / sxx : 0;
       const r2 = sxx * syy > 0 ? (sxy * sxy) / (sxx * syy) : 0;
-      // eslint-disable-next-line no-console
       console.info(
         `[hydrostatic] slope=${slope.toExponential(3)} r2=${r2.toFixed(3)} (mid bins=${n})`,
       );
@@ -287,9 +260,9 @@ describe('Phase 08 — fluid hydrostatic column', () => {
       expect(r2).toBeGreaterThan(0.5);
       expect(maxRho).toBeLessThan(restDensity * 1.1);
 
-      particles.destroy();
-      colliders.destroy();
-      hashGrid.destroy();
+      loop.dispose();
+      colliders.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

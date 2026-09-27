@@ -1,35 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
 import {
-  HashGrid,
   ParticleSystem,
   PrimitiveSet,
   SimLoop,
   createParticleRenderer,
+  type Accumulator,
+  type Collider,
   type ParticleInit,
-} from '../../../src/core/index.js';
+} from '../../../src/index.js';
 
-// Phase 06 G1 — "Sphere bowl rest" (plan §Validation > Automatic (G1)):
-// "Drop 100 particles into an inverted sphere (bowl) of radius 1. After
-// settling (5 s), each particle's distance to the bowl surface is within
-// 2ε of zero (on the inside)."
+// Sphere bowl rest: 100 particles dropped into an inverted sphere (a bowl)
+// of radius 1 must, after settling for 5 s, all be on the inside of the
+// bowl wall.
 //
-// The plan phrasing "distance to the bowl surface is within 2ε" is the
-// paper's non-penetration invariant evaluated on a bowl (inverted SDF):
-// every particle must have its surface **at or inside** the bowl wall.
-// Particles in the middle of the pile are allowed to be further from
-// the wall (they rest on the layer below, not the bowl); the "within
-// 2ε" bound is a **one-sided** constraint — no particle penetrates the
-// wall outward.
+// This is the non-penetration invariant evaluated on an inverted SDF: every
+// particle's surface must be at or inside the bowl wall. Particles in the
+// middle of the pile may be far from the wall (they rest on the layer
+// below, not on the bowl), so the bound is one-sided — no particle
+// penetrates the wall outward.
 //
 // Concrete checks:
-//   (a) Inside-the-bowl invariant: for every particle, `|x| ≤ R − r + ε`
-//       where ε ~ the f32 → i32 accumulator round-trip tolerance.
-//   (b) Settled: max kinetic speed < 0.5 m/s after 5 s (well below
-//       particles' peak fall speed of ~4 m/s over a 1 m drop).
-//   (c) No particle escaped — overflow flags stay clear.
+//   (a) Inside the bowl: for every particle, `|x| ≤ R − r + ε`, where ε
+//       covers the f32 → i32 accumulator round-trip.
+//   (b) Settled: max speed < 0.5 m/s after 5 s (well below the peak fall
+//       speed of ~4 m/s over a 1 m drop).
+//   (c) Nothing blew up — the position accumulator's overflow flag is clear.
 
-describe('Phase 06 — collider: sphere bowl rest (100 particles)', () => {
+describe('collider: sphere bowl rest (100 particles)', () => {
   it('100 particles dropped into an inverted sphere settle inside the bowl', async () => {
     const renderer = await createParticleRenderer();
     try {
@@ -37,10 +35,9 @@ describe('Phase 06 — collider: sphere bowl rest (100 particles)', () => {
       const R = 1.0;
       const N = 100;
 
-      // Seed 100 particles in a small cloud above the bowl centre. Drop
-      // ~0.5 m above the bowl centre so they fall in; deterministic
-      // jitter keeps them from colliding pair-wise degenerately (every
-      // particle on the same y-column).
+      // Seed 100 particles in a small cloud above the bowl centre, so they
+      // fall in; deterministic jitter keeps them from stacking degenerately
+      // on the same vertical column.
       const initial: ParticleInit[] = [];
 
       let seed = 0xc0ffee;
@@ -52,42 +49,41 @@ describe('Phase 06 — collider: sphere bowl rest (100 particles)', () => {
         const x = 0.3 * rand();
         const y = 0.3 + 0.3 * Math.abs(rand());
         const z = 0.3 * rand();
-        initial.push({
-          position: [x, y, z],
-          velocity: [0, 0, 0],
-          invMass: 1,
-          phase: 0,
-        });
+        initial.push({ position: [x, y, z], velocity: [0, 0, 0], invMass: 1 });
       }
 
       const particles = new ParticleSystem(renderer, N, r);
       particles.uploadParticles(initial);
 
-      // Hash grid for particle-particle contact (needed — particles will
-      // pile up on the bowl floor and need non-penetration).
-      const hashGrid = new HashGrid(particles, {
-        cellSize: 2 * r * 1.1,
-      });
-
-      const colliders = new PrimitiveSet(particles, { capacity: 1 });
+      const colliders = new PrimitiveSet(particles);
       colliders.addSphere(new Vector3(0, 0, 0), R, {
         invert: true,
         muS: 0.5,
         muK: 0.4,
       });
-      colliders.upload();
 
+      // The loop's position accumulator is internal; capture it from the
+      // context the loop passes to its colliders so its overflow flag can
+      // be checked at the end.
+      let positionAccumulator: Accumulator | undefined;
+      const observed: Collider = {
+        particles,
+        update: (dt) => colliders.update(dt),
+        buildKernels: (context) => {
+          positionAccumulator = context.positions;
+          return colliders.buildKernels(context);
+        },
+        dispose: () => colliders.dispose(),
+      };
+
+      // Particle contacts are needed: the particles pile up on the bowl
+      // floor and must not overlap.
       const loop = new SimLoop(particles, {
         substeps: 4,
         iterations: 4,
-        contact: {
-          hashGrid,
-          maxContacts: 8 * N,
-          friction: { muS: 0.5, muK: 0.4 },
-        },
-        colliders: { colliders },
+        contact: { maxContacts: 8 * N, muS: 0.5, muK: 0.4 },
+        colliders: [observed],
       });
-      loop.kernels.floorY.value = -1e9;
       loop.gravity.set(0, -9.81, 0);
 
       const frameDt = 1 / 60;
@@ -113,30 +109,28 @@ describe('Phase 06 — collider: sphere bowl rest (100 particles)', () => {
         if (speed > maxSpeed) maxSpeed = speed;
       }
 
-      // eslint-disable-next-line no-console
       console.info(
         `[collider-sphere-bowl-rest] N=${N} maxDistFromCenter=${maxDistFromCenter.toFixed(
           5,
         )} (bound R-r=${(R - r).toFixed(5)}) maxSpeed=${maxSpeed.toFixed(5)} m/s`,
       );
 
-      // (a) Inside-the-bowl invariant: `|x| ≤ R − r + tol`. Tolerance
-      //     is set to allow for f32/i32 round-trip through the
-      //     accumulator (~1e-7 relative at our scale → 1e-7 m absolute).
-      //     A 5e-3 m slack covers stabilization overshoot on the frame
-      //     of first contact without hiding a real escape.
+      // (a) Inside the bowl: `|x| ≤ R − r + tol`. The accumulator round-trip
+      //     alone is ~1e-7 m at this scale; 5e-3 m of slack covers the
+      //     stabilization overshoot on the frame of first contact without
+      //     hiding a real escape.
       const insideTol = 5e-3;
       expect(maxDistFromCenter).toBeLessThan(R - r + insideTol);
       // (b) Settled.
       expect(maxSpeed).toBeLessThan(0.5);
 
-      // (c) Accumulator overflow flag stays clear.
-      const overflow = await loop.accumulator!.readbackOverflow();
+      // (c) The position accumulator's overflow flag is clear.
+      const overflow = await positionAccumulator!.readbackOverflow();
       expect(overflow).toBe(0);
 
-      particles.destroy();
-      colliders.destroy();
-      hashGrid.destroy();
+      loop.dispose();
+      particles.dispose();
+      colliders.dispose();
     } finally {
       renderer.dispose();
     }

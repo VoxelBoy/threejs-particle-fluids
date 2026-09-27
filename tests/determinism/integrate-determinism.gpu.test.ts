@@ -1,16 +1,19 @@
+import { Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 import {
   ParticleSystem,
+  PrimitiveSet,
   SimLoop,
   createParticleRenderer,
   type ParticleInit,
-} from '../../src/core/index.js';
+} from '../../src/index.js';
 
-// Phase 02 G4 — same-GPU same-seed repeatability. Two identical simulation
-// runs (constructed from scratch each time) must produce bit-identical
-// positions at frame 1000. Any non-determinism in TSL's kernel generation,
-// three.js's dispatch ordering, or driver behavior would show here.
-//
+// Same-GPU, same-seed repeatability. Two identical simulation runs
+// (constructed from scratch each time) must produce bit-identical positions
+// at frame 1000. Any non-determinism in TSL's kernel generation, three.js's
+// dispatch ordering, or driver behavior would show here. The particles land
+// on a floor plane at y = 0, so the collider's fixed-point accumulation is
+// covered too.
 
 function lcg(seed: number): () => number {
   let state = seed >>> 0 || 1;
@@ -30,7 +33,6 @@ function buildScene(): ParticleInit[] {
       position: [between(-5, 5), between(5, 20), between(-5, 5)],
       velocity: [between(-1, 1), between(-1, 1), between(-1, 1)],
       invMass: 1,
-      phase: 0,
     });
   }
   return data;
@@ -42,18 +44,22 @@ async function runScene(): Promise<Float32Array> {
     const data = buildScene();
     const particles = new ParticleSystem(renderer, data.length, 0.05);
     particles.uploadParticles(data);
-    const loop = new SimLoop(particles);
+    const floor = new PrimitiveSet(particles);
+    floor.addPlane(new Vector3(0, 1, 0), new Vector3());
+    const loop = new SimLoop(particles, { colliders: [floor] });
     const dt = 1 / 60;
     for (let n = 0; n < 1000; n++) await loop.step(dt);
     const snap = await particles.readback();
-    particles.destroy();
+    loop.dispose();
+    floor.dispose();
+    particles.dispose();
     return snap.positions;
   } finally {
     renderer.dispose();
   }
 }
 
-describe('Phase 02 — integrate: determinism', () => {
+describe('integrate: determinism', () => {
   it('produces bit-identical positions after 1000 frames on repeat runs', async () => {
     const runA = await runScene();
     const runB = await runScene();
@@ -67,7 +73,6 @@ describe('Phase 02 — integrate: determinism', () => {
       }
     }
     if (firstMismatch !== -1) {
-      // eslint-disable-next-line no-console
       console.error(
         `First mismatch at index ${firstMismatch}: runA=${runA[firstMismatch]} runB=${runB[firstMismatch]}`,
       );

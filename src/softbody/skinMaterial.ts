@@ -28,49 +28,20 @@ import { buildSkinNormalFn, buildSkinPositionFn } from './dlb.js';
 type Any = any;
 
 /**
+ * A node material that skins a mesh to a soft body by dual-quaternion
+ * blending (Kavan et al. 2008), reading particle rotations on the GPU:
  *
- *
- * Mode handling. The skin shader needs a unit quaternion per influence.
- *  - `'implicit'` (Mueller 2011 §5.1): per-particle quaternion is
- *     written by Phase 12's `qpWriteKernel` into `particles.rotation`.
- *     The shader reads `particles.rotation.element(idx)` per influence.
- *  - `'explicit'` (Mueller 2011 §5.3): only one rotation per body
- *     exists, stored as a 3x3 matrix in `bodyRotations[3·bodyIndex..]`.
- *     The shader converts that matrix to a quaternion once (Shoemake-
- *     style branched extraction, identical to `qpWriteKernel`'s code)
- *     and re-uses the result for all 4 influences. Because all q_k are
- *     identical the antipodality flips and post-blend normalization in
- *     {@link buildSkinPositionFn} collapse to no-ops, and the DLB blend
- *     reduces algebraically to LBS — Kavan 2008 Eq. 11 with
- *     `q_r,j = q_r ∀j`. Plan §"LBS equivalence on §5.3 bodies".
+ * - Local shape matching: each influence uses its particle's own orientation.
+ * - Global shape matching: all particles share the body's rotation, which is
+ *   converted to a quaternion once; the blend then reduces to linear blend
+ *   skinning.
  */
-
 export interface CreateSoftbodySkinMaterialOptions {
   readonly softbody: SoftbodySystem;
   readonly bodyIndex: number;
   /**
-   * Pre-centring offset for the bound mesh: `c̄_body = (1/n) Σ x_i^0`,
-   * computed by {@link bindSoftbodyMesh}. Subtracted from
-   * `positionLocal` before any rest-frame math runs.
-   */
-  readonly cBar: readonly [number, number, number];
-  /** PBR base colour. Defaults to a soft warm tone. */
-  readonly color?: number | string;
-  /** PBR roughness. Default 0.6. */
-  readonly roughness?: number;
-  /** PBR metalness. Default 0.0. */
-  readonly metalness?: number;
-  /**
-   * Optional source `MeshStandardMaterial` (typically lifted from a glTF
-   * via `mesh.material`) — its `.color`, `.map`, `.normalMap`,
-   * `.roughnessMap`, `.metalnessMap`, `.aoMap`, `.emissive`,
-   * `.emissiveMap`, `.roughness`, and `.metalness` are copied onto the
-   * skin material so the bound mesh inherits the asset's PBR textures.
-   * Caller is responsible for ensuring the geometry has a `uv` attribute
-   * so the maps actually sample meaningfully.
-   *
-   * When provided the explicit `color` / `roughness` / `metalness`
-   * options below are ignored — the source material wins.
+   * Material whose color, maps, roughness, and metalness are copied onto
+   * the skin material. The geometry needs uvs for the maps to show.
    */
   readonly sourceMaterial?: MeshStandardMaterial;
 }
@@ -78,29 +49,15 @@ export interface CreateSoftbodySkinMaterialOptions {
 export function createSoftbodySkinMaterial(
   options: CreateSoftbodySkinMaterialOptions,
 ): MeshStandardNodeMaterial {
-  const {
-    softbody,
-    bodyIndex,
-    cBar,
-    color = 0xd07030,
-    roughness = 0.6,
-    metalness = 0.0,
-    sourceMaterial,
-  } = options;
-  if (bodyIndex < 0 || bodyIndex >= softbody.bodies.length) {
-    throw new Error(`createSoftbodySkinMaterial: bodyIndex ${bodyIndex} out of range`);
-  }
-
-  // `uniform()` takes a value (Vector3, number, etc.) — NOT a TSL node.
-  // Passing `vec3(...)` would produce a uniform whose initial value is an
-  // unparseable node, which TSL silently treats as zero — the symptom is
-  // a "squished" rest pose where the cBar offset is missing.
-  const cBarUniform: UniformNode<'vec3', Vector3> = uniform(new Vector3(cBar[0], cBar[1], cBar[2]));
+  const { softbody, bodyIndex, sourceMaterial } = options;
+  const body = softbody.bodies[bodyIndex];
+  if (!body) throw new Error(`createSoftbodySkinMaterial: no body ${bodyIndex}`);
+  // The skinning shader works relative to the body's rest center.
+  const cBarUniform: UniformNode<'vec3', Vector3> = uniform(new Vector3(...body.restCenter));
 
   let createGetRotationQuat: () => (idx: Any) => Any;
-  if (softbody.shapeMatchMode === 'implicit') {
-    // §5.1: per-particle quaternion buffer (Phase 12). The factory
-    // returns a stateless closure — every lane reads its own slot.
+  if (softbody.shapeMatching === 'local') {
+    // Local shape matching: each particle has its own orientation.
     const rotation = softbody.particles.rotation;
     createGetRotationQuat = () => (idx: Any) => rotation.element(idx);
   } else {
@@ -177,9 +134,9 @@ export function createSoftbodySkinMaterial(
   }
 
   const material = new MeshStandardNodeMaterial({
-    color: new Color(color),
-    roughness,
-    metalness,
+    color: new Color(0xd07030),
+    roughness: 0.6,
+    metalness: 0,
   });
 
   // Honour a glTF source material — copy PBR scalars + every texture

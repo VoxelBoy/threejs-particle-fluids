@@ -4,17 +4,16 @@ import {
   ParticleSystem,
   createParticleRenderer,
   type ParticleInit,
-} from '../../../src/core/index.js';
+} from '../../../src/index.js';
 
-// Phase 03 — informational performance floor. Plan §Validation —
-// "100k particles, build + query in < 2 ms on an RTX 3060 / M1 Pro.
-//  This is a ballpark sanity check; missing it is a signal to optimize, not
-//  to block the phase."
+// Informational performance floor. Ballpark target: 100k particles, build +
+// query in < 2 ms on an RTX 3060 / M1 Pro class GPU. Missing it is a signal
+// to optimize, not a failure.
 //
 // We measure `rebuild()` only. Query-side performance depends on the caller
-// kernel and is the responsibility of later phases. Warmup + 20 timed runs,
-// log the median so TSL/WebGPU first-dispatch compilation doesn't skew the
-// number. No assertion on the timing itself — the floor is informational.
+// kernel and is covered by the perf suite. Warmup + 20 timed runs, log the
+// median so TSL/WebGPU first-dispatch compilation doesn't skew the number.
+// No assertion on the timing itself — the floor is informational.
 
 function lcg(seed: number): () => number {
   let state = seed >>> 0 || 1;
@@ -24,7 +23,7 @@ function lcg(seed: number): () => number {
   };
 }
 
-describe('Phase 03 — HashGrid: performance (informational)', () => {
+describe('HashGrid: rebuild performance (informational)', () => {
   it('logs median build time over 100k particles', async () => {
     const renderer = await createParticleRenderer();
     try {
@@ -36,7 +35,6 @@ describe('Phase 03 — HashGrid: performance (informational)', () => {
           position: [rand(), rand(), rand()],
           velocity: [0, 0, 0],
           invMass: 1,
-          phase: 0,
         });
       }
 
@@ -65,7 +63,6 @@ describe('Phase 03 — HashGrid: performance (informational)', () => {
       const best = runs[0]!;
       const worst = runs[runs.length - 1]!;
 
-      // eslint-disable-next-line no-console
       console.info(
         `[hashgrid-performance] N=${N} hashTableSize=${grid.hashTableSize} padded=${grid.hashTableSizePadded} ` +
           `build median=${median.toFixed(2)}ms best=${best.toFixed(2)}ms worst=${worst.toFixed(2)}ms`,
@@ -74,8 +71,8 @@ describe('Phase 03 — HashGrid: performance (informational)', () => {
       // Liveness-only assertion — the timing itself is not gated.
       expect(median).toBeGreaterThan(0);
 
-      grid.destroy();
-      particles.destroy();
+      grid.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

@@ -1,14 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { BufferGeometry, Float32BufferAttribute, Uint32BufferAttribute } from 'three';
+import { BufferGeometry, Float32BufferAttribute, Uint32BufferAttribute, Vector3 } from 'three';
 
 import {
+  ClothSystem,
   ParticleSystem,
   SimLoop,
+  createClothGraph,
   createParticleRenderer,
-  createXpbdUniforms,
-  type ParticleInit,
-} from '../../../src/core/index.js';
-import { ClothSystem, fromBufferGeometry } from '../../../src/cloth/index.js';
+} from '../../../src/index.js';
 
 // Regression: distance compliance must produce visible, finite deformation.
 // The tether constraints alone cannot overcome a nearly rigid distance solve.
@@ -58,28 +57,13 @@ async function runScene(args: {
   const renderer = await createParticleRenderer();
   try {
     const { geometry, pinnedIndices, bottomCornerIdx } = buildFlag(args.M);
-    const graph = fromBufferGeometry(geometry, {
+    const graph = createClothGraph(geometry, {
       surfaceDensity: 0.2,
       pinnedIndices,
     });
-    const initial: ParticleInit[] = [];
-    for (let i = 0; i < graph.positions.length; i++) {
-      const p = graph.positions[i]!;
-      initial.push({
-        position: [p[0], p[1], p[2]],
-        velocity: [0, 0, 0],
-        invMass: graph.invMass[i]!,
-        phase: 1,
-      });
-    }
     const particles = new ParticleSystem(renderer, graph.positions.length, 0.05);
-    particles.uploadParticles(initial);
-    const xpbd = createXpbdUniforms(1 / 60);
-    const cloth = new ClothSystem({
-      particles,
-      xpbd,
+    const cloth = new ClothSystem(particles, {
       graph,
-      particleOffset: 0,
       stretchCompliance: args.stretchCompliance,
       bendCompliance: 1.0,
       tetherCompliance: args.tetherCompliance,
@@ -88,11 +72,9 @@ async function runScene(args: {
     const loop = new SimLoop(particles, {
       substeps: 8,
       iterations: 1,
-      xpbd,
+      gravity: new Vector3(0, -args.gravityMag, 0),
       materials: [cloth],
     });
-    loop.kernels.floorY.value = -1e9;
-    loop.gravity.set(0, -args.gravityMag, 0);
     const damp = 0.92;
     let nanFree = true;
     for (let f = 0; f < 180; f++) {
@@ -108,15 +90,16 @@ async function runScene(args: {
     if (!Number.isFinite(cornerY)) nanFree = false;
     const restY = graph.positions[bottomCornerIdx]![1];
     const cornerDrop = Number.isFinite(cornerY) ? -(cornerY - restY) : NaN;
-    particles.destroy();
+    loop.dispose();
+    particles.dispose();
     return { cornerDrop, nanFree };
   } finally {
     renderer.dispose();
   }
 }
 
-describe('Phase 19 follow-up — stretch slider extended max produces visible deformation', () => {
-  it('logStretchCompliance=−1 drops the bottom corner ≥ 5× further (≥ 0.15 m absolute) than the Phase 18 default −7, NaN-free', async () => {
+describe('cloth stretch compliance produces visible deformation', () => {
+  it('stretchCompliance 1e-1 drops the bottom corner ≥ 5× further (and ≥ 0.15 m) than the default 1e-7, NaN-free', async () => {
     const M = 16;
     const G = 9.81;
     // Hold tethers + tolerance neutral so we isolate the
@@ -124,7 +107,7 @@ describe('Phase 19 follow-up — stretch slider extended max produces visible de
     const tetherCompliance = 1e-10;
     const stretchTolerance = 0;
 
-    // Baseline: Phase 18 default.
+    // Baseline: the default stretch compliance.
     const baseline = await runScene({
       M,
       stretchCompliance: 1e-7,
@@ -132,16 +115,13 @@ describe('Phase 19 follow-up — stretch slider extended max produces visible de
       stretchTolerance,
       gravityMag: G,
     });
-    // eslint-disable-next-line no-console
     console.info(
       `[stretch-knobs baseline] dist=1e-7 → cornerDrop=${baseline.cornerDrop.toFixed(4)}m`,
     );
     expect(baseline.nanFree).toBe(true);
 
-    // New slider max: α = 0.1 (log = −1). Should drop the
-    // corner substantially — empirical 0.41 m vs baseline's
-    // 0.027 m at 1×g (probe data above). Gate at 10× to leave
-    // headroom for thermal / cross-run variation.
+    // Very soft: α = 0.1. Should drop the corner substantially —
+    // empirically 0.41 m vs the baseline's 0.027 m at 1×g.
     const rubbery = await runScene({
       M,
       stretchCompliance: 1e-1,
@@ -149,23 +129,20 @@ describe('Phase 19 follow-up — stretch slider extended max produces visible de
       stretchTolerance,
       gravityMag: G,
     });
-    // eslint-disable-next-line no-console
     console.info(
       `[stretch-knobs rubbery] dist=1e-1 → cornerDrop=${rubbery.cornerDrop.toFixed(4)}m`,
     );
     expect(rubbery.nanFree).toBe(true);
-    // Ratio gate at 5× — empirical measurement is ~16-18× (probe
-    // data: baseline 0.024 m, rubbery 0.41 m), but cross-run
-    // simulation variance has been observed to drop rubbery to
-    // 0.24 m on cooler GPU thermal states. 5× is the floor that
-    // "the slider produced VISIBLE additional drop" needs and
-    // still rules out the under-α=1e-3 regime where rubbery
-    // tracks baseline within 30 %.
+    // Ratio check at 5× — measured ~16-18× (baseline 0.024 m,
+    // rubbery 0.41 m), but cross-run variance has been observed to
+    // drop rubbery to 0.24 m. 5× is the floor for "the compliance
+    // produced VISIBLE additional drop" and still rules out the
+    // under-α=1e-3 regime where rubbery tracks baseline within 30 %.
     expect(rubbery.cornerDrop).toBeGreaterThan(5 * baseline.cornerDrop);
     // Absolute-visibility floor: corner must have moved at least
-    // 0.15 m past its rest. Phase 18 default produces ~0.024 m,
-    // so 0.15 m is "the slider has clearly affected the
-    // silhouette" without depending on baseline magnitude.
+    // 0.15 m past its rest. The default compliance produces ~0.024 m,
+    // so 0.15 m means "the compliance has clearly changed the
+    // silhouette" without depending on the baseline's magnitude.
     expect(rubbery.cornerDrop).toBeGreaterThan(0.15);
   }, 300_000);
 });

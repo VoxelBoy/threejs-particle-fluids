@@ -1,14 +1,16 @@
+import { Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 import {
   ParticleSystem,
+  PrimitiveSet,
   SimLoop,
   createParticleRenderer,
   type ParticleInit,
-} from '../../../src/core/index.js';
+} from '../../../src/index.js';
 
-// Phase 02 G3 — no NaN/Inf in any integrated buffer after 1000 frames of
-// gravity-only simulation; particle count unchanged. Floor clamp enabled
-// at default (y=0) so this exercises the clamp path too.
+// No NaN/Inf in any integrated buffer after 1000 frames of gravity-only
+// simulation; particle count unchanged. A floor plane at y = 0 catches the
+// falling particles, so the collider path is exercised too.
 
 function lcg(seed: number): () => number {
   let state = seed >>> 0 || 1;
@@ -18,7 +20,7 @@ function lcg(seed: number): () => number {
   };
 }
 
-describe('Phase 02 — integrate: invariants', () => {
+describe('integrate: invariants', () => {
   it('produces no NaN/Inf after 1000 frames and preserves particle count', async () => {
     const renderer = await createParticleRenderer();
     try {
@@ -33,11 +35,12 @@ describe('Phase 02 — integrate: invariants', () => {
           position: [between(-10, 10), between(1, 20), between(-10, 10)],
           velocity: [between(-3, 3), between(-3, 3), between(-3, 3)],
           invMass: 1,
-          phase: 0,
         });
       }
       particles.uploadParticles(data);
-      const loop = new SimLoop(particles);
+      const floor = new PrimitiveSet(particles);
+      floor.addPlane(new Vector3(0, 1, 0), new Vector3());
+      const loop = new SimLoop(particles, { colliders: [floor] });
 
       const dt = 1 / 60;
       for (let n = 0; n < 1000; n++) await loop.step(dt);
@@ -57,7 +60,9 @@ describe('Phase 02 — integrate: invariants', () => {
       checkFinite('velocities', snap.velocities);
       checkFinite('invMass', snap.invMass);
 
-      particles.destroy();
+      loop.dispose();
+      floor.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

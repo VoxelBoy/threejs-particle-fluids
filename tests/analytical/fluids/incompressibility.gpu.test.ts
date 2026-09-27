@@ -1,37 +1,35 @@
 import { describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
 import {
-  HashGrid,
+  FluidSystem,
   ParticleSystem,
   PrimitiveSet,
   SimLoop,
   createParticleRenderer,
-  createXpbdUniforms,
   type ParticleInit,
-} from '../../../src/core/index.js';
-import { FluidSystem } from '../../../src/fluids/index.js';
+} from '../../../src/index.js';
 
-// Phase 08 G1 — incompressibility.
+// Incompressibility.
 //
 // Pour fluid into a sealed box, settle, measure how tight the density
 // distribution is in the regime PBF actively regulates.
 //
-// Plan interpretation note: "σ(ρ)/mean(ρ) < 5%" is only well-defined
-// over particles the constraint is governing. PBF's unilateral clamp
-// `C = ρ/ρ_0 − 1 ≤ 0` means ρ < ρ_0 particles (surface, corner, under-
-// sampled) get `λ = 0` and are NOT regulated. Reporting σ/μ over those
-// gives you a free-surface noise measurement, not an incompressibility
-// measurement. The PBF paper's density plots (Fig. 4) show this
-// explicitly — average density hovers at ρ_0 with small fluctuations
-// from the REGULATED (over-dense) particles.
+// "σ(ρ)/mean(ρ) < 5%" is only well-defined over particles the
+// constraint is governing. PBF's unilateral clamp `C = ρ/ρ_0 − 1 ≤ 0`
+// means ρ < ρ_0 particles (surface, corner, under-sampled) get `λ = 0`
+// and are NOT regulated. Reporting σ/μ over those gives you a
+// free-surface noise measurement, not an incompressibility measurement.
+// The PBF paper's density plots (Macklin & Müller 2013, Fig. 4) show
+// this explicitly — average density hovers at ρ_0 with small
+// fluctuations from the REGULATED (over-dense) particles.
 //
 // So this test reports two numbers:
 //   (a) σ/μ over compressed particles (ρ > ρ_0) — the PBF-regulated set.
-//       This is the paper's meaningful incompressibility metric.
+//       This is the meaningful incompressibility metric.
 //   (b) σ/μ over a geometrically-defined bulk slab as a diagnostic. We
-//       gate on (a) only; (b) is logged for cross-checking.
+//       assert on (a) only; (b) is logged for cross-checking.
 
-describe('Phase 08 — fluid incompressibility', () => {
+describe('fluid incompressibility', () => {
   it('bulk interior density σ/μ < 5% after 5 s settle', async () => {
     const renderer = await createParticleRenderer();
     try {
@@ -55,9 +53,6 @@ describe('Phase 08 — fluid incompressibility', () => {
                 spacing * 0.5 + j * spacing,
                 -((nz * spacing) / 2) + spacing * 0.5 + k * spacing,
               ],
-              velocity: [0, 0, 0],
-              invMass: 1,
-              phase: 0,
             });
           }
         }
@@ -66,38 +61,27 @@ describe('Phase 08 — fluid incompressibility', () => {
       const particles = new ParticleSystem(renderer, count, r);
       particles.uploadParticles(initial);
 
-      const colliders = new PrimitiveSet(particles, { capacity: 5 });
+      const colliders = new PrimitiveSet(particles);
       colliders.addPlane(new Vector3(0, 1, 0), new Vector3(0, 0, 0));
       colliders.addPlane(new Vector3(1, 0, 0), new Vector3(-0.15, 0, 0));
       colliders.addPlane(new Vector3(-1, 0, 0), new Vector3(0.15, 0, 0));
       colliders.addPlane(new Vector3(0, 0, 1), new Vector3(0, 0, -0.15));
       colliders.addPlane(new Vector3(0, 0, -1), new Vector3(0, 0, 0.15));
-      colliders.upload();
 
-      const hashGrid = new HashGrid(particles, { cellSize: h });
-      const xpbd = createXpbdUniforms(1 / 60);
-      const fluid = new FluidSystem({
-        particles,
-        hashGrid,
-        xpbd,
+      const fluid = new FluidSystem(particles, {
         restDensity,
-        h,
+        smoothingRadius: h,
         particleSpacing: spacing,
         compliance: 1e-4,
-        fluidParticles: { start: 0, count },
-        vorticity: { strength: 0 },
       });
 
       const loop = new SimLoop(particles, {
         substeps: 4,
         iterations: 2,
-        xpbd,
-        hashGrid,
-        colliders: { colliders },
+        gravity: new Vector3(0, -9.81, 0),
+        colliders: [colliders],
         materials: [fluid],
       });
-      loop.kernels.floorY.value = -1e9;
-      loop.gravity.set(0, -9.81, 0);
 
       for (let n = 0; n < 300; n++) await loop.step(1 / 60);
 
@@ -154,7 +138,6 @@ describe('Phase 08 — fluid incompressibility', () => {
       }
 
       const nBulk = bulkRhos.length;
-      // eslint-disable-next-line no-console
       console.info(
         `[incompressibility-extent] y=[${yMin.toFixed(4)}, ${yMax.toFixed(4)}] x=[${xMin.toFixed(4)}, ${xMax.toFixed(4)}] z=[${zMin.toFixed(4)}, ${zMax.toFixed(4)}] bulkWindow y=[${floor.toFixed(4)}, ${surface.toFixed(4)}] x=[${xLo.toFixed(4)}, ${xHi.toFixed(4)}] z=[${zLo.toFixed(4)}, ${zHi.toFixed(4)}] nBulk=${nBulk}`,
       );
@@ -180,20 +163,19 @@ describe('Phase 08 — fluid incompressibility', () => {
       );
       const ratioComp = stdComp / meanComp;
 
-      // eslint-disable-next-line no-console
       console.info(
         `[incompressibility] compressed: n=${nComp} mean=${meanComp.toFixed(2)} std=${stdComp.toFixed(2)} ratio=${ratioComp.toFixed(4)}   bulk-geom: n=${nBulk} mean=${meanBulk.toFixed(2)} std=${stdBulk.toFixed(2)} ratio=${ratioBulk.toFixed(4)}   (target < 0.05)`,
       );
 
-      // Gate: PBF-regulated compressed set σ/μ < 5%.
+      // PBF-regulated compressed set σ/μ < 5%.
       expect(ratioComp).toBeLessThan(0.05);
       // Sanity on the mean: compressed particles cluster just above ρ_0.
       expect(meanComp).toBeGreaterThan(restDensity);
       expect(meanComp).toBeLessThan(restDensity * 1.05);
 
-      particles.destroy();
-      colliders.destroy();
-      hashGrid.destroy();
+      loop.dispose();
+      colliders.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

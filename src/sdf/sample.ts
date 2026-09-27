@@ -1,16 +1,15 @@
-import type { SdfData } from './bake.js';
+import type { SDFData } from '../core/collision/SDFCollider.js';
 
 /**
- * CPU trilinear sampler — mirrors the GPU path in
- * `src/core/collision/sdf.ts::emitSampleSdf` so tests can check
- * the baked grid without spinning up a WebGPU adapter.
+ * Sample a distance field on the CPU with trilinear filtering, matching what
+ * the GPU sees.
  *
  * Coordinate convention matches the GPU sampler's half-texel-centered UV:
  * voxel center `(i, j, k)` sits at world position
  * `origin + (i + 0.5, j + 0.5, k + 0.5) · voxelSize`. Queries outside
  * `[origin, origin + resolution · voxelSize]` clamp to the edge voxel.
  */
-export function sampleSdfCpu(sdf: SdfData, x: number, y: number, z: number): number {
+export function sampleSdf(sdf: SDFData, x: number, y: number, z: number): number {
   const { data, resolution, origin, voxelSize } = sdf;
   const [resX, resY, resZ] = resolution;
   // Continuous voxel index — 0.5 offset so voxel (0,0,0) center is at gc = 0.5.
@@ -48,19 +47,19 @@ export function sampleSdfCpu(sdf: SdfData, x: number, y: number, z: number): num
  * `emitSampleSdf`. Step size is `voxelSize` per axis; returns the raw
  * (un-normalized) `∇φ` so callers can check `|∇φ| ≈ 1`.
  */
-export function sampleSdfGradientCpu(
-  sdf: SdfData,
+export function sampleSdfGradient(
+  sdf: SDFData,
   x: number,
   y: number,
   z: number,
 ): [number, number, number] {
   const [hx, hy, hz] = sdf.voxelSize;
-  const phiXp = sampleSdfCpu(sdf, x + hx, y, z);
-  const phiXn = sampleSdfCpu(sdf, x - hx, y, z);
-  const phiYp = sampleSdfCpu(sdf, x, y + hy, z);
-  const phiYn = sampleSdfCpu(sdf, x, y - hy, z);
-  const phiZp = sampleSdfCpu(sdf, x, y, z + hz);
-  const phiZn = sampleSdfCpu(sdf, x, y, z - hz);
+  const phiXp = sampleSdf(sdf, x + hx, y, z);
+  const phiXn = sampleSdf(sdf, x - hx, y, z);
+  const phiYp = sampleSdf(sdf, x, y + hy, z);
+  const phiYn = sampleSdf(sdf, x, y - hy, z);
+  const phiZp = sampleSdf(sdf, x, y, z + hz);
+  const phiZn = sampleSdf(sdf, x, y, z - hz);
   return [(phiXp - phiXn) / (2 * hx), (phiYp - phiYn) / (2 * hy), (phiZp - phiZn) / (2 * hz)];
 }
 

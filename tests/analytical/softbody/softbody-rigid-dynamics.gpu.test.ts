@@ -4,20 +4,17 @@ import { Vector3 } from 'three';
 import {
   ParticleSystem,
   SimLoop,
+  SoftbodySystem,
   createParticleRenderer,
-  createXpbdUniforms,
   type ParticleInit,
-} from '../../../src/core/index.js';
-import { SoftbodySystem } from '../../../src/softbody/index.js';
+} from '../../../src/index.js';
 
-// Phase 10 G1 — SoftbodySystem rigid-body dynamics (full SimLoop).
+// SoftbodySystem rigid-body dynamics through a full SimLoop.
 //
-// With `matchCompliance = 1e-12` the shape-matching constraint is at its
-// stiffness ceiling: Pass 3 snaps particles to the body's rigid goal
-// every iter. Under uniform linear impulse the body must translate
-// without deformation; under angular impulse it must rotate without
-// shear.
-//
+// With `compliance = 1e-12` the shape-matching constraint is at its
+// stiffness ceiling: every iteration snaps particles to the body's rigid
+// goal. Under a uniform linear impulse the body must translate without
+// deformation; under an angular impulse it must rotate without shear.
 
 /**
  * Unit cube (edge length 1) with 8 particles at its corners. Centered
@@ -48,7 +45,7 @@ function mat3Mul(a: readonly number[], b: readonly number[]): number[] {
   return out;
 }
 
-describe('Phase 10 — SoftbodySystem rigid-body dynamics (G1)', () => {
+describe('SoftbodySystem rigid-body dynamics', () => {
   it('near-rigid body under uniform impulse translates without deformation', async () => {
     const renderer = await createParticleRenderer();
     try {
@@ -60,8 +57,6 @@ describe('Phase 10 — SoftbodySystem rigid-body dynamics (G1)', () => {
       const initial: ParticleInit[] = rest.map((p) => ({
         position: [p[0], p[1], p[2]],
         velocity: [v0[0], v0[1], v0[2]],
-        invMass: 1,
-        phase: 1,
       }));
 
       const particles = new ParticleSystem(renderer, n, r);
@@ -74,32 +69,19 @@ describe('Phase 10 — SoftbodySystem rigid-body dynamics (G1)', () => {
         restFlat[3 * i + 2] = rest[i]![2];
       }
 
-      const xpbd = createXpbdUniforms(1 / 60);
-      const softbody = new SoftbodySystem({
-        particles,
-        xpbd,
-        bodies: [
-          {
-            particleRange: { start: 0, count: n },
-            restPositions: restFlat,
-            surfaceFlag: new Uint8Array(n).fill(1),
-            phaseId: 1,
-            matchCompliance: 1e-12,
-          },
-        ],
+      const softbody = new SoftbodySystem(particles, {
+        bodies: [{ range: { start: 0, count: n }, restPositions: restFlat, compliance: 1e-12 }],
       });
 
       const loop = new SimLoop(particles, {
         substeps: 4,
         iterations: 2,
-        xpbd,
+        gravity: new Vector3(0, 0, 0), // no gravity — isolate shape matching.
         materials: [softbody],
       });
-      loop.kernels.floorY.value = -1e9;
-      loop.gravity.set(0, 0, 0); // no gravity — isolate shape matching.
 
       const frameDt = 1 / 60;
-      const frames = 300; // 5 s total sim time per the plan's requirement.
+      const frames = 300; // 5 s of simulated time.
 
       for (let f = 0; f < frames; f++) {
         await loop.step(frameDt);
@@ -107,12 +89,12 @@ describe('Phase 10 — SoftbodySystem rigid-body dynamics (G1)', () => {
 
       const snap = await particles.readback();
 
-      // The plan's "translate without deformation" invariant is
-      // intrinsic: particle positions relative to the body COM must
-      // match the rest configuration. This is independent of how the
-      // body's COM has integrated (COM-integration error over 1200
-      // substeps at f32 precision is its own phenomenon, ~1e-4 m at
-      // v=2 m/s × 5 s; distinct from shape deformation).
+      // "Translate without deformation" is an intrinsic invariant: particle
+      // positions relative to the body COM must match the rest
+      // configuration. This is independent of how the body's COM has
+      // integrated (COM-integration error over 1200 substeps at f32
+      // precision is its own phenomenon, ~1e-4 m at v=2 m/s × 5 s; distinct
+      // from shape deformation).
       let comX = 0,
         comY = 0,
         comZ = 0;
@@ -151,25 +133,24 @@ describe('Phase 10 — SoftbodySystem rigid-body dynamics (G1)', () => {
         comDriftX * comDriftX + comDriftY * comDriftY + comDriftZ * comDriftZ,
       );
 
-      // eslint-disable-next-line no-console
       console.info(
         `[rigid-translation] T=${T.toFixed(2)}s v0=(${v0.join(',')}) maxRelativeDeviation=${maxRelativeDeviation.toExponential(3)} m  comDrift=${comDrift.toExponential(3)} m`,
       );
 
-      // Plan: max per-particle deviation from rigid translation < 1e-4 m.
-      // Measured on the intrinsic rigidity metric (relative positions vs
-      // rest). COM drift is a separate integrator precision concern
-      // tracked by the secondary log line.
+      // Max per-particle deviation from rigid translation < 1e-4 m, measured
+      // on the intrinsic rigidity metric (relative positions vs rest). COM
+      // drift is a separate integrator precision concern tracked by the
+      // secondary log line.
       expect(maxRelativeDeviation).toBeLessThan(1e-4);
       // COM drift at v=2, T=5s, 1200 substeps with f32 A_pq reduction
       // is ~4e-4 m empirically. This is not a deformation — the body
       // stays rigid — but rather cumulative integrator precision that
       // scales with translation × substep count. Loose bound here; the
-      // plan's tolerance (1e-4) is for the rigidity check, not the
-      // extrinsic position check.
+      // 1e-4 tolerance is for the rigidity check, not the extrinsic
+      // position check.
       expect(comDrift).toBeLessThan(5e-3);
 
-      particles.destroy();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }
@@ -192,8 +173,6 @@ describe('Phase 10 — SoftbodySystem rigid-body dynamics (G1)', () => {
         // v = ω × r where ω = (0, 0, ω_z), r = (p.x, p.y, p.z)
         // => v = (-ω_z · p.y, ω_z · p.x, 0)
         velocity: [-omega * p[1], omega * p[0], 0],
-        invMass: 1,
-        phase: 1,
       }));
 
       const particles = new ParticleSystem(renderer, n, r);
@@ -206,29 +185,16 @@ describe('Phase 10 — SoftbodySystem rigid-body dynamics (G1)', () => {
         restFlat[3 * i + 2] = rest[i]![2];
       }
 
-      const xpbd = createXpbdUniforms(1 / 60);
-      const softbody = new SoftbodySystem({
-        particles,
-        xpbd,
-        bodies: [
-          {
-            particleRange: { start: 0, count: n },
-            restPositions: restFlat,
-            surfaceFlag: new Uint8Array(n).fill(1),
-            phaseId: 1,
-            matchCompliance: 1e-12,
-          },
-        ],
+      const softbody = new SoftbodySystem(particles, {
+        bodies: [{ range: { start: 0, count: n }, restPositions: restFlat, compliance: 1e-12 }],
       });
 
       const loop = new SimLoop(particles, {
         substeps: 4,
         iterations: 2,
-        xpbd,
+        gravity: new Vector3(0, 0, 0),
         materials: [softbody],
       });
-      loop.kernels.floorY.value = -1e9;
-      loop.gravity.set(0, 0, 0);
 
       const frameDt = 1 / 60;
       const frames = 60; // 1 s — enough to complete roughly 1/π rotations at ω=2.
@@ -254,29 +220,10 @@ describe('Phase 10 — SoftbodySystem rigid-body dynamics (G1)', () => {
         const rotBuf = new Float32Array(
           await renderer.getArrayBufferAsync(softbody.bodyRotations.value),
         );
-        const R = [
-          rotBuf[0]!,
-          rotBuf[1]!,
-          rotBuf[2]!, // eslint-disable-line prettier/prettier
-          rotBuf[4]!,
-          rotBuf[5]!,
-          rotBuf[6]!, // eslint-disable-line prettier/prettier
-          rotBuf[8]!,
-          rotBuf[9]!,
-          rotBuf[10]!, // eslint-disable-line prettier/prettier
-        ];
+        // Each rotation is stored as three vec4 columns; take their xyz.
+        const R = [0, 1, 2, 4, 5, 6, 8, 9, 10].map((k) => rotBuf[k]!);
         // R · R^T − I
-        const Rt = [
-          R[0]!,
-          R[3]!,
-          R[6]!, // eslint-disable-line prettier/prettier
-          R[1]!,
-          R[4]!,
-          R[7]!, // eslint-disable-line prettier/prettier
-          R[2]!,
-          R[5]!,
-          R[8]!, // eslint-disable-line prettier/prettier
-        ];
+        const Rt = [0, 3, 6, 1, 4, 7, 2, 5, 8].map((k) => R[k]!);
         const RRt = mat3Mul(R, Rt);
         for (let k = 0; k < 9; k++) {
           const target = k === 0 || k === 4 || k === 8 ? 1 : 0;
@@ -309,12 +256,11 @@ describe('Phase 10 — SoftbodySystem rigid-body dynamics (G1)', () => {
         }
       }
 
-      // eslint-disable-next-line no-console
       console.info(
         `[rigid-rotation] frames=${frames} ω=${omega} rad/s maxOrthoError=${maxOrthoError.toExponential(3)} maxDetError=${maxDetError.toExponential(3)} maxEdgeDistError=${maxEdgeDistError.toExponential(3)}`,
       );
 
-      // Plan: det(R) ≈ +1, |R − orthogonal| < 1e-5.
+      // det(R) ≈ +1, |R − orthogonal| < 1e-5.
       expect(maxOrthoError).toBeLessThan(1e-5);
       expect(maxDetError).toBeLessThan(1e-5);
       // Body rotates without shear — pairwise distances stay at rest
@@ -322,7 +268,7 @@ describe('Phase 10 — SoftbodySystem rigid-body dynamics (G1)', () => {
       // a unit cube (0.1% of the shortest edge) is a comfortable bound.
       expect(maxEdgeDistError).toBeLessThan(1e-3);
 
-      particles.destroy();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

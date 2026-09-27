@@ -1,12 +1,13 @@
-// Phase Perf — driver script for `npm run test:perf` and `npm run bench:baseline`.
+// Driver for `npm run test:perf` and `npm run bench:baseline`.
 //
-// Spawns vitest with the perf suite, captures stdout, extracts the
-// `PerfReportJson` between the sentinel markers, substitutes the
-// commit hash + OS name (which the in-browser test cannot read), and
-// writes:
-//   - JSON to `tests/perf/results/<stamp>__<sha>__<scenes>.json`, or
-//     `tests/perf/baseline-phase-perf-<date>__<sha>.json` when --baseline.
-//   - A self-contained HTML report alongside the JSON.
+// Runs the benchmark suite in the browser through vitest, pulls the
+// `PerfReportJson` out of its stdout (between sentinel lines), fills in the
+// commit hash and OS, which the browser can't read, and writes:
+//   - the JSON to `tests/perf/results/<stamp>__<sha>__<scenes>.json`, or to
+//     `tests/perf/baseline-<date>__<sha>__<scenes>.json` with --baseline;
+//   - a self-contained HTML report to `tests/perf/results/`.
+// Both locations are git-ignored. Load a baseline JSON into any later
+// report to compare runs.
 
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -65,12 +66,8 @@ function osDescription(): string {
 function runVitestAndCapture(): Promise<string> {
   return new Promise((resolveP, rejectP) => {
     const env = { ...process.env, VITEST_SUITE: 'perf' };
-    // Run only the all-scenes bench file. Probes (paper-gap H1/H2/H3) and
-    // harness self-tests (determinism, fallback, runner) are smoke tests
-    // for the bench infrastructure itself — they don't belong in a
-    // baseline capture, and the determinism smoke test's hard threshold
-    // can flake on wall-clock-noise scenarios that are orthogonal to
-    // whether the actual bench numbers are valid.
+    // Only the scene benchmarks: the runner's own tests under _helpers/
+    // check the harness and add nothing to a report.
     const proc = spawn(
       'npx',
       ['vitest', 'run', '--passWithNoTests', '--reporter=default', 'tests/perf/all.gpu.perf.ts'],
@@ -126,16 +123,15 @@ function extractJson(stdout: string): string {
 }
 
 /**
- * Compact tag describing the scene set in this run, e.g.
- * `4types-2sizes-8scenes` or `8scenes-fluid+contact+st+sb`. Goes into the
- * filename so two reports next to each other are recognizable at a
- * glance without opening them.
+ * Short tag for the run's scene set, e.g.
+ * `8scenes-fluid+fluid-bodies+fluid-surface-tension+softbody`. Goes into the
+ * file name so reports side by side are recognizable without opening them.
  */
 function sceneSetTag(report: PerfReportJson): string {
   const ids = report.scenes.map((s) => s.id);
   const types = new Set<string>();
   for (const id of ids) {
-    // Strip trailing -10k / -100k size to get the type.
+    // Strip the trailing size (-10k, -100k) to get the scene type.
     const t = id.replace(/-(?:\d+k|\d+x\d+k|\d+)$/i, '');
     types.add(t);
   }
@@ -146,11 +142,8 @@ async function main(): Promise<void> {
   const isBaseline = process.argv.includes('--baseline');
   if (!existsSync(resultsDir)) mkdirSync(resultsDir, { recursive: true });
 
-  // eslint-disable-next-line no-console
   console.log(
-    isBaseline
-      ? '[Phase Perf] running bench (baseline mode — output committed)…'
-      : '[Phase Perf] running bench (local mode — output gitignored)…',
+    isBaseline ? '[perf] running benchmarks (baseline mode)…' : '[perf] running benchmarks…',
   );
 
   const stdout = await runVitestAndCapture();
@@ -169,7 +162,7 @@ async function main(): Promise<void> {
   const stamp = timestamp();
   const tag = sceneSetTag(finalReport);
   const stem = isBaseline
-    ? 'baseline-phase-perf-' + dateOnly() + '__' + shortSha + '__' + tag
+    ? 'baseline-' + dateOnly() + '__' + shortSha + '__' + tag
     : stamp + '__' + shortSha + '__' + tag;
 
   const jsonPath = isBaseline
@@ -181,16 +174,12 @@ async function main(): Promise<void> {
   const template = readFileSync(templatePath, 'utf8');
   writeFileSync(htmlPath, generateHtmlReport(template, finalReport));
 
-  // eslint-disable-next-line no-console
   console.log('');
-  // eslint-disable-next-line no-console
-  console.log('[Phase Perf] JSON written to ' + relative(repoRoot, jsonPath));
-  // eslint-disable-next-line no-console
-  console.log('[Phase Perf] open ' + relative(repoRoot, htmlPath) + ' in your browser.');
+  console.log('[perf] JSON written to ' + relative(repoRoot, jsonPath));
+  console.log('[perf] open ' + relative(repoRoot, htmlPath) + ' in your browser.');
 }
 
 main().catch((err: Error) => {
-  // eslint-disable-next-line no-console
-  console.error('[Phase Perf] run.ts failed:', err.message);
+  console.error('[perf] run.ts failed:', err.message);
   process.exit(1);
 });

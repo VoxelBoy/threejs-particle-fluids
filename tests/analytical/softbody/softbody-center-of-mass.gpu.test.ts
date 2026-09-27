@@ -1,32 +1,44 @@
 import { describe, expect, it } from 'vitest';
+import { uniform } from 'three/tsl';
 
 import {
   ParticleSystem,
+  SoftbodySystem,
   createParticleRenderer,
-  createXpbdUniforms,
-} from '../../../src/core/index.js';
-import { SoftbodySystem } from '../../../src/softbody/index.js';
+  type ParticleInit,
+  type SolverContext,
+} from '../../../src/index.js';
 
-const XPBD_FOR_TESTS = createXpbdUniforms(1 / 60);
-
-// Phase 10 G1 — Pass 1 (center-of-mass) correctness.
+// Global shape matching: per-body center of mass.
 //
-// The kernel runs `c = (1/N) Σ x*_i` per body via a workgroup-shared
-// tree reduction with a stride loop for bodies larger than the fixed
-// workgroup size. This test feeds known positions and verifies the
-// GPU-computed centers against a CPU reference for:
+// Each body's center `c = Σ m_i x*_i / Σ m_i` is computed on the GPU by a
+// workgroup-shared tree reduction, with a stride loop for bodies larger than
+// the fixed workgroup size. This test feeds known positions and checks the
+// GPU centers against a CPU reference for:
 //   (a) a small body that fits in a single stride,
 //   (b) a large body requiring multiple stride iterations,
-//   (c) two bodies with different ranges in the same dispatch (non-
-//       contiguous starts) — dispatches indexed by workgroupId map to
-//       the right per-body (start, count).
+//   (c) two bodies with non-contiguous ranges in the same dispatch — each
+//       workgroup must pick up its own body's (start, count),
+//   (d) a body with unequal particle masses.
 //
-// Tolerance: f32 reduction over N summands is Tier 2 bounded-max-error
-// (ARCH §Guardrails G4). With `|x| < 2` and N ≤ 1024 the expected
-// reduction error envelope is N · |x| · 2^-23 ≈ 2.5e-4 absolute; we
-// allow 1e-4 m (comfortable).
+// Tolerance: an f32 reduction over N summands has a bounded error. With
+// `|x| < 2` and N ≤ 1024 the error envelope is N · |x| · 2^-23 ≈ 2.5e-4
+// absolute; 1e-4 m is comfortable for the sizes used here.
 
 const TOLERANCE = 1e-4;
+
+/** The solver state SimLoop hands a material, so its kernels can run without a loop. */
+function solverContext(particles: ParticleSystem, dt: number): SolverContext {
+  let group = 0;
+  return {
+    particles,
+    dt: uniform(dt, 'float'),
+    get hashGrid(): never {
+      throw new Error('soft bodies do not use the neighbor grid');
+    },
+    allocateCollisionGroup: () => ++group,
+  };
+}
 
 function vec3Mean(positions: readonly (readonly number[])[]): [number, number, number] {
   let sx = 0,
@@ -46,63 +58,46 @@ async function runCenterOfMass(
   bodies: {
     readonly start: number;
     readonly positions: readonly (readonly number[])[];
+    readonly invMass?: readonly number[];
   }[],
-): Promise<{ cpu: [number, number, number][]; gpu: [number, number, number][] }> {
+): Promise<{
+  cpu: [number, number, number][];
+  gpu: [number, number, number][];
+  rest: (readonly [number, number, number])[];
+}> {
   const renderer = await createParticleRenderer();
   try {
     const particles = new ParticleSystem(renderer, capacity, 0.05);
 
-    // Upload every body's particles into the shared ParticleSystem.
-    const initData: {
-      position: [number, number, number];
-      velocity: [number, number, number];
-      invMass: number;
-      phase: number;
-    }[] = new Array(capacity).fill(0).map(() => ({
-      position: [0, 0, 0],
-      velocity: [0, 0, 0],
-      invMass: 0, // trailing slots inert
-      phase: 0,
-    }));
-    for (let b = 0; b < bodies.length; b++) {
-      const body = bodies[b]!;
+    // Upload every body's particles into the shared ParticleSystem; the
+    // trailing slots stay inert.
+    const initData: ParticleInit[] = new Array(capacity)
+      .fill(0)
+      .map(() => ({ position: [0, 0, 0], invMass: 0 }));
+    for (const body of bodies) {
       for (let i = 0; i < body.positions.length; i++) {
         const p = body.positions[i]!;
         initData[body.start + i] = {
           position: [p[0]!, p[1]!, p[2]!],
-          velocity: [0, 0, 0],
-          invMass: 1,
-          phase: b + 1,
+          invMass: body.invMass?.[i] ?? 1,
         };
       }
     }
     particles.uploadParticles(initData);
 
-    // Build the SoftbodySystem and run just its preIterKernels (Pass 1
-    // at the current commit). Bypass SimLoop — we want isolated-kernel
-    // verification.
-    const softbody = new SoftbodySystem({
-      particles,
-      xpbd: XPBD_FOR_TESTS,
-      bodies: bodies.map((body, b) => {
-        const rest = new Float32Array(body.positions.length * 3);
-        for (let i = 0; i < body.positions.length; i++) {
-          const p = body.positions[i]!;
-          rest[3 * i + 0] = p[0]!;
-          rest[3 * i + 1] = p[1]!;
-          rest[3 * i + 2] = p[2]!;
-        }
-        return {
-          particleRange: { start: body.start, count: body.positions.length },
-          restPositions: rest,
-          surfaceFlag: new Uint8Array(body.positions.length).fill(1),
-          phaseId: b + 1,
-          matchCompliance: 1e-6,
-        };
-      }),
+    // Rest shapes default to the uploaded positions.
+    const softbody = new SoftbodySystem(particles, {
+      bodies: bodies.map((body) => ({
+        range: { start: body.start, count: body.positions.length },
+        compliance: 1e-6,
+      })),
     });
 
-    await renderer.computeAsync([...softbody.preIterKernels]);
+    // Run the soft body's kernels for one solver iteration, without a SimLoop.
+    // The particles sit at their rest shape, so the shape-matching correction
+    // is zero and only the fitted body frames change.
+    const kernels = softbody.build(solverContext(particles, 1 / 60));
+    await renderer.computeAsync([...(kernels.preSolve ?? []), ...(kernels.solve ?? [])]);
 
     const centers = new Float32Array(
       await renderer.getArrayBufferAsync(softbody.bodyCenters.value),
@@ -113,16 +108,18 @@ async function runCenterOfMass(
     }
     const cpu: [number, number, number][] = bodies.map((body) => vec3Mean(body.positions));
 
-    particles.destroy();
-    return { cpu, gpu };
+    const rest = softbody.bodies.map((body) => body.restCenter);
+
+    particles.dispose();
+    return { cpu, gpu, rest };
   } finally {
     renderer.dispose();
   }
 }
 
-describe('Phase 10 — SoftbodySystem Pass 1 center of mass', () => {
+describe('SoftbodySystem per-body center of mass', () => {
   it('single small body fitting in one workgroup stride', async () => {
-    // 8-particle cube at a non-origin offset so mean is non-zero.
+    // 8-particle cube at a non-origin offset so the mean is non-zero.
     const positions = [
       [2, 1, 0],
       [3, 1, 0],
@@ -143,7 +140,7 @@ describe('Phase 10 — SoftbodySystem Pass 1 center of mass', () => {
     expect(gpu[0]![2]).toBeCloseTo(0.5, 4);
   });
 
-  it('large body requiring stride loop (N > workgroup size)', async () => {
+  it('large body requiring the stride loop (N > workgroup size)', async () => {
     // 400 particles on a 10×10×4 lattice — exceeds the 256 workgroup
     // size so the stride loop runs twice (ceil(400 / 256) = 2).
     const positions: number[][] = [];
@@ -161,10 +158,31 @@ describe('Phase 10 — SoftbodySystem Pass 1 center of mass', () => {
     expect(Math.abs(gpu[0]![2] - cpu[0]![2])).toBeLessThan(TOLERANCE);
   });
 
+  it('weights particles by mass', async () => {
+    // The bottom face (y = 1) is three times as heavy as the top (y = 2), so
+    // the center sits a quarter of the way up: y = (3·1 + 1·2) / 4 = 1.25.
+    const positions = [
+      [2, 1, 0],
+      [3, 1, 0],
+      [2, 2, 0],
+      [3, 2, 0],
+      [2, 1, 1],
+      [3, 1, 1],
+      [2, 2, 1],
+      [3, 2, 1],
+    ];
+    const invMass = positions.map((p) => (p[1] === 1 ? 1 / 3 : 1));
+    const { gpu, rest } = await runCenterOfMass(16, [{ start: 0, positions, invMass }]);
+    for (const center of [gpu[0]!, rest[0]!]) {
+      expect(center[0]).toBeCloseTo(2.5, 4);
+      expect(center[1]).toBeCloseTo(1.25, 4);
+      expect(center[2]).toBeCloseTo(0.5, 4);
+    }
+  });
+
   it('two bodies with non-contiguous ranges', async () => {
-    // Body A at slots [0, 8), body B at slots [64, 72). Different
-    // geometric centers. Workgroup dispatches must pick up the right
-    // (start, count) per body.
+    // Body A at slots [0, 8), body B at slots [64, 72), with different
+    // geometric centers. Each workgroup must pick up its own (start, count).
     const aPositions = [
       [0, 0, 0],
       [1, 0, 0],

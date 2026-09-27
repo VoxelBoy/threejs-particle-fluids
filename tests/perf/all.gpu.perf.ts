@@ -1,70 +1,52 @@
-// Phase Perf — top-level perf bench. Runs every scene in the library,
-// collects results into a single `PerfReportJson`, and emits the JSON
-// to stdout between sentinel markers so the `run.ts` driver can extract
-// it and write to disk.
+// Benchmark suite: runs every scene, then prints one `PerfReportJson`
+// between sentinel lines on stdout, where `_helpers/run.ts` picks it up and
+// writes the JSON and HTML reports.
 //
-// Window: 20 warmup + 50 measure frames per scene. Tunable via
-// PARTICLE_FLUIDS_PERF_WARMUP / PARTICLE_FLUIDS_PERF_MEASURE env vars.
+// Each scene runs 60 warmup frames and 100 measured frames at 60 fps.
+// Override with the VITE_PERF_WARMUP / VITE_PERF_MEASURE environment
+// variables, e.g. `VITE_PERF_MEASURE=20 npm run test:perf`.
 
 import { describe, expect, it } from 'vitest';
 
 import { PerfRenderer } from './_helpers/PerfRenderer.js';
-import { PerfRunner, type PerfFrameWindow, type PerfSceneResult } from './_helpers/PerfRunner.js';
-import type {
-  PerfKernelJson,
-  PerfReportJson,
-  PerfSceneJson,
-  PerfTimingMethodJson,
-} from './_helpers/types.js';
+import {
+  PerfRunner,
+  type PerfFrameWindow,
+  type PerfSceneResult,
+  type PerfStats,
+} from './_helpers/PerfRunner.js';
+import type { PerfReportJson, PerfSceneJson, PerfStatsJson } from './_helpers/types.js';
+import type { BuiltScene } from './_scenes/_helpers.js';
 import { buildFluid10kScene, buildFluid100kScene } from './_scenes/fluid.js';
-import { buildFluidContact10kScene, buildFluidContact100kScene } from './_scenes/fluid-contact.js';
+import { buildFluidBodies10kScene, buildFluidBodies100kScene } from './_scenes/fluid-bodies.js';
 import {
   buildFluidSurfaceTension10kScene,
   buildFluidSurfaceTension100kScene,
 } from './_scenes/fluid-surface-tension.js';
 import { buildSoftbody10kScene, buildSoftbody100kScene } from './_scenes/softbody.js';
 
-// 4 scene types × {10k, 100k} = 8 scenes. Order: 10k of every type
-// first, then 100k of every type. Lets the user spot small-scale
-// regressions before the long-running 100k scenes finish.
-const SCENE_BUILDERS = [
+// Every 10k scene first, so small-scale regressions show up before the
+// slower 100k scenes finish.
+const SCENE_BUILDERS: readonly ((perf: PerfRenderer) => BuiltScene)[] = [
   buildFluid10kScene,
-  buildFluidContact10kScene,
+  buildFluidBodies10kScene,
   buildFluidSurfaceTension10kScene,
   buildSoftbody10kScene,
   buildFluid100kScene,
-  buildFluidContact100kScene,
+  buildFluidBodies100kScene,
   buildFluidSurfaceTension100kScene,
   buildSoftbody100kScene,
 ];
 
-// Scenes step at dt = 1/60, so 60 warmup frames = 1 simulated second —
-// enough for a 0.5 m drop to land and the column to start compressing.
-//
-// measure=50 is a deliberate choice: per-kernel timings are GPU-timestamp-
-// based (zero jitter), and 50 frames × dispatchesPerFrame gives 200-400
-// samples per kernel — plenty for a stable p50. measure=200 would only
-// improve frame_step_ms stability, which is wall-clock and noise-prone
-// enough that it isn't trusted as a comparison metric anyway.
-const DEFAULT_WINDOW: PerfFrameWindow = {
-  warmup: 60,
-  measure: 50,
-};
+// One simulated second of warmup lets every scene's falling water and bodies
+// land, so the measured frames time a settling scene rather than free fall.
+const DEFAULT_WINDOW: PerfFrameWindow = { warmup: 60, measure: 100 };
 
 const JSON_BEGIN = '__PARTICLE_FLUIDS_PERF_JSON_BEGIN__';
 const JSON_END = '__PARTICLE_FLUIDS_PERF_JSON_END__';
 
-function toKernelJson(k: PerfSceneResult['kernels'][number]): PerfKernelJson {
-  return {
-    name: k.name,
-    dispatches_per_frame: k.dispatchesPerFrame,
-    min_ms: k.minMs,
-    p10_ms: k.p10Ms,
-    p50_ms: k.p50Ms,
-    p90_ms: k.p90Ms,
-    max_ms: k.maxMs,
-    samples: k.samples,
-  };
+function toStatsJson(s: PerfStats): PerfStatsJson {
+  return { min: s.min, p10: s.p10, p50: s.p50, p90: s.p90, max: s.max };
 }
 
 function toSceneJson(r: PerfSceneResult): PerfSceneJson {
@@ -75,79 +57,53 @@ function toSceneJson(r: PerfSceneResult): PerfSceneJson {
     iterations: r.iterations,
     frames_warmup: r.framesWarmup,
     frames_measure: r.framesMeasure,
-    frame_total_ms: r.frameTotalMs,
-    frame_step_ms: r.frameStepMs,
-    dispatch_count: r.dispatchCount,
-    kernels: r.kernels.map(toKernelJson),
+    ...(r.gpuFrameMs ? { frame_gpu_ms: toStatsJson(r.gpuFrameMs) } : {}),
+    frame_step_ms: toStatsJson(r.stepFrameMs),
+    ...(r.contactCount ? { contact_count: r.contactCount } : {}),
   };
 }
 
-function readEnvWindow(): PerfFrameWindow {
-  const env =
-    (typeof globalThis !== 'undefined' &&
-      (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env) ||
-    {};
-  const warmup = Number(env['PARTICLE_FLUIDS_PERF_WARMUP'] ?? DEFAULT_WINDOW.warmup);
-  const measure = Number(env['PARTICLE_FLUIDS_PERF_MEASURE'] ?? DEFAULT_WINDOW.measure);
+/** The frame window. Vite passes only `VITE_` variables through to the browser. */
+function readWindow(): PerfFrameWindow {
+  const read = (name: string, fallback: number, min: number): number => {
+    const value = Number(import.meta.env[name] ?? fallback);
+    return Number.isInteger(value) && value >= min ? value : fallback;
+  };
   return {
-    warmup: Number.isFinite(warmup) && warmup >= 0 ? warmup : DEFAULT_WINDOW.warmup,
-    measure: Number.isFinite(measure) && measure > 0 ? measure : DEFAULT_WINDOW.measure,
+    warmup: read('VITE_PERF_WARMUP', DEFAULT_WINDOW.warmup, 0),
+    measure: read('VITE_PERF_MEASURE', DEFAULT_WINDOW.measure, 1),
   };
 }
 
-async function probePlatform(perf: PerfRenderer): Promise<{
-  readonly gpu: string;
-  readonly browser: string;
-}> {
-  let gpu = 'unknown';
-  try {
-    const backend = perf.renderer.backend as {
-      readonly adapter?: {
-        requestAdapterInfo?: () => Promise<{
-          readonly description?: string;
-          readonly vendor?: string;
-          readonly architecture?: string;
-          readonly device?: string;
-        }>;
-      };
-    };
-    const info = await backend.adapter?.requestAdapterInfo?.();
-    if (info) {
-      gpu = info.description || info.architecture || info.device || info.vendor || 'unknown';
-    }
-  } catch {
-    // adapter info is best-effort; fall through.
-  }
-  const browser =
-    typeof navigator !== 'undefined' && navigator.userAgent ? navigator.userAgent : 'unknown';
-  return { gpu, browser };
+function describeGpu(device: GPUDevice): string {
+  // Older browsers don't have `GPUDevice.adapterInfo`.
+  const info = device.adapterInfo as GPUAdapterInfo | undefined;
+  const parts = [info?.vendor, info?.architecture, info?.device, info?.description];
+  return parts.filter(Boolean).join(' ') || 'unknown';
 }
 
-describe('Phase Perf — all scenes', () => {
-  it(
-    'runs every scene and emits a PerfReportJson to stdout',
-    async () => {
-      const window = readEnvWindow();
-      const perf = await PerfRenderer.create();
-      const platform = await probePlatform(perf);
-      const sceneJsons: PerfSceneJson[] = [];
+function formatSample(label: string, stats: PerfStats | undefined): string {
+  return stats ? `${label} p50 ${stats.p50.toFixed(2)} ms` : `${label} n/a`;
+}
 
+describe('benchmark scenes', () => {
+  it(
+    'times every scene and prints the report JSON',
+    async () => {
+      const frames = readWindow();
+      const perf = await PerfRenderer.create();
+      const gpu = describeGpu(perf.device);
+      const scenes: PerfSceneJson[] = [];
       try {
         const runner = new PerfRunner(perf);
         for (const build of SCENE_BUILDERS) {
-          const built = await build(perf);
+          const built = build(perf);
           try {
-            const result = await runner.runScene(built.spec, window);
-            sceneJsons.push(toSceneJson(result));
-            // eslint-disable-next-line no-console
+            const result = await runner.runScene(built.spec, frames);
+            scenes.push(toSceneJson(result));
             console.log(
-              '[Phase Perf] scene ' +
-                result.id +
-                ': frame_step_ms.p50=' +
-                result.frameStepMs.p50.toFixed(2) +
-                'ms (' +
-                result.kernels.length +
-                ' kernels measured)',
+              `[perf] ${result.id}: ${formatSample('GPU', result.gpuFrameMs)}, ` +
+                `${formatSample('wall-clock', result.stepFrameMs)}`,
             );
           } finally {
             built.dispose();
@@ -157,33 +113,27 @@ describe('Phase Perf — all scenes', () => {
         perf.dispose();
       }
 
-      const timingMethod: PerfTimingMethodJson =
-        perf.timingMethod === 'gross-only' ? 'gross-only' : 'per-kernel-pass';
       const report: PerfReportJson = {
-        version: 1,
-        // run.ts substitutes commit + os into the placeholders below.
+        version: 2,
+        // run.ts fills in the commit and OS, which the browser can't read.
         commit: 'COMMIT_PLACEHOLDER',
         date: new Date().toISOString(),
-        platform: {
-          gpu: platform.gpu,
-          browser: platform.browser,
-          os: 'OS_PLACEHOLDER',
-        },
-        timing_method: timingMethod,
-        scenes: sceneJsons,
+        platform: { gpu, browser: navigator.userAgent, os: 'OS_PLACEHOLDER' },
+        timing_method: perf.timingMethod,
+        scenes,
       };
-
-      // eslint-disable-next-line no-console
       console.log(JSON_BEGIN);
-      // eslint-disable-next-line no-console
       console.log(JSON.stringify(report));
-      // eslint-disable-next-line no-console
       console.log(JSON_END);
 
       expect(report.scenes.length).toBe(SCENE_BUILDERS.length);
+      const settled = frames.warmup >= DEFAULT_WINDOW.warmup;
       for (const s of report.scenes) {
-        expect(s.kernels.length).toBeGreaterThan(0);
         expect(s.frame_step_ms.p50).toBeGreaterThan(0);
+        if (report.timing_method === 'timestamp') expect(s.frame_gpu_ms?.p50).toBeGreaterThan(0);
+        // After a full warmup every contact scene's bodies have landed; one
+        // that finds no pairs would be timing an idle contact pipeline.
+        if (s.contact_count && settled) expect(s.contact_count.p50).toBeGreaterThan(0);
       }
     },
     30 * 60_000,

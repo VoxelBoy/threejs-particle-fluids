@@ -22,7 +22,7 @@ import { denoise } from 'three/addons/tsl/display/DenoiseNode.js';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { FrameStepper, createParticleRenderer } from '../../src/core/index.js';
+import { FrameStepper, createParticleRenderer } from '../../src/index.js';
 import type { Experiment, Preset, Values } from '../types.js';
 import { backdrop, disposeObjects, floor } from './stage.js';
 
@@ -54,7 +54,7 @@ export class World {
   private stopped = false;
   private frameId = 0;
   private pending: Promise<void> = Promise.resolve();
-  private stepper = new FrameStepper({ fixedDt: 1 / 60, maxSubstepsPerFrame: 2 });
+  private stepper = new FrameStepper({ fixedDt: 1 / 60, maxStepsPerFrame: 2 });
   private cleanup: (() => void)[] = [];
   private lastFrame = 0;
   private frameMs = 16.67;

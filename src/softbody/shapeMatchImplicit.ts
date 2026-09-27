@@ -1,8 +1,8 @@
-import { Fn, If, Loop, atomicAdd, float, instanceIndex, int, uint, vec3, vec4 } from 'three/tsl';
+import { Fn, If, Loop, float, instanceIndex, int, uint, vec3, vec4 } from 'three/tsl';
 import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import type StorageBufferNode from 'three/src/nodes/accessors/StorageBufferNode.js';
 import type UniformNode from 'three/src/nodes/core/UniformNode.js';
-import type { ContactAccumulator, ParticleSystem, XpbdUniforms } from '../core/index.js';
+import type { Accumulator, ParticleRange, ParticleSystem } from '../core/index.js';
 
 import { emitPolarDecomposition, type Mat3Nodes } from './polarDecomp.js';
 
@@ -10,88 +10,46 @@ import { emitPolarDecomposition, type Mat3Nodes } from './polarDecomp.js';
 type Any = any;
 
 /**
+ * Local shape matching with oriented particles (Müller & Chentanez 2011,
+ * §5.1), used by `SoftbodySystem` with `shapeMatching: 'local'`.
  *
+ * Every particle `i` defines a group: itself plus its edge neighbors `N(i)`,
+ * stored as compressed rows (`neighborOffsets`, `neighborIndices`). Each
+ * solver iteration:
  *
- * The four passes below replace the §5.3 explicit kernel set when
- * `SoftbodySystem` is constructed with `shapeMatchMode: 'implicit'`.
- * Each pass dispatches one thread per particle in the system; the
- * neighborhood walk reads a per-particle CSR built at construction from
- * the voxel-grid 6-face edge graph (F-12.2). Per-particle output buffers
- * mean Phase 13's mesh skinner can consume `R_i` with no shape-match-mode
- * branch (plan §"Coexistence with §5.3").
+ * 1. finds each group's center `c_i`;
+ * 2. fits each group's rotation `R_i` by polar decomposition, including the
+ *    particles' own orientations (eq. 7), which keeps chains and single
+ *    particles well defined;
+ * 3. pulls every group member toward `R_i (x̃_j − c̄_i) + c_i`, scattering
+ *    the corrections into an accumulator;
+ * 4. stores `R_i` as particle `i`'s predicted orientation (only the group's
+ *    center rotates; its members only move).
  *
- * Paper-fidelity findings encoded inline:
- *   F-12.1 — Eq. 7's `Aᵢ = (1/5)·m·r²·Rᵢ` is mandatory; without it the
- *     kernel goes singular for the single-particle group case (Pass 2).
- *   F-12.3 — `qp_i` is replaced by the optimal rotation in Pass 4. The
- *     §4.1 epilogue dispatched by SimLoop reads this `qp_i` and writes
- *     `ω_i` via the Eq. 14 finite-difference; this kernel does not write
- *     ω directly.
- *   F-12.6 — Δx applies to all `j ∈ N(i)`, but the orientation update
- *     applies only to particle `i` (the group center).
- *
- * Mass treatment (MVP simplification): with uniform per-particle mass the
- * `m·` factor scales `A_pq_i` by a positive scalar, which the polar
- * decomposition is invariant under. The `Aᵢ` term and the Σ term are both
- * linear in `m`, so `m` factors out of the eigen-decomposition; this
- * kernel computes the `m`-cancelled form and accepts `(r²/5)` as a uniform.
- * Heterogeneous mass within one body is out of MVP scope.
- *
- * Per-pair Lagrange multiplier: each (i, j) constraint where particle `j`
- * is in particle `i`'s group carries its own `λ_{i,j}` (Macklin 2016 §4
- * eq. 18 with identity Jacobian, applied per CSR entry). Per-particle
- * λ would race when multiple groups touch the same particle's slot;
- * per-pair λ is the smallest correct unit. Indexed by CSR entry `k`, so
- * the buffer is sized `totalDegree` (sum of `|N(i)|` over particles).
+ * Masses are assumed uniform within a body, so they cancel out of the fit.
+ * Each (group, member) pair carries its own Lagrange multiplier, because a
+ * particle belongs to several groups at once.
  */
-
 export interface BuildImplicitNeighborhoodCenterKernelArgs {
   readonly particles: ParticleSystem;
-  /**
-   * CSR offsets into {@link neighborIndices}; length `capacity + 1`.
-   * `neighborOffsets[i+1] − neighborOffsets[i]` is `|N(i)|` (= 0 for
-   * particles that are not part of any implicit-mode body, in which case
-   * `c_i` is left zero — Pass 2's `Aᵢ` term still produces a valid R for
-   * those slots, but the per-particle output is unused).
-   */
+  /** Particles the kernel runs over: every body in the system. */
+  readonly range: ParticleRange;
+  /** Row offsets into `neighborIndices`, length `capacity + 1`. */
   readonly neighborOffsets: StorageBufferNode<'uint'>;
-  /**
-   * Flat global particle indices for every CSR entry, including each
-   * particle's own self-entry. Length = `totalDegree`.
-   */
+  /** Members of every group (global particle indices), each row starting with the particle itself. */
   readonly neighborIndices: StorageBufferNode<'uint'>;
-  /**
-   * Output: per-particle current-frame neighborhood centroid `c_i`. Sized
-   * `capacity`; `xyz` valid, `w` unused.
-   */
+  /** Each group's current center. */
   readonly particleCenters: StorageBufferNode<'vec4'>;
 }
 
-/**
- * Pass 1 — per-particle neighborhood centre `c_i = (1/|N(i)|) Σ x*_j`.
- *
- * Uniform-mass simplification of plan §"Pass 1": with `m_j = m` for all
- * particles in the body, `c_i = (Σ m_j x*_j) / (Σ m_j)` collapses to the
- * arithmetic mean. Particles with `|N(i)| = 0` (slots outside any
- * implicit-mode body) skip the divide and write zero.
- *
- * Cadence: once per substep via {@link SoftbodySystem.preIterKernels} —
- * the same per-substep cadence as §5.3 Pass 1 (U-35 transferred to §5.1
- * per plan §"XPBD cadence"). Per-iter recomputation would dispatch I
- * times per substep without changing the qualitative behavior; the
- * I-independence test in `tests/analytical/softbody/` validates this.
- *
- * Determinism: per-particle thread-local sum, no atomics or workgroup-
- * shared memory. Tier 1 bit-exact (ARCH §Guardrails G4) — the per-thread
- * sum is determined by the CSR walk order which is fixed at construction.
- */
+/** Step 1: each group's center `c_i`, the mean of its members' predicted positions. */
 export function buildImplicitNeighborhoodCenterKernel(
   args: BuildImplicitNeighborhoodCenterKernelArgs,
 ): ComputeNode {
-  const { particles, neighborOffsets, neighborIndices, particleCenters } = args;
+  const { particles, range, neighborOffsets, neighborIndices, particleCenters } = args;
 
   return Fn(() => {
-    const i: Any = instanceIndex;
+    const i: Any = instanceIndex.add(uint(range.start));
     const start: Any = neighborOffsets.element(i).toVar();
     const end: Any = neighborOffsets.element(i.add(uint(1))).toVar();
     const count: Any = end.sub(start).toVar();
@@ -109,82 +67,41 @@ export function buildImplicitNeighborhoodCenterKernel(
     const cy: Any = isEmpty.select(float(0.0), c.y);
     const cz: Any = isEmpty.select(float(0.0), c.z);
     particleCenters.element(i).assign(vec4(cx, cy, cz, float(0.0)));
-  })().compute(particles.capacity);
+  })().compute(range.count);
 }
 
 export interface BuildImplicitMomentPolarKernelArgs {
   readonly particles: ParticleSystem;
+  /** Particles the kernel runs over: every body in the system. */
+  readonly range: ParticleRange;
   readonly restOffsets: StorageBufferNode<'vec4'>;
   readonly neighborOffsets: StorageBufferNode<'uint'>;
   readonly neighborIndices: StorageBufferNode<'uint'>;
   readonly particleCenters: StorageBufferNode<'vec4'>;
-  /**
-   * Per-particle rest-frame neighborhood centroid `c̄_i = (1/|N(i)|) Σ
-   * x̃_j`, computed CPU-side at SoftbodySystem construction (the rest
-   * graph is static). Sized `capacity`; `xyz` valid, `w` unused.
-   */
+  /** Each group's rest center `c̄_i`, fixed at construction. */
   readonly restNeighborhoodCenters: StorageBufferNode<'vec4'>;
-  /**
-   * Output: per-particle rotation `R_i` row-major (3 vec4 per particle,
-   * `xyz` of each is one row, `w` unused). Sized `3 · capacity`.
-   */
+  /** Each group's rotation `R_i`, three row vectors per particle. */
   readonly particleRotations: StorageBufferNode<'vec4'>;
-  /**
-   * Constant `r²/5` uniform — the scalar coefficient of the `Aᵢ` term
-   * (Eq. 8 with sphere inertia `I = (2/5)·m·r²`, mass cancelled). Equals
-   * `particleRadius² / 5` at scene-global radius.
-   */
+  /** `r²/5`: the orientation term's weight, from a solid sphere's inertia with mass cancelled (eq. 8). */
   readonly aiScalar: UniformNode<'float', number>;
 }
 
 /**
- * Pass 2 — per-particle moment matrix `A_pq_i` and polar decomposition.
+ * Step 2: each group's rotation from its moment matrix (eqs. 7–8):
  *
- * Eqs. 7 + 8 (mass-cancelled, uniform-mass MVP):
- * ```
- *   A_pq_i = (r²/5) · Σ_{j ∈ N(i)} R_j_prev
- *          + Σ_{j ∈ N(i)} (x*_j − c_i) · (x̃_j − c̄_i)^T          (Eq. 7)
- *   R_i    = polarDecomp(A_pq_i)                                  (Eq. 8)
- * ```
+ *   A_i = (r²/5) Σ_j R_j + Σ_j (x*_j − c_i)(x̃_j − c̄_i)ᵀ,   R_i = polar(A_i)
  *
- * The `(r²/5) · Σ R_j_prev` term sums each neighbor's own previous
- * rotation matrix, NOT just the centre particle's. Mueller 2011 Eq. 7
- * is explicit: `A_pq = Σ_i (A_i + m_i · x_i · x̃_i^T) − M c c̄^T` —
- * the index runs over every particle in the group, and each `A_i` uses
- * that particle's own rotation. Including only the centre (an earlier
- * implementation bug) under-regularizes the polar decomp by a factor
- * of |N(i)| ~7×; for uniformly-oriented bodies this is invisible because
- * the polar decomp is scale-invariant on the diagonal, but for bodies
- * where particles have accumulated different rotation history the
- * missing per-neighbor `R_j_prev` lets the polar decomp pick up noise
- * from the outer-product sum and the body drifts / explodes.
- *
- * Reading `R_prev` from the substep-start `rotation[j]` (NOT
- * `predictedRotation`) is the F-12.1 fidelity point — `A_j` represents
- * the particle's own rotational state at substep entry, the contribution
- * that keeps the kernel non-singular for chains and single-particle
- * groups. Reading from `predictedRotation` would feed back the post-
- * Pass-4 result into the next iter's reduction and break the once-per-
- * substep semantics of `A_j`.
- *
- * The polar decomposition is shared with §5.3's Pass 2 via
- * {@link emitPolarDecomposition}; the only difference is the per-particle
- * dispatch shape and the additional `Aᵢ` initialisation.
- *
- * Cadence: once per substep via {@link SoftbodySystem.preIterKernels}
- * (U-35 transferred to §5.1; I-independence test re-verifies).
- *
- * Determinism: per-particle thread-local 9-component reduction with no
- * cross-thread reads. Tier 2 bounded-max-error (f32 sums over `N(i)`),
- * with the same ULP envelope as §5.3 Pass 2 — `|N(i)| ≤ 7` for voxel-grid
- * 6-face neighborhoods, so the bound is two orders of magnitude tighter
- * than §5.3's per-body sums.
+ * The orientation term sums every member's own rotation `R_j`, read from
+ * its orientation at the start of the substep; including only the center's
+ * under-regularizes the fit and lets noise build up. Groups outside any body
+ * get the identity.
  */
 export function buildImplicitMomentPolarKernel(
   args: BuildImplicitMomentPolarKernelArgs,
 ): ComputeNode {
   const {
     particles,
+    range,
     restOffsets,
     neighborOffsets,
     neighborIndices,
@@ -195,15 +112,12 @@ export function buildImplicitMomentPolarKernel(
   } = args;
 
   return Fn(() => {
-    const i: Any = instanceIndex;
+    const i: Any = instanceIndex.add(uint(range.start));
     const start: Any = neighborOffsets.element(i).toVar();
     const end: Any = neighborOffsets.element(i.add(uint(1))).toVar();
     const count: Any = end.sub(start).toVar();
 
-    // A starts at zero — both the per-neighbor `(r²/5)·R_j_prev` sum AND
-    // the outer-product sum accumulate inside the Loop below. Eq. 7
-    // explicitly sums over EVERY particle in the group, with each
-    // particle's own R_j_prev contributing its own A_j term.
+    // Both terms of eq. 7 sum over every member of the group.
     const a00: Any = float(0.0).toVar();
     const a01: Any = float(0.0).toVar();
     const a02: Any = float(0.0).toVar();
@@ -282,9 +196,7 @@ export function buildImplicitMomentPolarKernel(
     };
     const R: Mat3Nodes = emitPolarDecomposition(aPq);
 
-    // Particles outside any implicit-mode body (count == 0): write
-    // identity. Otherwise write the polar-decomp rotation. `select` per
-    // component avoids a Loop-in-Else nesting.
+    // Particles outside every body get the identity.
     const isEmpty: Any = count.equal(uint(0));
     const r00: Any = isEmpty.select(float(1.0), R.m00);
     const r01: Any = isEmpty.select(float(0.0), R.m01);
@@ -300,11 +212,13 @@ export function buildImplicitMomentPolarKernel(
     particleRotations.element(baseSlot).assign(vec4(r00, r01, r02, float(0.0)));
     particleRotations.element(baseSlot.add(uint(1))).assign(vec4(r10, r11, r12, float(0.0)));
     particleRotations.element(baseSlot.add(uint(2))).assign(vec4(r20, r21, r22, float(0.0)));
-  })().compute(particles.capacity);
+  })().compute(range.count);
 }
 
 export interface BuildImplicitShapeMatchScatterKernelArgs {
   readonly particles: ParticleSystem;
+  /** Particles the kernel runs over: every body in the system. */
+  readonly range: ParticleRange;
   readonly restOffsets: StorageBufferNode<'vec4'>;
   readonly neighborOffsets: StorageBufferNode<'uint'>;
   readonly neighborIndices: StorageBufferNode<'uint'>;
@@ -312,85 +226,57 @@ export interface BuildImplicitShapeMatchScatterKernelArgs {
   readonly restNeighborhoodCenters: StorageBufferNode<'vec4'>;
   readonly particleRotations: StorageBufferNode<'vec4'>;
 
-  readonly compliance: UniformNode<'float', number>;
-  /**
-   * Per-CSR-entry Lagrange multiplier `λ_{i,j}` (vec3 in xyz, w padding).
-   * Sized `totalDegree`. Reset to zero at substep start by
-   * {@link buildImplicitResetPairLambdaKernel}.
-   */
+  /** One multiplier per (group, member) pair, reset each substep. */
   readonly pairLambda: StorageBufferNode<'vec4'>;
-  readonly accumulator: ContactAccumulator;
-  readonly xpbd: XpbdUniforms;
+  readonly accumulator: Accumulator;
+  readonly dt: UniformNode<'float', number>;
 }
 
 /**
- * Pass 3 — per group `i`, scatter Δx into all `j ∈ N(i)`.
+ * Step 3: pull every member toward its goal in each group it belongs to:
  *
- * For every CSR entry `k` belonging to particle `i`'s row, with
- * `j = neighborIndices[k]`:
- * ```
- *   goal_{j,i} = R_i · (x̃_j − c̄_i) + c_i                       (Eq. 4)
- *   C          = x*_j − goal_{j,i}                              (vec3)
- *   α̃         = particleCompliance[i] / dt²
- *   Δλ         = (−C − α̃ · λ_{i,j}_old) / (w_j + α̃)            per-component
- *   λ_{i,j}    ← λ_{i,j}_old + Δλ
- *   Δx         = w_j · Δλ
- *   atomicAdd(accumulator[j], Δx)
- * ```
+ *   goal = R_i (x̃_j − c̄_i) + c_i,   C = x*_j − goal
+ *   Δλ = (−C − α̃ λ) / (w_j + α̃),   α̃ = compliance / dt²
  *
- * Per-pair λ buffer (one slot per CSR entry) lets multiple groups touch
- * the same particle's predicted position without racing on a single per-
- * particle λ slot. Each thread is the only writer to its `pairLambda[k]`
- * entries (`k` ranges over particle `i`'s row of the CSR), and every
- * `Δx` contribution lands in the per-particle accumulator via
- * `atomicAdd`. Apply (`buildApplyAccumulatorToPredictedKernel`) commits
- * the sum to `predictedPositions` once per iter and zeros the
- * accumulator for the next iter.
- *
- * Cadence: once per solver iteration via
- * {@link SoftbodySystem.perIterKernels}.
- *
- * Determinism: i32 atomicAdd into the accumulator is order-independent
- * (Tier 1 bit-exact, ARCH §G4 — same property contact scatter relies on).
- * Per-pair λ updates are per-thread-local (no race).
+ * A particle belongs to `|N(j)|` groups, so its correction is divided by
+ * that count; otherwise the sum overshoots and the body explodes. Each
+ * correction is also clamped to a few particle radii, so one bad rotation
+ * can't fling a particle. Corrections are scattered into `accumulator`,
+ * which the caller applies after the pass.
  */
 export function buildImplicitShapeMatchScatterKernel(
   args: BuildImplicitShapeMatchScatterKernelArgs,
 ): ComputeNode {
   const {
     particles,
+    range,
     restOffsets,
     neighborOffsets,
     neighborIndices,
     particleCenters,
     restNeighborhoodCenters,
     particleRotations,
-    compliance,
     pairLambda,
     accumulator,
-    xpbd,
+    dt,
   } = args;
-
-  const dt = xpbd.dt;
-  const accScale = accumulator.scale;
-  const accDelta = accumulator.delta;
+  // Clamp on each pair's correction, so one bad rotation can't fling a particle.
+  const maxCorrection = 5 * particles.particleRadius;
 
   return Fn(() => {
-    const i: Any = instanceIndex;
+    const i: Any = instanceIndex.add(uint(range.start));
     const start: Any = neighborOffsets.element(i).toVar();
     const end: Any = neighborOffsets.element(i.add(uint(1))).toVar();
 
-    // Read per-particle inputs unconditionally; the Loop is naturally a
-    // no-op when start == end so the inputs are unused for slots outside
-    // any implicit-mode body. Avoiding `Loop` inside `If(...)` matches
-    // the pattern in the other §5.1 passes.
+    // Particles outside every body have empty rows, so the loop does nothing for them.
     const baseSlot: Any = i.mul(uint(3));
     const R0: Any = particleRotations.element(baseSlot).xyz.toVar();
     const R1: Any = particleRotations.element(baseSlot.add(uint(1))).xyz.toVar();
     const R2: Any = particleRotations.element(baseSlot.add(uint(2))).xyz.toVar();
     const c: Any = particleCenters.element(i).xyz.toVar();
     const cBar: Any = restNeighborhoodCenters.element(i).xyz.toVar();
-    const alphaTilde: Any = compliance.div((dt as Any).mul(dt as Any));
+    // Each body's compliance is stored in the w component of its rest offsets.
+    const alphaTilde: Any = restOffsets.element(i).w.div((dt as Any).mul(dt as Any));
 
     Loop({ start: start, end: end, type: 'uint', condition: '<' }, ({ i: k }: { i: Any }) => {
       const j: Any = neighborIndices.element(k);
@@ -406,97 +292,40 @@ export function buildImplicitShapeMatchScatterKernel(
       const deltaLambda: Any = C.negate().sub(lambdaOld.mul(alphaTilde)).div(denom);
       const newLambda: Any = lambdaOld.add(deltaLambda);
       pairLambda.element(k).assign(vec4(newLambda.x, newLambda.y, newLambda.z, float(0.0)));
-      // Constraint averaging: particle j receives a Δx contribution
-      // from every group it belongs to (|N(j)| = own self-entry +
-      // neighbor groups). Without averaging, contributions sum and
-      // overshoot the goal by ~|N(j)|× per iter, which feeds back via
-      // c_i and explodes the body within a handful of frames. Dividing
-      // by m_j = |N(j)| recovers the per-particle constraint balance
-      // — a standard XPBD treatment for multiply-constrained particles
-      // (Macklin 2014 §4.2, applied here to the §5.1 group fan-in).
+      // Average over the groups j belongs to (see above).
       const offJlo: Any = neighborOffsets.element(j).toVar();
       const offJhi: Any = neighborOffsets.element(j.add(uint(1))).toVar();
       const mj: Any = offJhi.sub(offJlo).toFloat().max(float(1.0));
       const deltaXraw: Any = deltaLambda.mul(wj).div(mj).toVar();
 
-      // Per-pair Δx clamp. Standard PBD safety net: caps per-iter
-      // correction magnitude so a single ill-conditioned constraint
-      // can't teleport its target particle. Triggers when |C| is large
-      // (e.g. high-velocity floor impacts where bottom particles get
-      // pushed up while top particles still falling produces a goal
-      // far from x*) or when polar decomp returns a noisy R that makes
-      // goal_{j,i} = R · (x̃_j - c̄_i) + c_i wildly unrealistic.
-      //
-      // The 0.05 m cap is calibrated to MVP body sizes (rest extents
-      // ~0.2-1 m, particle radius ~0.05 m): well above typical
-      // per-iter Δx (~mm at α=1e-6) but tight enough to prevent
-      // single-iter teleports across the body. Without this, a
-      // high-acceleration drop (gravity ≥20 m/s² or drop height
-      // ≥1 m) consistently kablooies; with it, the body relaxes
-      // toward its goal over multiple iters and substeps.
-      const PER_PAIR_DELTA_X_CAP = 0.05;
-      const dxMagSq: Any = deltaXraw.x
-        .mul(deltaXraw.x)
-        .add(deltaXraw.y.mul(deltaXraw.y))
-        .add(deltaXraw.z.mul(deltaXraw.z));
-      const cap: Any = float(PER_PAIR_DELTA_X_CAP);
-      const dxScale: Any = cap
-        .mul(cap)
-        .div(dxMagSq.max(cap.mul(cap)))
+      const dxScale: Any = float(maxCorrection * maxCorrection)
+        .div(deltaXraw.dot(deltaXraw).max(maxCorrection * maxCorrection))
         .sqrt();
-      const deltaX: Any = deltaXraw.mul(dxScale).toVar();
-
-      const base: Any = j.mul(uint(3));
-      const dxTicks: Any = deltaX.x.mul(accScale).toInt();
-      const dyTicks: Any = deltaX.y.mul(accScale).toInt();
-      const dzTicks: Any = deltaX.z.mul(accScale).toInt();
-      atomicAdd(accDelta.element(base), dxTicks);
-      atomicAdd(accDelta.element(base.add(uint(1))), dyTicks);
-      atomicAdd(accDelta.element(base.add(uint(2))), dzTicks);
+      accumulator.add(j, deltaXraw.mul(dxScale));
     });
-  })().compute(particles.capacity);
+  })().compute(range.count);
 }
 
 export interface BuildImplicitQpWriteKernelArgs {
   readonly particles: ParticleSystem;
+  /** Particles the kernel runs over: every body in the system. */
+  readonly range: ParticleRange;
   readonly particleRotations: StorageBufferNode<'vec4'>;
   readonly neighborOffsets: StorageBufferNode<'uint'>;
 }
 
 /**
- * Pass 4 — per particle `i` (as the centre of its own group): write the
- * solver-modified `qp_i` into {@link ParticleSystem.predictedRotation}.
- *
- * Reads the particle's own `R_i` row (Mueller 2011 §5.1: "we only update
- * the orientation of the centre particle by replacing it with the
- * optimal rotation"), converts to a quaternion via the standard
- * `quatFromMat3` formula, and applies the shorter-rotation rule against
- * the substep-start `q_i` (`rotation[i]`). The §4.1 epilogue
- * (`SimLoop.advectRotation`) then reads `predictedRotation[i]` and
- * back-propagates `ω_i` via the Eq. 14 finite-difference. F-12.3.
- *
- * Cadence: ran every iter via {@link SoftbodySystem.perIterKernels}.
- * Plan §"Cadence note" preferred last-iter-only as a write-elision trade,
- * but the SimLoop has no slot for "post-iter, pre-advect" material
- * kernels — putting the write in `perIterKernels` lets the last iter's
- * value win naturally. The `R_i` written by Pass 2 once per substep does
- * not change across iters, so the `qp_i` written here is also stable
- * across iters; the cost is one extra dispatch per iter, ~30 µs at 50k
- * particles. If a future profile shows this matters, add a `lastIterOnly`
- * SimLoop hook.
- *
- * Particles outside any implicit-mode body (`|N(i)| = 0`) skip the write
- * entirely so the `predictedRotation` set by the §4.1 prologue
- * (`SimLoop.predictRotation`) survives unchanged for them.
- *
- * Determinism: per-particle thread-local computation, no atomics. Tier 1
- * bit-exact (ARCH §G4) given the Tier 2 `R_i` input.
+ * Step 4: store each group's rotation `R_i` as its center particle's
+ * predicted orientation (as a quaternion, on the shorter arc from the
+ * current one). Only the center rotates (Müller & Chentanez 2011, §5.1);
+ * the orientation integrator then derives the angular velocity from it.
+ * Particles outside every body keep their predicted orientation.
  */
 export function buildImplicitQpWriteKernel(args: BuildImplicitQpWriteKernelArgs): ComputeNode {
-  const { particles, particleRotations, neighborOffsets } = args;
+  const { particles, range, particleRotations, neighborOffsets } = args;
 
   return Fn(() => {
-    const i: Any = instanceIndex;
+    const i: Any = instanceIndex.add(uint(range.start));
     const start: Any = neighborOffsets.element(i).toVar();
     const end: Any = neighborOffsets.element(i.add(uint(1))).toVar();
 
@@ -562,16 +391,13 @@ export function buildImplicitQpWriteKernel(args: BuildImplicitQpWriteKernelArgs)
       .add(qStart.w.mul(qw));
     const flip: Any = dot.lessThan(float(0.0)).select(float(-1.0), float(1.0));
 
-    // Slots outside any implicit-mode body keep the §4.1 prologue's
-    // predictedRotation — leave the buffer untouched (use a separate
-    // `If` here, NOT `Loop`-inside-`Else`; the body is just a single
-    // assign so this is safe).
+    // Particles outside every body keep their predicted orientation.
     If(end.greaterThan(start), () => {
       particles.predictedRotation
         .element(i)
         .assign(vec4(qx.mul(flip), qy.mul(flip), qz.mul(flip), qw.mul(flip)));
     });
-  })().compute(particles.capacity);
+  })().compute(range.count);
 }
 
 export interface BuildImplicitResetPairLambdaKernelArgs {
@@ -580,15 +406,7 @@ export interface BuildImplicitResetPairLambdaKernelArgs {
   readonly totalDegree: number;
 }
 
-/**
- * Reset the per-pair λ buffer to zero at the start of each substep.
- * Macklin 2016 Algorithm 1 line 4 — `λ_0 ← 0` per substep, then
- * accumulate Δλ across solver iterations.
- *
- * Sized to `totalDegree` (one slot per CSR entry). Dispatched once per
- * substep alongside the existing per-body λ reset in
- * {@link SoftbodySystem.preIterKernels}.
- */
+/** Zero the per-pair multipliers at the start of each substep. */
 export function buildImplicitResetPairLambdaKernel(
   args: BuildImplicitResetPairLambdaKernelArgs,
 ): ComputeNode {

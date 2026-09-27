@@ -1,23 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
 import {
-  HashGrid,
   ParticleSystem,
   PrimitiveSet,
   SimLoop,
   createParticleRenderer,
   type ParticleInit,
-} from '../../../src/core/index.js';
+} from '../../../src/index.js';
 
-// Phase 5a G1 — two balls on inclined plane (static/kinetic friction).
-// Phase 06 migration: kinematic 9×9 sphere floor → analytic plane. This
-// unlocks a **quantitative** Newtonian slide-distance check that was
-// blocked in Phase 5a by the discrete-floor valley-trap pathology (plan
-// §"Migration from Phase 5's particle-floor surrogate" — "re-enable the
-// quantitative Newtonian check for kinetic slide distance").
+// Two balls on an inclined plane: static and kinetic friction.
 //
-// Scenario: two dynamic particles resting on a horizontal plane, gravity
-// tilted to angle θ (mathematically equivalent to tilting the plane).
+// Two dynamic particles rest on a horizontal analytic plane, with gravity
+// tilted to angle θ (mathematically equivalent to tilting the plane). A flat
+// plane makes the slide distance a quantitative Newtonian check:
 //   At θ = atan(μ_s) − 3°:   neither slides within 5 s (|Δx| < 1e-3 m).
 //   At θ = atan(μ_s) + 3°:   both slide by Δx(t) = ½·a·t² with
 //                            a = g · (sin θ − μ_k · cos θ).
@@ -48,50 +43,26 @@ async function runIncline(args: {
   try {
     const r = PARTICLE_RADIUS;
     const initial: ParticleInit[] = [
-      {
-        position: [-0.2, r, 0],
-        velocity: [0, 0, 0],
-        invMass: 1,
-        phase: 0,
-      },
-      {
-        position: [+0.2, r, 0],
-        velocity: [0, 0, 0],
-        invMass: 1,
-        phase: 0,
-      },
+      { position: [-0.2, r, 0], velocity: [0, 0, 0], invMass: 1 },
+      { position: [+0.2, r, 0], velocity: [0, 0, 0], invMass: 1 },
     ];
     const [leftIdx, rightIdx] = [0, 1];
 
     const particles = new ParticleSystem(renderer, initial.length, r);
     particles.uploadParticles(initial);
 
-    // Hash grid retained because `SimLoop.ContactOptions` requires one —
-    // with N=2 dynamics and no particle-particle proximity, it's a
-    // no-op except for the one-time init cost.
-    const hashGrid = new HashGrid(particles, {
-      cellSize: 2 * r * 1.1,
-    });
-
-    const colliders = new PrimitiveSet(particles, { capacity: 1 });
+    const colliders = new PrimitiveSet(particles);
     colliders.addPlane(new Vector3(0, 1, 0), new Vector3(0, 0, 0), {
       muS: MU_S,
       muK: MU_K,
     });
-    colliders.upload();
 
     const loop = new SimLoop(particles, {
       substeps: 4,
       iterations: 4,
-      contact: {
-        hashGrid,
-        maxContacts: 8,
-        friction: { muS: MU_S, muK: MU_K },
-        stabIters: 1,
-      },
-      colliders: { colliders },
+      contact: { maxContacts: 8, muS: MU_S, muK: MU_K },
+      colliders: [colliders],
     });
-    loop.kernels.floorY.value = -1e9;
     loop.gravity.set(G_MAG * Math.sin(thetaRad), -G_MAG * Math.cos(thetaRad), 0);
 
     const x0Left = initial[leftIdx]!.position[0];
@@ -110,23 +81,22 @@ async function runIncline(args: {
     const rightDelta = xRight - x0Right;
     const maxDelta = Math.max(Math.abs(leftDelta), Math.abs(rightDelta));
 
-    // eslint-disable-next-line no-console
     console.info(
       `[two-ball-${label}] θ=${((thetaRad * 180) / Math.PI).toFixed(2)}° ` +
         `t=${seconds.toFixed(1)}s leftΔx=${leftDelta.toFixed(5)} ` +
         `rightΔx=${rightDelta.toFixed(5)} maxΔ=${maxDelta.toFixed(5)}`,
     );
 
-    particles.destroy();
-    colliders.destroy();
-    hashGrid.destroy();
+    loop.dispose();
+    particles.dispose();
+    colliders.dispose();
     return { leftDelta, rightDelta, maxDelta };
   } finally {
     renderer.dispose();
   }
 }
 
-describe('Phase 5a — contact: two balls on inclined plane (Phase 06 plane migration)', () => {
+describe('contact: two balls on an inclined plane', () => {
   // Static-friction regime: below the cone, both particles stick.
   it('static (θ = atan(μ_s) − 3°): neither particle slides', async () => {
     const theta = Math.atan(MU_S) - (3 * Math.PI) / 180;
@@ -139,13 +109,13 @@ describe('Phase 5a — contact: two balls on inclined plane (Phase 06 plane migr
   }, 300_000);
 
   // Kinetic-friction regime: above the cone, both particles slide at the
-  // Newtonian rate. Newtonian prediction:
+  // Newtonian rate:
   //   a = g · (sin θ − μ_k · cos θ)
   //   Δx(t) = ½ · a · t²
   // At θ = atan(μ_s) + 3° = 33.96°, μ_k = 0.5, g = 9.81:
   //   a ≈ 9.81 · (sin 33.96° − 0.5 · cos 33.96°) ≈ 9.81 · (0.559 − 0.414) ≈ 1.42 m/s²
   //   Δx(2s) ≈ 0.5 · 1.42 · 4 ≈ 2.85 m
-  it('kinetic (θ = atan(μ_s) + 3°): slide matches Newtonian ½·a·t² within 10%', async () => {
+  it('kinetic (θ = atan(μ_s) + 3°): slide matches Newtonian ½·a·t² within 15%', async () => {
     const theta = Math.atan(MU_S) + (3 * Math.PI) / 180;
     const seconds = 2;
     const { leftDelta, rightDelta } = await runIncline({
@@ -155,13 +125,12 @@ describe('Phase 5a — contact: two balls on inclined plane (Phase 06 plane migr
     });
     const aNewton = G_MAG * (Math.sin(theta) - MU_K * Math.cos(theta));
     const dxExpected = 0.5 * aNewton * seconds * seconds;
-    // eslint-disable-next-line no-console
     console.info(
       `[two-ball-kinetic] Newtonian a=${aNewton.toFixed(3)} m/s² Δx(${seconds}s)=${dxExpected.toFixed(3)} m`,
     );
-    // Both particles slide at the same rate (identical setup). Allow
-    // 15% slack for friction-threshold edge effects at the first few
-    // substeps where λ_n is still ramping up.
+    // Both particles slide at the same rate (identical setup). Allow 15%
+    // slack for friction-threshold edge effects in the first few substeps,
+    // while λ_n is still ramping up.
     expect(leftDelta).toBeGreaterThan(dxExpected * 0.85);
     expect(leftDelta).toBeLessThan(dxExpected * 1.15);
     expect(rightDelta).toBeGreaterThan(dxExpected * 0.85);

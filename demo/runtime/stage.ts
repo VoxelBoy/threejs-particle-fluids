@@ -12,6 +12,7 @@ import {
   Shape,
   Vector2,
   type Object3D,
+  type Texture,
 } from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 
@@ -84,8 +85,11 @@ export function panelFrame(width: number, height: number, rail = 0.025, depth = 
   return frame;
 }
 
-/** Beveled graphite plinth, inset deck, and recessed support feet. Top is y=0. */
-export function platform(width: number, depth: number): Group {
+/**
+ * Beveled graphite plinth, inset deck, and recessed support feet. Top is y=0.
+ * `deckMap` replaces the deck's color with a texture.
+ */
+export function platform(width: number, depth: number, deckMap?: Texture): Group {
   const group = new Group();
   const body = extruded(roundedOutline(width, depth, 0.1), 0.065, 0.012, 0x26343f, 0.32, 0.5);
   body.rotation.x = -Math.PI / 2;
@@ -98,7 +102,12 @@ export function platform(width: number, depth: number): Group {
     0.52,
     0.12,
   );
-  deck.name = 'PlatformDeck';
+  if (deckMap) {
+    const deckMaterial = deck.material as MeshStandardMaterial;
+    deckMaterial.map = deckMap;
+    deckMaterial.color.set(0xffffff);
+    deckMaterial.metalness = 0;
+  }
   deck.rotation.x = -Math.PI / 2;
   deck.position.y = -0.017;
   group.add(body, deck);
@@ -177,8 +186,8 @@ function basinRim(width: number, depth: number): Mesh {
   return rim;
 }
 
-export function basin(width = 1.65, depth = 1.15, glassHeight = 0): Group {
-  const group = platform(width + 0.13, depth + 0.13);
+export function basin(width = 1.65, depth = 1.15, glassHeight = 0, deckMap?: Texture): Group {
+  const group = platform(width + 0.13, depth + 0.13, deckMap);
   group.add(basinRim(width, depth));
   if (glassHeight > 0) group.add(glassShell(width, depth, glassHeight, false));
   return group;

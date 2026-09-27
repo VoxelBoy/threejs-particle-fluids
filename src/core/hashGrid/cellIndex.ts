@@ -15,9 +15,6 @@ import type StorageBufferNode from 'three/src/nodes/accessors/StorageBufferNode.
 
 import { MORTON_BIAS, mortonBucketUnmasked } from './mortonHash.js';
 
-// TSL's @types surface many GPGPU nodes as bare `Node`, stripping the
-// proxy-provided `.element()/.floor()/.clamp()/...` methods. The loose alias
-// matches the pattern already used in `integrate.ts` and the Phase 01 probes.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
@@ -41,28 +38,17 @@ const CELL_COORD_MAX = 1 << 30;
  * Kernels that reset the per-bucket histogram + overflow flag and compute
  * per-particle hash buckets while populating the histogram.
  *
- * Bucket function: 3D Morton (Z-curve) encoding with a fixed positive bias.
- * Replaces the Teschner XOR-mix (`((cx·P1) ^ (cy·P2) ^ (cz·P3))`) used in
- * prior phases. Morton bucketing maps spatially-adjacent cells to nearby
- * bucket indices so the 27-cell neighbour walk's `cellStart` / `cellEnd`
- * lookups cluster instead of scattering. The locality probe at
- * `tests/perf/_probe/zsort-locality.gpu.perf.ts` measured a 1.98×–2.78×
- * speedup attributable to this change alone, vs the prior Teschner hash,
- * on Apple Silicon at the reference scene sizes. See `mortonHash.ts` for
- * the encoding details and the supported cell-coord range contract.
- *
- *
-
+ * Bucket function: 3D Morton (Z-curve) encoding with a fixed positive bias,
+ * so spatially adjacent cells land in nearby buckets and the 27-cell
+ * neighbor walk's lookups cluster. See `mortonHash.ts` for the encoding and
+ * its supported cell range.
  *
  * Hash-collision tax: distinct cells can still map to the same bucket
  * (Morton's lower bits collide for cells differing only in higher bits, plus
  * the standard mask-collision when `hashTableSize` is smaller than the
  * encoding range). Per-bucket sorted-indices lists therefore remain a
  * possibly-mixed union of cells' particles, and every caller's
- * `onCandidate` distance filter rejects the false-positive pairs as before.
- * The G1 collision-rate test
- * (`tests/analytical/hashgrid/hashgrid-collision-rate.gpu.test.ts`) pins the
- * Morton-specific collision profile numerically.
+ * `onCandidate` distance filter rejects the false-positive pairs.
  *
  * Overflow handling: TWO checks. (1) `CELL_COORD_MAX` clamp keeps the
  * f32→i32 cast well-defined for any input. (2) Cell coordinates outside

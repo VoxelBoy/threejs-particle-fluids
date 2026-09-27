@@ -1,7 +1,8 @@
 /** Rebuild the bundled CC0 meshes and particle templates: npm run assets:elastic. */
 import { copyFile, readFile, writeFile } from 'node:fs/promises';
 import { BufferGeometry, Float32BufferAttribute, Vector2, Vector3 } from 'three';
-import { voxelize, type TriangleMesh, type VoxelizeResult } from '../src/softbody/voxelize.js';
+import type { TriangleMesh } from '../src/core/mesh.js';
+import { voxelize, type VoxelizeResult } from '../src/softbody/voxelize.js';
 import { ELASTIC_BODY_BUDGETS as BODY_BUDGETS } from '../demo/types.js';
 
 interface MeshData {
@@ -206,7 +207,7 @@ function sample(mesh: TriangleMesh, count: number) {
   while (active.size > count) {
     // Favor broad surfaces over thin tips (low-degree vertices), preserving limbs.
     const candidates = [...active]
-      .filter((i) => voxels.surfaceFlag[i] === 1)
+      .filter((i) => i < voxels.surfaceCount)
       .sort((a, b) => graph[b]!.size - graph[a]!.size);
     const remove = candidates.find((i) => connected(graph, active, i).size === active.size - 1);
     // Thin limbs at tiny budgets: keep the few extra samples rather than split.

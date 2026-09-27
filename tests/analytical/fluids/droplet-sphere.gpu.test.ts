@@ -1,43 +1,39 @@
 import { describe, expect, it } from 'vitest';
+import { Vector3 } from 'three';
 import {
-  HashGrid,
+  FluidSystem,
   ParticleSystem,
   SimLoop,
   createParticleRenderer,
-  createXpbdUniforms,
   type ParticleInit,
-} from '../../../src/core/index.js';
-import { FluidSystem } from '../../../src/fluids/index.js';
+} from '../../../src/index.js';
 
-// Phase 09 G1 — droplet sphere test.
-//
-
+// Droplet sphere.
 //
 // Scene:
 //   8³ = 512 fluid particles packed as a cube in vacuum (no gravity,
-//   no colliders). Surface tension ON at paper-default γ = 1. Over
-//   5 s of sim time the cube should relax toward a sphere (Laplace's
-//   law at sim scale).
+//   no colliders), with surface tension on. Over 5 s of sim time the
+//   cube should relax toward a sphere (Laplace's law at sim scale).
 //
-// Phase 09 uses paper-spec per-pair scatter (U-33 resolution, 2026-04-23).
-// Newton's 3rd law holds by construction — Σv ≈ FP noise after any
-// number of substeps on this symmetric cube.
+// Surface tension is a per-pair scatter (Akinci et al. 2013), so
+// Newton's 3rd law holds by construction — Σv stays at FP noise after
+// any number of substeps on this symmetric cube.
 //
 // Metric:
 //   Principal-component analysis of the post-settle point cloud.
 //   Covariance eigenvalues → ellipsoid semi-axes². Aspect ratio is
 //   `max(σ_i) / min(σ_i)` — the ratio of longest to shortest principal
 //   standard deviation, analogous to `a / c` for an `a ≥ b ≥ c`
-//   ellipsoid. Paper-style "relax to sphere" means this ratio → 1.
+//   ellipsoid. "Relax to sphere" means this ratio → 1.
 //
-//   Plan gate: `aspect ratio → 1.0 ± 0.1`. Initial cube has analytic
-//   aspect ratio 1.0 (the cube's principal axes are equal by symmetry).
-//   A cube's *vertex-to-center* extent differs from a sphere's by
-//   `√3` though, so rim particles at corners should drift inward
-//   toward the fitted sphere radius — observable as a non-trivial
-//   change in the covariance trace.
+//   Target: aspect ratio → 1.0 ± 0.1. The initial cube has aspect
+//   ratio 1.0 (the cube's principal axes are equal by symmetry). A
+//   cube's vertex-to-centre extent differs from a sphere's by `√3`
+//   though, so rim particles at corners should drift inward toward the
+//   fitted sphere radius — observable as a change in the radial
+//   distribution.
 //
-// Why this gate has teeth:
+// Why this check has teeth:
 //   Without cohesion, the cube just sits there (no forces, no
 //   neighbors-at-rest correction). Aspect ratio stays at exactly 1.0.
 //   With cohesion the cohesion + curvature forces drive the cloud
@@ -47,13 +43,9 @@ import { FluidSystem } from '../../../src/fluids/index.js';
 //   rounds out. Aspect ratio stays near 1 because both initial and
 //   final shapes are rotationally symmetric-ish; the stronger check
 //   is that the point cloud's *radial distribution* shifts from
-//   uniform-inside-cube to concentrated-near-sphere-radius. That is
-//   captured implicitly by the covariance eigenvalues (all three
-//   eigenvalues drop as particles collapse toward the centroid, but
-//   they drop *uniformly* for a sphere vs non-uniformly for an elongated
-//   shape).
+//   uniform-inside-cube to concentrated-near-sphere-radius.
 
-describe('Phase 09 — fluid droplet sphere (surface tension)', () => {
+describe('fluid droplet sphere (surface tension)', () => {
   it('cube of fluid relaxes toward a sphere (aspect ratio ≤ 1.1) under cohesion', async () => {
     const renderer = await createParticleRenderer();
     try {
@@ -61,6 +53,7 @@ describe('Phase 09 — fluid droplet sphere (surface tension)', () => {
       const h = 0.05;
       const r = spacing * 0.5;
       const restDensity = 1000;
+      const gamma = 0.2;
 
       const nx = 8;
       const ny = 8;
@@ -75,61 +68,44 @@ describe('Phase 09 — fluid droplet sphere (surface tension)', () => {
             const x = -((nx * spacing) / 2) + spacing * 0.5 + i * spacing;
             const y = -((ny * spacing) / 2) + spacing * 0.5 + j * spacing;
             const z = -((nz * spacing) / 2) + spacing * 0.5 + k * spacing;
-            initial.push({
-              position: [x, y, z],
-              velocity: [0, 0, 0],
-              invMass: 1,
-              phase: 0,
-            });
+            initial.push({ position: [x, y, z] });
           }
         }
       }
 
       const particles = new ParticleSystem(renderer, count, r);
       particles.uploadParticles(initial);
-      const hashGrid = new HashGrid(particles, { cellSize: h });
 
-      const xpbd = createXpbdUniforms(1 / 60);
-      const fluid = new FluidSystem({
-        particles,
-        hashGrid,
-        xpbd,
+      const fluid = new FluidSystem(particles, {
         restDensity,
-        h,
+        smoothingRadius: h,
         particleSpacing: spacing,
         compliance: 1e-4,
-        fluidParticles: { start: 0, count },
         // Pure surface-tension test: density solver kept live (so the
-        // fluid isn't infinitely compressible), no vorticity / xsph.
-        vorticity: { strength: 0 },
-        // Scene at γ = 0.2 with XSPH c = 0.1 is inside the stability
-        // envelope for our fixed Δt = 1/240 s substep. Paper uses γ = 1
-        // with adaptive Δt (Ihmsen 2010) — outside MVP scope. γ ∈
-        // [0.5, 2] from paper §4 is the "artist range", and 0.2 is
-        // close enough to still exercise cohesion + curvature's cube-
-        // to-sphere relaxation meaningfully.
-        xsph: { c: 0.1 },
-        surfaceTension: 0.2,
+        // fluid isn't infinitely compressible), no vorticity.
+        //
+        // γ = 0.2 with XSPH c = 0.1 is inside the stability envelope for
+        // a fixed Δt = 1/240 s substep. The paper uses γ = 1 with an
+        // adaptive Δt (Ihmsen 2010). γ ∈ [0.5, 2] from paper §4 is the
+        // "artist range", and 0.2 is close enough to still exercise
+        // cohesion + curvature's cube-to-sphere relaxation meaningfully.
+        viscosity: 0.1,
+        surfaceTension: gamma,
       });
 
+      // Vacuum: no gravity, no colliders.
       const loop = new SimLoop(particles, {
         substeps: 4,
         iterations: 2,
-        xpbd,
-        hashGrid,
+        gravity: new Vector3(0, 0, 0),
         materials: [fluid],
       });
-      // Disable the Phase 02 floor-clamp — this scene is in free space.
-      loop.kernels.floorY.value = -1e9;
-      // Gravity OFF — droplet is in vacuum.
-      loop.gravity.set(0, 0, 0);
 
-      // eslint-disable-next-line no-console
       console.info(
-        `[droplet-sphere] particleMass=${fluid.mass.toExponential(3)} spacing=${spacing} h=${h} γ=1`,
+        `[droplet-sphere] particleMass=${fluid.mass.toExponential(3)} spacing=${spacing} h=${h} γ=${gamma}`,
       );
 
-      // Plan-spec 5 s settle.
+      // 5 s settle.
       const frames = 300;
       const probeFrames = [0, 1, 2, 4, 9, 19, 29, 59, 119, 179, 239, 299];
       let firstNanFrame = -1;
@@ -141,6 +117,9 @@ describe('Phase 09 — fluid droplet sphere (surface tension)', () => {
           let minY = Number.POSITIVE_INFINITY;
           let maxY = Number.NEGATIVE_INFINITY;
           let maxSpeed = 0;
+          let pxSum = 0;
+          let pySum = 0;
+          let pzSum = 0;
           for (let k = 0; k < count; k++) {
             const y = snap.positions[4 * k + 1]!;
             const vx = snap.velocities[4 * k + 0]!;
@@ -154,33 +133,12 @@ describe('Phase 09 — fluid droplet sphere (surface tension)', () => {
             if (y > maxY) maxY = y;
             const s = Math.sqrt(vx * vx + vy * vy + vz * vz);
             if (s > maxSpeed) maxSpeed = s;
+            pxSum += vx;
+            pySum += vy;
+            pzSum += vz;
           }
-          // Corner particle 0 diagnostic (initial (-0.0875, -0.0875, -0.0875)).
-          const p0: [number, number, number] = [
-            snap.positions[0]!,
-            snap.positions[1]!,
-            snap.positions[2]!,
-          ];
-          const v0: [number, number, number] = [
-            snap.velocities[0]!,
-            snap.velocities[1]!,
-            snap.velocities[2]!,
-          ];
-          let pxSum = 0,
-            pySum = 0,
-            pzSum = 0;
-          for (let k = 0; k < count; k++) {
-            pxSum += snap.velocities[4 * k + 0]!;
-            pySum += snap.velocities[4 * k + 1]!;
-            pzSum += snap.velocities[4 * k + 2]!;
-          }
-          // eslint-disable-next-line no-console
           console.info(
-            `[droplet-momentum] frame=${n} Σv=(${pxSum.toExponential(3)}, ${pySum.toExponential(3)}, ${pzSum.toExponential(3)})  |Σv|=${Math.sqrt(pxSum * pxSum + pySum * pySum + pzSum * pzSum).toExponential(3)}`,
-          );
-          // eslint-disable-next-line no-console
-          console.info(
-            `[droplet-sphere] frame=${n} nanCount=${nanCount} y=[${minY.toFixed(4)}, ${maxY.toFixed(4)}] maxSpeed=${maxSpeed.toFixed(3)} p0=(${p0[0].toFixed(4)}, ${p0[1].toFixed(4)}, ${p0[2].toFixed(4)}) v0=(${v0[0].toFixed(3)}, ${v0[1].toFixed(3)}, ${v0[2].toFixed(3)})`,
+            `[droplet-sphere] frame=${n} nanCount=${nanCount} y=[${minY.toFixed(4)}, ${maxY.toFixed(4)}] maxSpeed=${maxSpeed.toFixed(3)} |Σv|=${Math.hypot(pxSum, pySum, pzSum).toExponential(3)}`,
           );
           if (nanCount > 0 && firstNanFrame < 0) {
             firstNanFrame = n;
@@ -241,10 +199,6 @@ describe('Phase 09 — fluid droplet sphere (surface tension)', () => {
       sxz /= nValid;
       syz /= nValid;
 
-      // Eigenvalues of the symmetric 3×3 covariance matrix via the
-      // closed-form Smith 1961 method (stable for real-symmetric 3×3).
-      // See `tests/_helpers/eigSymmetric3.ts`-style computations elsewhere
-      // in the repo; inline here to keep test self-contained.
       const [e0, e1, e2] = eigenvaluesSymmetric3(sxx, syy, szz, sxy, sxz, syz);
       const sigmas = [Math.sqrt(e0), Math.sqrt(e1), Math.sqrt(e2)].sort((a, b) => a - b);
       const sigmaMin = sigmas[0]!;
@@ -277,12 +231,11 @@ describe('Phase 09 — fluid droplet sphere (surface tension)', () => {
       const r95 = rs[Math.floor(rs.length * 0.95)]!;
       const r99 = rs[Math.floor(rs.length * 0.99)]!;
 
-      // eslint-disable-next-line no-console
       console.info(
         `[droplet-sphere] final: σ=[${sigmas[0]!.toFixed(4)}, ${sigmas[1]!.toFixed(4)}, ${sigmas[2]!.toFixed(4)}] aspect=${aspectRatio.toFixed(3)} rMax=${rMax.toFixed(4)} rMean=${rMean.toFixed(4)} rMedian=${rMedian.toFixed(4)} r95=${r95.toFixed(4)} r99=${r99.toFixed(4)}`,
       );
 
-      // Plan-spec gate: aspect ratio → 1.0 ± 0.1.
+      // Aspect ratio → 1.0 ± 0.1.
       expect(aspectRatio).toBeLessThan(1.1);
       expect(aspectRatio).toBeGreaterThan(0.9);
       // Shape has moved TOWARD sphere: cloud ratio should be under the
@@ -291,8 +244,8 @@ describe('Phase 09 — fluid droplet sphere (surface tension)', () => {
       // baseline: 4/3 ≈ 1.33.
       expect(rRatio).toBeLessThan(1.8);
 
-      particles.destroy();
-      hashGrid.destroy();
+      loop.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }
@@ -305,8 +258,7 @@ describe('Phase 09 — fluid droplet sphere (surface tension)', () => {
  * PSD matrices. Returns eigenvalues in arbitrary order.
  *
  * Reference: Smith, O. K. 1961. "Eigenvalues of a symmetric 3 × 3 matrix."
- * Communications of the ACM, 4(4):168. Implementation follows the
- * Wikipedia §"Eigenvalue algorithm" derivation verbatim.
+ * Communications of the ACM, 4(4):168.
  */
 function eigenvaluesSymmetric3(
   a11: number,

@@ -6,14 +6,14 @@ import {
   createParticleRenderer,
   emitForEachNeighbor,
   type ParticleInit,
-} from '../../../src/core/index.js';
+} from '../../../src/index.js';
 
-// Phase 03 G1 — random stress. 100k particles uniformly distributed in the
-// unit cube, h=0.05 (ε=0). Sample 100 query particles; CPU brute force gives
-// the ground truth. Uses a per-query neighbor count — comparing the count
-// (not the set) is sufficient because the mapping from sortedIndices to
-// candidate neighbors is deterministic up to intra-cell order, and we filter
-// by distance² < h² anyway.
+// Random stress. 100k particles uniformly distributed in the unit cube,
+// h=0.05 (ε=0). Sample 100 query particles; CPU brute force gives the ground
+// truth. Uses a per-query neighbor count — comparing the count (not the set)
+// is sufficient because the mapping from sortedIndices to candidate
+// neighbors is deterministic up to intra-cell order, and we filter by
+// distance² < h² anyway.
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -26,7 +26,7 @@ function lcg(seed: number): () => number {
   };
 }
 
-describe('Phase 03 — HashGrid: 100k random stress', () => {
+describe('HashGrid: 100k random stress', () => {
   it('per-particle neighbor count matches CPU brute force on 100 samples', async () => {
     const renderer = await createParticleRenderer();
     try {
@@ -48,7 +48,6 @@ describe('Phase 03 — HashGrid: 100k random stress', () => {
           ],
           velocity: [0, 0, 0],
           invMass: 1,
-          phase: 0,
         });
       }
 
@@ -65,24 +64,15 @@ describe('Phase 03 — HashGrid: 100k random stress', () => {
         const p: Any = instanceIndex;
         const pos: Any = particles.positions.element(p).xyz;
         const count: Any = uint(0).toVar();
-        emitForEachNeighbor({
-          queryPosXyz: pos,
-          hashOrigin: grid.hashOriginUniform,
-          cellSize: grid.cellSizeUniform,
-          hashTableSize: grid.hashTableSize,
-          cellStart: grid.cellStart,
-          cellEnd: grid.cellEnd,
-          sortedIndices: grid.sortedIndices,
-          onCandidate: (n) => {
-            If((n as Any).notEqual(p), () => {
-              const npos: Any = particles.positions.element(n).xyz;
-              const diff: Any = pos.sub(npos);
-              const d2: Any = diff.dot(diff);
-              If(d2.lessThan(H2), () => {
-                count.addAssign(uint(1));
-              });
+        emitForEachNeighbor(grid, pos, (n) => {
+          If(n.notEqual(p), () => {
+            const npos: Any = particles.positions.element(n).xyz;
+            const diff: Any = pos.sub(npos);
+            const d2: Any = diff.dot(diff);
+            If(d2.lessThan(H2), () => {
+              count.addAssign(uint(1));
             });
-          },
+          });
         });
         countsOut.element(p).assign(count);
       })().compute(N);
@@ -92,7 +82,7 @@ describe('Phase 03 — HashGrid: 100k random stress', () => {
 
       // Sample 100 particles deterministically and brute-force each against
       // the full 100k set. That's 10M pair comparisons — ~100 ms on a modern
-      // laptop JS runtime, well within the 60s test budget.
+      // laptop JS runtime, well within the test budget.
       const sampleRand = lcg(0xbeef_cafe);
       const SAMPLES = 100;
       for (let s = 0; s < SAMPLES; s++) {
@@ -111,8 +101,8 @@ describe('Phase 03 — HashGrid: 100k random stress', () => {
         expect(gpuCounts[p]).toBe(cpuCount);
       }
 
-      grid.destroy();
-      particles.destroy();
+      grid.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

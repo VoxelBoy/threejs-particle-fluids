@@ -8,8 +8,6 @@ import type { ParticleSystem } from '../core/index.js';
 type Any = any;
 
 /**
- *
- *
  * For K influences with weights `w_j` and per-influence rigid-motion
  * dual quaternions `q̂_j = q_j + ε · ½ · t_j · q_j`:
  *   1. Antipodality flip vs influence 0 (Algorithm 2): negate any `q̂_j`
@@ -20,7 +18,7 @@ type Any = any;
  *      `v' = R(q̂.real) · v + 2 · (a₀·d_ε − a_ε·d₀ + d₀ × d_ε)` where
  *      `(a₀, d₀) = q̂.real` and `(a_ε, d_ε) = q̂.dual` (Lemma 4 + Algo 1).
  *
- * MVP fixes K=4 (Mueller 2011 §7 default, plan §"Binding"). Fewer than 4
+ * Each vertex has four influences (Müller & Chentanez 2011, §7). Fewer than 4
  * influences are zero-padded by {@link bindSoftbodyMesh}; the unused
  * lanes contribute weight 0 and vanish in the sum.
  *
@@ -62,7 +60,7 @@ function quatMul(a: Any, b: Any): Any {
  * The translation `t_k` is the body-rest-local-to-world offset such that
  * applying `q̂_k` to a rest-frame point `p` yields `R(q_k)·p + t_k`. For
  * a particle with current world position `x*_k` and rest body-local
- * position `r_k`, this is `t_k = x*_k − R(q_k) · r_k` (plan §Algorithms).
+ * position `r_k`, this is `t_k = x*_k − R(q_k) · r_k`.
  *
  * Returns the dual part as a vec4 (xyz = vector, w = scalar) — the real
  * part is the input quaternion `q`, returned by the caller separately to
@@ -92,9 +90,8 @@ export interface BuildSkinPositionFnArgs {
    * Per-`Fn`-invocation factory for the rotation source. The skin shader
    * builds the position and normal `Fn`s separately; each invocation
    * gets a FRESH `(idx) => quat` closure so per-Fn caching state cannot
-   * leak between them. In `'implicit'` mode the closure ignores prior
-   * calls and returns `particles.rotation.element(idx)`. In `'explicit'`
-   * mode it computes the body-shared quaternion once (memoised inside
+   * leak between them. With local shape matching the closure returns
+   * `particles.rotation.element(idx)`. With global shape matching it computes the body-shared quaternion once (memoised inside
    * the closure) and returns the same node reference for every lane;
    * DLB then collapses to LBS as Kavan 2008 Eq. 11 specifies.
    */
@@ -112,8 +109,7 @@ export interface BuildSkinPositionFnArgs {
  *
  * The shader is intentionally K=4 unrolled — runtime-indexed vec4-
  * component access is awkward in TSL, and 4 iterations is cheap enough
- * to unroll on any GPU we target (≈ 12–16 FMAs per vertex per plan
- * §"Performance notes").
+ * to unroll on any GPU (about 12–16 FMAs per vertex).
  */
 export function buildSkinPositionFn(args: BuildSkinPositionFnArgs): Any {
   const { particles, restOffsets, cBar, createGetRotationQuat } = args;
@@ -216,8 +212,7 @@ export function buildSkinPositionFn(args: BuildSkinPositionFnArgs): Any {
  * Build a TSL `Fn` returning the skinned **world-space** normal.
  *
  * Normals transform by the rotation part of the (post-normalization)
- * blended dual quaternion: `n' = R(realN) · n` (plan §"Normal
- * transformation"). DQB preserves unit length under pure rotation; the
+ * blended dual quaternion: `n' = R(realN) · n`. DQB preserves unit length under pure rotation; the
  * inverse-transpose collapses because rotation matrices are orthogonal.
  *
  * Same antipodality-and-blend code as the position path, factored out

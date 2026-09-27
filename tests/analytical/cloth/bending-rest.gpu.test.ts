@@ -1,16 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { BufferGeometry, Float32BufferAttribute, Uint32BufferAttribute } from 'three';
+import { BufferGeometry, Float32BufferAttribute, Uint32BufferAttribute, Vector3 } from 'three';
 
 import {
+  ClothSystem,
   ParticleSystem,
   SimLoop,
+  createClothGraph,
   createParticleRenderer,
-  createXpbdUniforms,
-  type ParticleInit,
-} from '../../../src/core/index.js';
-import { ClothSystem, fromBufferGeometry } from '../../../src/cloth/index.js';
+} from '../../../src/index.js';
 
-// Phase 18 G1 — bending rest test (plan §"Validation/Automatic G1").
+// Cloth bending holds its rest angle.
 //
 // Build a four-vertex two-triangle mesh folded at 90° around the
 // shared edge. Pin the two edge endpoints (so only the far vertices
@@ -22,8 +21,8 @@ import { ClothSystem, fromBufferGeometry } from '../../../src/cloth/index.js';
 // We also verify a SECOND case: same geometry but folded at 0° (flat
 // rest), perturb the far vertex slightly out of plane, run zero-grav,
 // and assert the cloth returns to flat. The bending kernel must do
-// the right thing in BOTH directions of perturbation, which is the
-// gate against the signed-θ sign-flip bug caught at Phase 18 entry.
+// the right thing in BOTH directions of perturbation, which guards
+// against a sign error in the signed dihedral angle θ.
 
 interface FoldedQuad {
   readonly geometry: BufferGeometry;
@@ -133,7 +132,7 @@ async function runRestTest(args: {
     const { geometry, p1, p2, p3, p4 } = buildFoldedQuad(
       args.perturbedDihedralRad ?? args.initialDihedralRad,
     );
-    const graph = fromBufferGeometry(geometry, {
+    const graph = createClothGraph(geometry, {
       surfaceDensity: 0.2,
       // Pin the edge endpoints — only far vertices move.
       pinnedIndices: [p1, p2],
@@ -165,25 +164,10 @@ async function runRestTest(args: {
       (graph.bendingRestAngles as number[])[0] = restTarget;
     }
 
-    const initial: ParticleInit[] = [];
-    for (let i = 0; i < graph.positions.length; i++) {
-      const pos = graph.positions[i]!;
-      initial.push({
-        position: [pos[0], pos[1], pos[2]],
-        velocity: [0, 0, 0],
-        invMass: graph.invMass[i]!,
-        phase: 1,
-      });
-    }
+    // The cloth uploads its particles' positions and masses from the graph.
     const particles = new ParticleSystem(renderer, graph.positions.length, 0.05);
-    particles.uploadParticles(initial);
-
-    const xpbd = createXpbdUniforms(1 / 60);
-    const cloth = new ClothSystem({
-      particles,
-      xpbd,
+    const cloth = new ClothSystem(particles, {
       graph,
-      particleOffset: 0,
       stretchCompliance: 1e-7,
       bendCompliance: 1e-5,
     });
@@ -191,16 +175,14 @@ async function runRestTest(args: {
     const loop = new SimLoop(particles, {
       substeps: args.substeps,
       iterations: args.iterations,
-      xpbd,
+      gravity: new Vector3(0, 0, 0), // zero-gravity rest test
       materials: [cloth],
     });
-    loop.kernels.floorY.value = -1e9; // no floor
-    loop.gravity.set(0, 0, 0); // zero-gravity rest test
 
     // GPU buffers aren't allocated until the first compute dispatch
     // (three.js StorageBufferAttribute lazy-allocates on first kernel
     // touch). Sample the initial angle from the CPU-side graph
-    // positions instead — they are byte-identical to what we just
+    // positions instead — they are byte-identical to what the cloth
     // uploaded.
     const initialPos: [number, number, number][] = graph.positions.map((p) => [p[0], p[1], p[2]]);
     const initialAngle = dihedralAngleSigned(initialPos, p1, p2, p3, p4);
@@ -232,9 +214,9 @@ async function runRestTest(args: {
         if (frameKE > maxKE) maxKE = frameKE;
         if (!nanFree) break;
         // Optional CPU-side velocity damping: read, scale, re-upload.
-        // Used by both rest tests so the cloth actually settles to the
-        // rest angle within the test budget instead of oscillating
-        // around it indefinitely.
+        // Lets the perturbed cloth actually settle to the rest angle
+        // within the test budget instead of oscillating around it
+        // indefinitely.
         if (damp < 1.0 && nanFree) {
           for (let i = 0; i < graph.positions.length * 4; i++) {
             snap.velocities[i] = snap.velocities[i]! * damp;
@@ -248,7 +230,8 @@ async function runRestTest(args: {
     const finalPos = readbackPositions(finalSnap.positions, 4);
     const finalAngle = dihedralAngleSigned(finalPos, p1, p2, p3, p4);
 
-    particles.destroy();
+    loop.dispose();
+    particles.dispose();
     return { initialAngle, finalAngle, maxKineticEnergy: maxKE, nanFree };
   } finally {
     renderer.dispose();
@@ -263,7 +246,7 @@ function readbackPositions(flat: Float32Array, count: number): [number, number, 
   return out;
 }
 
-describe('Phase 18 — bending rest test', () => {
+describe('cloth bending rest angle', () => {
   it('holds 90° rest angle with no perturbation (within 2°)', async () => {
     const result = await runRestTest({
       initialDihedralRad: Math.PI / 2,
@@ -273,9 +256,8 @@ describe('Phase 18 — bending rest test', () => {
     });
     expect(result.nanFree).toBe(true);
     // Edge endpoints are pinned and far vertices receive no force at
-    // exact rest, so the angle should not drift. Allow 2° per the plan.
+    // exact rest, so the angle should not drift. Allow 2°.
     const drift = Math.abs(result.finalAngle - result.initialAngle);
-    // eslint-disable-next-line no-console
     console.info(
       `[bending-rest 90°] initial=${((result.initialAngle * 180) / Math.PI).toFixed(3)}° final=${((result.finalAngle * 180) / Math.PI).toFixed(3)}° drift=${((drift * 180) / Math.PI).toFixed(3)}° maxKE=${result.maxKineticEnergy.toExponential(2)}`,
     );
@@ -297,7 +279,6 @@ describe('Phase 18 — bending rest test', () => {
       velocityDamp: 0.92,
     });
     expect(result.nanFree).toBe(true);
-    // eslint-disable-next-line no-console
     console.info(
       `[bending-rest 0°-from-30°] initial=${((result.initialAngle * 180) / Math.PI).toFixed(3)}° final=${((result.finalAngle * 180) / Math.PI).toFixed(3)}° maxKE=${result.maxKineticEnergy.toExponential(2)}`,
     );

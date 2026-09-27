@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { BufferGeometry, Float32BufferAttribute, Uint32BufferAttribute } from 'three';
 
-import { fromBufferGeometry } from '../../../src/cloth/index.js';
+import { createClothGraph } from '../../../src/index.js';
 
 // Build a 2-triangle quad sharing one diagonal edge — minimal mesh
 // that has both distance constraints (5 edges) and exactly one
@@ -36,21 +36,10 @@ function buildMinimalQuad(): BufferGeometry {
   return geom;
 }
 
-// 32-particle 1D chain — for catenary: vertex sequence with each
-// adjacent pair connected. Built as 31 zero-area triangles? No — for a
-// 1D chain we have only distance constraints, no bending. The graph
-// builder needs an indexed triangle mesh; the cleanest 1D chain is to
-// build a degenerate triangle strip and let the degenerate-triangle
-// guard skip them. But that wouldn't enumerate the chain edges.
-//
-// Instead the test below uses the graph builder only on the 2D quad;
-// the catenary GPU test bypasses fromBufferGeometry and constructs
-// distancePairs / restLengths directly.
-
-describe('Phase 18 — ClothGraph builder', () => {
+describe('createClothGraph', () => {
   it('builds minimal quad: 4 particles, 5 distance edges, 1 bending tuple', () => {
     const geom = buildMinimalQuad();
-    const graph = fromBufferGeometry(geom, { surfaceDensity: 0.2 });
+    const graph = createClothGraph(geom, { surfaceDensity: 0.2 });
 
     expect(graph.positions.length).toBe(4);
     // Quad has 5 unique edges: 4 boundary + 1 diagonal (the shared edge).
@@ -67,7 +56,7 @@ describe('Phase 18 — ClothGraph builder', () => {
 
   it('flat planar quad has bending rest angle = 0 (Bridson §4 convention)', () => {
     const geom = buildMinimalQuad();
-    const graph = fromBufferGeometry(geom);
+    const graph = createClothGraph(geom);
     expect(graph.bendingRestAngles[0]!).toBeCloseTo(0, 5);
   });
 
@@ -97,7 +86,7 @@ describe('Phase 18 — ClothGraph builder', () => {
       ),
     );
     geom.setIndex(new Uint32BufferAttribute([0, 1, 2, 1, 3, 2], 1));
-    const graph = fromBufferGeometry(geom);
+    const graph = createClothGraph(geom);
     expect(graph.bendingTuples.length).toBe(1);
     // Signed atan2 — the sign depends on whether the fold is valley
     // or mountain relative to the shared-edge direction. |restAngle|
@@ -108,14 +97,14 @@ describe('Phase 18 — ClothGraph builder', () => {
 
   it('pinning sets invMass = 0 on pinned indices', () => {
     const geom = buildMinimalQuad();
-    const graph = fromBufferGeometry(geom, { pinnedIndices: [0, 1] });
+    const graph = createClothGraph(geom, { pinnedIndices: [0, 1] });
     expect(graph.invMass[0]).toBe(0);
     expect(graph.invMass[1]).toBe(0);
     expect(graph.invMass[2]).toBeGreaterThan(0);
     expect(graph.invMass[3]).toBeGreaterThan(0);
   });
 
-  it('vertex dedup welds coincident vertices (default weldEpsilon)', () => {
+  it('welds coincident vertices', () => {
     const geom = new BufferGeometry();
     // Two triangles where vertex 0 and 4 occupy the same world position.
     // prettier-ignore
@@ -134,7 +123,7 @@ describe('Phase 18 — ClothGraph builder', () => {
       ),
     );
     geom.setIndex(new Uint32BufferAttribute([0, 1, 2, 4, 5, 3], 1));
-    const graph = fromBufferGeometry(geom);
+    const graph = createClothGraph(geom);
     // 4 unique positions after dedup (0=4, 1=5, plus 2 and 3).
     expect(graph.positions.length).toBe(4);
   });
@@ -142,13 +131,13 @@ describe('Phase 18 — ClothGraph builder', () => {
   it('rejects non-indexed geometry', () => {
     const geom = new BufferGeometry();
     geom.setAttribute('position', new Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0], 3));
-    expect(() => fromBufferGeometry(geom)).toThrow(/must be indexed/);
+    expect(() => createClothGraph(geom)).toThrow(/must be indexed/);
   });
 
   it('inverse mass scales with surface density', () => {
     const geom = buildMinimalQuad();
-    const dense = fromBufferGeometry(geom, { surfaceDensity: 1.0 });
-    const light = fromBufferGeometry(geom, { surfaceDensity: 0.1 });
+    const dense = createClothGraph(geom, { surfaceDensity: 1.0 });
+    const light = createClothGraph(geom, { surfaceDensity: 0.1 });
     // m_dense = 10 · m_light  ⇒  invMass_dense = 0.1 · invMass_light.
     for (let i = 0; i < 4; i++) {
       expect(dense.invMass[i]!).toBeCloseTo(0.1 * light.invMass[i]!, 6);

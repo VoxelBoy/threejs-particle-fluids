@@ -1,17 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { bakeMeshToSdf, sampleSdfCpu } from '../../../src/sdf/index.js';
+import { bakeMeshToSdf, sampleSdf } from '../../../src/index.js';
 import { makeLcg, makeUvSphere } from '../../_helpers/sdf-test-meshes.js';
 
-// Phase 07 G1 — "Sphere-bake accuracy" (plan §Validation > Automatic (G1)):
-// "Bake a sphere mesh of radius 0.5 at resolution 64³. At 100 random
-// interior points (inside the padding), sampled SDF must match analytic
-// `|x| - 0.5` within **0.5 × voxelSize**."
+// Sphere-bake accuracy: bake a sphere mesh of radius 0.5 at resolution 64³.
+// At 100 random interior points, the sampled SDF must match the analytic
+// `|x| - 0.5` within 0.5 × voxelSize.
 //
-// "Interior" is interpreted per the plan's shape ("inside the padding")
-// as: inside the voxel grid but not within one voxel of the boundary
-// layer (trilinear interpolation's validity range). Points are sampled
-// uniformly in a box that is 3 voxels smaller on every side than the
-// grid, which guarantees the trilinear interpolant is well-defined.
+// "Interior" means inside the voxel grid but not within one voxel of the
+// boundary layer (trilinear interpolation's validity range). Points are
+// sampled uniformly in a box that is 3 voxels smaller on every side than
+// the grid, which guarantees the trilinear interpolant is well-defined.
 //
 // Error budget:
 //   - trilinear interpolant error on a smooth SDF: `≤ 0.125 · voxelSize²/r`
@@ -20,25 +18,17 @@ import { makeLcg, makeUvSphere } from '../../_helpers/sdf-test-meshes.js';
 //     ≤ ~5e-4 m, well under the gate.
 //   - UV-sphere facet deviation from the ideal sphere: `r · (1 − cos
 //     (π/stacks))` ≈ 2.4e-3 m at stacks=32.
-//   - Half-float quantization in storage: tested implicitly by the CPU
-//     path here (`sampleSdfCpu` reads raw f32 data, no half-float), so
-//     this test isolates baker correctness from GPU upload precision.
+//   - Half-float quantization in storage: not involved — the CPU path here
+//     (`sampleSdf` reads the raw f32 data, no half-float), so this test
+//     isolates baker correctness from GPU upload precision.
 // Sum of known error sources ≪ 0.5 · voxelSize gate.
 
-// Disabled in the default suite because the uncached 64³ mesh bake is expensive.
-// Enable explicitly when validating changes to SDF baking or projection.
-describe.skip('Phase 07 — SDF: sphere bake accuracy (G1)', () => {
+describe('SDF: sphere bake accuracy', () => {
   it('baked 64³ SDF of a radius-0.5 UV sphere matches analytic `|x| - 0.5` within 0.5·voxelSize', () => {
     const radius = 0.5;
     const resolution = 64;
     const padding = 0.1;
-    const mesh = makeUvSphere(radius, 32, 32);
-    const sdf = bakeMeshToSdf({
-      positions: mesh.positions,
-      indices: mesh.indices,
-      resolution,
-      padding,
-    });
+    const sdf = bakeMeshToSdf(makeUvSphere(radius, 32, 32), { resolution, padding });
 
     const [vx, vy, vz] = sdf.voxelSize;
     const tolerance = 0.5 * Math.max(vx, vy, vz);
@@ -65,7 +55,7 @@ describe.skip('Phase 07 — SDF: sphere bake accuracy (G1)', () => {
       const x = minX + (maxX - minX) * rand();
       const y = minY + (maxY - minY) * rand();
       const z = minZ + (maxZ - minZ) * rand();
-      const sampled = sampleSdfCpu(sdf, x, y, z);
+      const sampled = sampleSdf(sdf, x, y, z);
       const expected = Math.hypot(x, y, z) - radius;
       const err = Math.abs(sampled - expected);
       if (err > worstAbsError) {
@@ -76,7 +66,6 @@ describe.skip('Phase 07 — SDF: sphere bake accuracy (G1)', () => {
       }
     }
 
-    // eslint-disable-next-line no-console
     console.info(
       `[sdf-sphere-bake-accuracy] voxelSize=${vx.toFixed(
         5,
@@ -88,5 +77,5 @@ describe.skip('Phase 07 — SDF: sphere bake accuracy (G1)', () => {
     );
 
     expect(worstAbsError).toBeLessThan(tolerance);
-  });
+  }, 60_000);
 });

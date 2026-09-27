@@ -1,28 +1,26 @@
 /**
- * Procedural test meshes for Phase 07 SDF tests. Hand-rolled instead of
+ * Procedural test meshes for the SDF tests. Hand-rolled instead of
  * three's `SphereGeometry` / `TorusKnotGeometry` so the tests can run
- * under the `analytical` (node) vitest suite without importing three —
- * three's geometry builders reach for `window`/`document` on import on
- * some r184 code paths, and node-importing them is a rabbit hole the
- * test surface doesn't need to poke.
+ * under the Node vitest suite without importing three — three's geometry
+ * builders reach for `window`/`document` on import on some r184 code
+ * paths, and node-importing them is a rabbit hole the test surface
+ * doesn't need to poke.
  *
- * Every returned mesh is watertight and manifold (the Phase 07 baker's
- * ray-cast sign test assumes this — see `src/sdf/bake.ts`).
+ * Every returned mesh is watertight and manifold (the baker's ray-cast
+ * sign test assumes this — see `src/sdf/bake.ts`), and is a
+ * {@link TriangleMesh}, so it can be passed straight to `bakeMeshToSdf`.
  */
 
-export interface TestMesh {
-  readonly positions: Float32Array;
-  readonly indices: Uint32Array;
-}
+import type { TriangleMesh } from '../../src/core/mesh.js';
 
 /**
  * UV sphere — stacks × slices watertight with triangle fans at the poles.
  * For `stacks = 32, slices = 32` (1920 triangles, radius 0.5): the
  * maximum facet-to-ideal-sphere deviation is `r·(1 − cos(π/stacks))
- * ≈ 2.4e-3 m`, well under the Phase 07 plan's `0.5 · voxelSize` gate at
- * 64³ resolution (≈ 9e-3 m).
+ * ≈ 2.4e-3 m`, well under the bake-accuracy test's `0.5 · voxelSize`
+ * gate at 64³ resolution (≈ 9e-3 m).
  */
-export function makeUvSphere(radius: number, stacks: number, slices: number): TestMesh {
+export function makeUvSphere(radius: number, stacks: number, slices: number): TriangleMesh {
   if (stacks < 3 || slices < 3) {
     throw new Error(`makeUvSphere: stacks/slices must each be ≥ 3`);
   }
@@ -82,7 +80,7 @@ export function makeUvSphere(radius: number, stacks: number, slices: number): Te
     indices.push(a, southIdx, b);
   }
   return {
-    positions,
+    vertices: positions,
     indices: new Uint32Array(indices),
   };
 }
@@ -92,17 +90,17 @@ export function makeUvSphere(radius: number, stacks: number, slices: number): Te
  * `ringRadius`. `ringSegs` divisions around the major circle, `tubeSegs`
  * around the minor. Watertight quad strip.
  *
- * Used as a stand-in for the Phase 07 plan's "baked Stanford bunny"
- * projection test: the interior of the tube is a genuine non-convex
- * inside region, so "place 1000 particles inside and solve out" has a
- * non-trivial sign-flip at the inner wall.
+ * Used by the SDF projection test in place of a scanned model: the
+ * interior of the tube is a genuine non-convex inside region, so "place
+ * 1000 particles inside and solve out" has a non-trivial sign-flip at the
+ * inner wall.
  */
 export function makeTorus(
   ringRadius: number,
   tubeRadius: number,
   ringSegs: number,
   tubeSegs: number,
-): TestMesh {
+): TriangleMesh {
   if (ringSegs < 3 || tubeSegs < 3) {
     throw new Error('makeTorus: ringSegs/tubeSegs must each be ≥ 3');
   }
@@ -136,10 +134,10 @@ export function makeTorus(
       indices.push(a, d, b);
     }
   }
-  return { positions, indices: new Uint32Array(indices) };
+  return { vertices: positions, indices: new Uint32Array(indices) };
 }
 
-/** Deterministic LCG — same constants as the Phase 06 tests. */
+/** Deterministic LCG (Numerical Recipes constants, as in the other tests). */
 export function makeLcg(seed: number): () => number {
   let s = seed | 0;
   return (): number => {

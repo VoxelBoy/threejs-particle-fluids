@@ -1,12 +1,12 @@
 import type { BufferGeometry } from 'three';
 
 /**
- * Output of {@link fromBufferGeometry}: per-particle state plus the two
+ * Output of {@link createClothGraph}: per-particle state plus the two
  * constraint topology lists `ClothSystem` consumes (distance pairs,
  * bending tuples).
  *
  * Coordinate convention: positions are taken verbatim from the input
- * `BufferGeometry`. `fromBufferGeometry` does not transform vertices —
+ * `BufferGeometry`. `createClothGraph` does not transform vertices —
  * apply any world-space transform to the geometry's attribute or pass
  * a pre-transformed clone before calling.
  */
@@ -39,11 +39,7 @@ export interface ClothGraph {
    * input geometry, expressed as a triple of dedup'd vertex indices.
    * Order matches the input index buffer (degenerate triangles are
    * skipped, so the count may be less than `indexBuffer.count / 3`).
-   *
-   * Phase 19 — added so `aero.ts` (Keckeisen 2004 per-triangle drag /
-   * lift) and any future per-triangle kernels can read the topology
-   * without re-deriving it from the source `BufferGeometry` (which
-   * would then have to know about the dedup pass).
+   * Used for per-triangle forces such as wind (Keckeisen et al. 2004).
    */
   readonly triangles: readonly (readonly [number, number, number])[];
   /**
@@ -69,8 +65,8 @@ export interface ClothGraph {
    * the signed dihedral. Using `acos` (unsigned θ) folds positive- and
    * negative-side bends onto the same value, causing the gradient
    * sign to be wrong on one half — the cloth amplifies any
-   * out-of-plane perturbation instead of damping it. Caught at Phase
-   * 18 entry; see `bending.ts` block comment for the longer rationale.
+   * out-of-plane perturbation instead of damping it. See `bending.ts`
+   * for the longer rationale.
    *
    * A flat planar mesh gives `restAngle = 0`; a valley fold has
    * positive rest angle, a mountain fold negative.
@@ -94,29 +90,22 @@ export interface ClothGraph {
 
 export interface ClothGraphOptions {
   /**
-   * Surface density in kg/m². Default `0.2` ≈ light cotton fabric
-   * (per Bridson 2003-style cloth defaults, Verified at MVP scale).
+   * Surface density in kg/m². Default `0.2`, about light cotton.
    */
   readonly surfaceDensity?: number;
   /**
    * Vertex indices to pin (set `invMass = 0`). Indices reference the
    * **deduplicated** vertex list returned in {@link ClothGraph.positions} —
-   * call {@link fromBufferGeometry} once and inspect the output before
+   * call {@link createClothGraph} once and inspect the output before
    * deciding which indices to pin if you need to map from raw geometry
    * indices.
    */
   readonly pinnedIndices?: readonly number[];
-  /**
-   * Weld vertices whose positions match within `weldEpsilon` (metres)
-   * before constraint enumeration. Default `1e-6`. Pass `null` to skip
-   * dedup entirely (useful when the input mesh is already known-welded
-   * and the caller wants stable index mapping).
-   */
-  readonly weldEpsilon?: number | null;
 }
 
 const DEFAULT_SURFACE_DENSITY = 0.2;
-const DEFAULT_WELD_EPSILON = 1e-6;
+/** Vertices closer than this (metres) are merged, so seams in the input become connected cloth. */
+const WELD_EPSILON = 1e-6;
 
 /**
  * Build a {@link ClothGraph} from a `THREE.BufferGeometry`.
@@ -132,39 +121,32 @@ const DEFAULT_WELD_EPSILON = 1e-6;
  * Pure-CPU; no GPU or renderer dependency. Safe to call at scene load
  * time.
  */
-export function fromBufferGeometry(
+export function createClothGraph(
   geom: BufferGeometry,
   options: ClothGraphOptions = {},
 ): ClothGraph {
   const surfaceDensity = options.surfaceDensity ?? DEFAULT_SURFACE_DENSITY;
-  const weldEpsilon =
-    options.weldEpsilon === null ? null : (options.weldEpsilon ?? DEFAULT_WELD_EPSILON);
   const pinnedIndices = options.pinnedIndices ?? [];
 
   if (!Number.isFinite(surfaceDensity) || surfaceDensity <= 0) {
     throw new Error(
-      `fromBufferGeometry: surfaceDensity must be a positive finite number, got ${surfaceDensity}`,
-    );
-  }
-  if (weldEpsilon !== null && (!Number.isFinite(weldEpsilon) || weldEpsilon < 0)) {
-    throw new Error(
-      `fromBufferGeometry: weldEpsilon must be null or a non-negative finite number, got ${weldEpsilon}`,
+      `createClothGraph: surfaceDensity must be a positive finite number, got ${surfaceDensity}`,
     );
   }
 
   const indexAttr = geom.getIndex();
   if (indexAttr === null) {
     throw new Error(
-      'fromBufferGeometry: input BufferGeometry must be indexed (call geom.toIndexed() or merge vertices upstream)',
+      'createClothGraph: input BufferGeometry must be indexed (call geom.toIndexed() or merge vertices upstream)',
     );
   }
   const positionAttr = geom.getAttribute('position');
   if (!positionAttr) {
-    throw new Error('fromBufferGeometry: input BufferGeometry has no position attribute');
+    throw new Error('createClothGraph: input BufferGeometry has no position attribute');
   }
   if (positionAttr.itemSize !== 3) {
     throw new Error(
-      `fromBufferGeometry: position attribute itemSize must be 3, got ${positionAttr.itemSize}`,
+      `createClothGraph: position attribute itemSize must be 3, got ${positionAttr.itemSize}`,
     );
   }
 
@@ -177,30 +159,17 @@ export function fromBufferGeometry(
   // Vertex dedup. Map old → new index, drop duplicate positions.
   const oldToNew = new Uint32Array(rawCount);
   const positions: [number, number, number][] = [];
-  if (weldEpsilon === null) {
-    for (let i = 0; i < rawCount; i++) {
-      oldToNew[i] = i;
-      positions.push(rawPositions[i]!);
-    }
-  } else {
-    // O(n) hash-bucket dedup. Quantise to `weldEpsilon` so positions
-    // within `epsilon` collide.
-    const inv = weldEpsilon > 0 ? 1 / weldEpsilon : 0;
-    const bucket = new Map<string, number>();
-    for (let i = 0; i < rawCount; i++) {
-      const p = rawPositions[i]!;
-      const key =
-        weldEpsilon === 0
-          ? `${p[0]},${p[1]},${p[2]}`
-          : `${Math.round(p[0] * inv)},${Math.round(p[1] * inv)},${Math.round(p[2] * inv)}`;
-      const existing = bucket.get(key);
-      if (existing === undefined) {
-        oldToNew[i] = positions.length;
-        bucket.set(key, positions.length);
-        positions.push(p);
-      } else {
-        oldToNew[i] = existing;
-      }
+  const bucket = new Map<string, number>();
+  for (let i = 0; i < rawCount; i++) {
+    const p = rawPositions[i]!;
+    const key = p.map((v) => Math.round(v / WELD_EPSILON)).join(',');
+    const existing = bucket.get(key);
+    if (existing === undefined) {
+      oldToNew[i] = positions.length;
+      bucket.set(key, positions.length);
+      positions.push(p);
+    } else {
+      oldToNew[i] = existing;
     }
   }
   const nParticles = positions.length;
@@ -209,7 +178,7 @@ export function fromBufferGeometry(
   // edge map and (b) up to 3 face areas to the per-vertex area.
   const triCount = (indexAttr.count / 3) | 0;
   if (indexAttr.count !== triCount * 3) {
-    throw new Error(`fromBufferGeometry: index count ${indexAttr.count} is not a multiple of 3`);
+    throw new Error(`createClothGraph: index count ${indexAttr.count} is not a multiple of 3`);
   }
   const vertexArea = new Float64Array(nParticles);
   /**

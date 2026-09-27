@@ -1,48 +1,57 @@
 import { describe, expect, it } from 'vitest';
+import { uniform } from 'three/tsl';
 
 import {
   ParticleSystem,
+  SoftbodySystem,
   createParticleRenderer,
-  createXpbdUniforms,
-} from '../../../src/core/index.js';
-import { SoftbodySystem } from '../../../src/softbody/index.js';
+  type SolverContext,
+} from '../../../src/index.js';
 
-const XPBD_FOR_TESTS = createXpbdUniforms(1 / 60);
-
-// Phase 10 G1 — Pass 2 (moment + polar decomposition) integration.
+// Global shape matching: body rotation from the moment matrix and its polar
+// decomposition (Müller et al. 2005 §3.3).
 //
 // Upload a body with a known rest configuration, then set its
-// predictedPositions to `R_known · r_i + c` for a known rotation R_known
-// and translation c. Dispatch Pass 1 + Pass 2 and verify:
+// predictedPositions to `R_known · r_i + c` for a known rotation R_known and
+// translation c. Run one solver iteration of the soft body's kernels and
+// verify:
 //   - bodyRotations[b] recovers R_known within f32 tolerance
 //   - the recovered rotation is orthogonal (R · R^T ≈ I)
 //
-// This is the integration path Pass 3 (Δx apply) will consume:
-// preIterKernels pre-compute (c, R) from x*_i; Pass 3 reads them and
-// computes goal_i = R · r_i + c on the fly.
+// The shape-matching correction reads this fitted frame (c, R) and moves
+// each particle toward goal_i = R · r_i + c.
 //
-// Tolerance: 1e-3 (bounded-max-error tier 2 per ARCH §Guardrails G4
-// for a 9-component f32 reduction over N particles plus a polar
-// decomposition with 24 Jacobi rotations).
+// Tolerance: 1e-3, the bounded error of a 9-component f32 reduction over N
+// particles plus a polar decomposition with 24 Jacobi rotations.
 
 const TOLERANCE = 1e-3;
+
+/** The solver state SimLoop hands a material, so its kernels can run without a loop. */
+function solverContext(particles: ParticleSystem, dt: number): SolverContext {
+  let group = 0;
+  return {
+    particles,
+    dt: uniform(dt, 'float'),
+    get hashGrid(): never {
+      throw new Error('soft bodies do not use the neighbor grid');
+    },
+    allocateCollisionGroup: () => ++group,
+  };
+}
 
 function rotZ(theta: number): number[] {
   const c = Math.cos(theta);
   const s = Math.sin(theta);
-  // eslint-disable-next-line prettier/prettier
   return [c, -s, 0, s, c, 0, 0, 0, 1];
 }
 function rotY(theta: number): number[] {
   const c = Math.cos(theta);
   const s = Math.sin(theta);
-  // eslint-disable-next-line prettier/prettier
   return [c, 0, s, 0, 1, 0, -s, 0, c];
 }
 function rotX(theta: number): number[] {
   const c = Math.cos(theta);
   const s = Math.sin(theta);
-  // eslint-disable-next-line prettier/prettier
   return [1, 0, 0, 0, c, -s, 0, s, c];
 }
 function matMul(a: readonly number[], b: readonly number[]): number[] {
@@ -68,8 +77,8 @@ function matVec(
 }
 
 function unitCube(): [number, number, number][] {
-  // 8-corner unit cube centred on origin (rest COM = 0 → pre-centering
-  // is a no-op, simplifies reasoning about what Pass 2 reconstructs).
+  // 8-corner unit cube centred on origin (rest COM = 0, so pre-centering
+  // is a no-op, which simplifies reasoning about the fitted frame).
   return [
     [-0.5, -0.5, -0.5],
     [0.5, -0.5, -0.5],
@@ -82,63 +91,66 @@ function unitCube(): [number, number, number][] {
   ];
 }
 
-async function runPass2(
-  restPositions: readonly [number, number, number][],
-  predictedPositions: readonly [number, number, number][],
-): Promise<{ R: number[]; c: [number, number, number] }> {
-  if (restPositions.length !== predictedPositions.length) {
-    throw new Error('runPass2: rest and predicted length mismatch');
-  }
-  const n = restPositions.length;
+function flatten(points: readonly (readonly [number, number, number])[]): Float32Array {
+  const out = new Float32Array(points.length * 3);
+  points.forEach((p, i) => out.set(p, i * 3));
+  return out;
+}
+
+/** Row-major 3×3 of body `b` from `bodyRotations` (three vec4 rows per body). */
+function readRotation(rotBuf: Float32Array, b: number): number[] {
+  const base = b * 12;
+  return [
+    rotBuf[base + 0]!,
+    rotBuf[base + 1]!,
+    rotBuf[base + 2]!,
+    rotBuf[base + 4]!,
+    rotBuf[base + 5]!,
+    rotBuf[base + 6]!,
+    rotBuf[base + 8]!,
+    rotBuf[base + 9]!,
+    rotBuf[base + 10]!,
+  ];
+}
+
+/**
+ * Upload `rest` shapes (one body each, back to back), overwrite the predicted
+ * positions with `predicted`, and run one solver iteration of the soft body.
+ */
+async function fitFrames(
+  bodies: readonly {
+    readonly rest: readonly [number, number, number][];
+    readonly predicted: readonly [number, number, number][];
+  }[],
+): Promise<{ rotations: number[][]; centers: [number, number, number][] }> {
+  const n = bodies.reduce((sum, body) => sum + body.rest.length, 0);
   const renderer = await createParticleRenderer();
   try {
     const particles = new ParticleSystem(renderer, n, 0.05);
 
-    // Upload: committed = rest, but then overwrite predictedPositions
-    // with the deformed config below (uploadParticles writes both).
-    const initData = restPositions.map((p, _i) => ({
-      position: [p[0], p[1], p[2]] as [number, number, number],
-      velocity: [0, 0, 0] as [number, number, number],
-      invMass: 1,
-      phase: 1,
-    }));
-    particles.uploadParticles(initData);
-
-    // Overwrite predictedPositions with the post-deformation configuration.
+    // Committed positions = rest; uploadParticles writes predicted too, so
+    // overwrite predictedPositions with the deformed configuration below.
+    particles.uploadParticles(bodies.flatMap((body) => body.rest.map((p) => ({ position: p }))));
     const pp = particles.predictedPositions.value.array as Float32Array;
-    for (let i = 0; i < n; i++) {
-      const q = predictedPositions[i]!;
-      pp[4 * i + 0] = q[0];
-      pp[4 * i + 1] = q[1];
-      pp[4 * i + 2] = q[2];
-      pp[4 * i + 3] = 0;
-    }
+    let start = 0;
+    const defs = bodies.map((body) => {
+      if (body.rest.length !== body.predicted.length) {
+        throw new Error('fitFrames: rest and predicted length mismatch');
+      }
+      body.predicted.forEach((q, i) => pp.set([q[0], q[1], q[2], 0], 4 * (start + i)));
+      const def = {
+        range: { start, count: body.rest.length },
+        restPositions: flatten(body.rest),
+        compliance: 1e-6,
+      };
+      start += body.rest.length;
+      return def;
+    });
     particles.predictedPositions.value.needsUpdate = true;
 
-    const rest = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) {
-      const p = restPositions[i]!;
-      rest[3 * i + 0] = p[0];
-      rest[3 * i + 1] = p[1];
-      rest[3 * i + 2] = p[2];
-    }
-
-    const softbody = new SoftbodySystem({
-      particles,
-      xpbd: XPBD_FOR_TESTS,
-      bodies: [
-        {
-          particleRange: { start: 0, count: n },
-          restPositions: rest,
-          surfaceFlag: new Uint8Array(n).fill(1),
-          phaseId: 1,
-          matchCompliance: 1e-6,
-        },
-      ],
-    });
-
-    // Dispatch preIterKernels (Pass 1 + Pass 2).
-    await renderer.computeAsync([...softbody.preIterKernels]);
+    const softbody = new SoftbodySystem(particles, { bodies: defs });
+    const kernels = softbody.build(solverContext(particles, 1 / 60));
+    await renderer.computeAsync([...(kernels.preSolve ?? []), ...(kernels.solve ?? [])]);
 
     const rotBuf = new Float32Array(
       await renderer.getArrayBufferAsync(softbody.bodyRotations.value),
@@ -146,24 +158,29 @@ async function runPass2(
     const centerBuf = new Float32Array(
       await renderer.getArrayBufferAsync(softbody.bodyCenters.value),
     );
-    // R is row-major in three contiguous vec4 slots.
-    const R: number[] = [
-      rotBuf[0]!,
-      rotBuf[1]!,
-      rotBuf[2]!, // eslint-disable-line prettier/prettier
-      rotBuf[4]!,
-      rotBuf[5]!,
-      rotBuf[6]!, // eslint-disable-line prettier/prettier
-      rotBuf[8]!,
-      rotBuf[9]!,
-      rotBuf[10]!, // eslint-disable-line prettier/prettier
-    ];
-    const c: [number, number, number] = [centerBuf[0]!, centerBuf[1]!, centerBuf[2]!];
-    particles.destroy();
-    return { R, c };
+    particles.dispose();
+    return {
+      rotations: bodies.map((_, b) => readRotation(rotBuf, b)),
+      centers: bodies.map(
+        (_, b) =>
+          [centerBuf[4 * b]!, centerBuf[4 * b + 1]!, centerBuf[4 * b + 2]!] as [
+            number,
+            number,
+            number,
+          ],
+      ),
+    };
   } finally {
     renderer.dispose();
   }
+}
+
+async function runPass2(
+  rest: readonly [number, number, number][],
+  predicted: readonly [number, number, number][],
+): Promise<{ R: number[]; c: [number, number, number] }> {
+  const { rotations, centers } = await fitFrames([{ rest, predicted }]);
+  return { R: rotations[0]!, c: centers[0]! };
 }
 
 function expectMat3Close(
@@ -180,11 +197,10 @@ function expectMat3Close(
   }
 }
 
-describe('Phase 10 — SoftbodySystem Pass 2 (moment + polar decomp)', () => {
+describe('SoftbodySystem body rotation (moment matrix + polar decomposition)', () => {
   it('no deformation → R = identity', async () => {
     const rest = unitCube();
     const { R } = await runPass2(rest, rest);
-    // eslint-disable-next-line prettier/prettier
     expectMat3Close(R, [1, 0, 0, 0, 1, 0, 0, 0, 1]);
   });
 
@@ -215,9 +231,9 @@ describe('Phase 10 — SoftbodySystem Pass 2 (moment + polar decomp)', () => {
   });
 
   it('rotation + translation → recovers rotation; c matches translation', async () => {
-    // Shape-matching decomposes the deformation into (R, c) pair.
-    // Rest COM for unit cube is origin, so after R·r + t the current
-    // COM is t.
+    // Shape matching decomposes the deformation into an (R, c) pair.
+    // The rest COM of the unit cube is the origin, so after R·r + t the
+    // current COM is t.
     const theta = Math.PI / 6;
     const Rknown = rotX(theta);
     const t: [number, number, number] = [3, -1, 2];
@@ -235,9 +251,8 @@ describe('Phase 10 — SoftbodySystem Pass 2 (moment + polar decomp)', () => {
   });
 
   it('recovered R is a valid orthogonal rotation', async () => {
-    // Exercises the "proper rotation" check — det(R) ≈ 1 and R·R^T ≈ I.
-    // Uses a rotation-only deformation so shape matching has the
-    // simplest possible target.
+    // det(R) ≈ 1 and R·R^T ≈ I. Uses a rotation-only deformation so shape
+    // matching has the simplest possible target.
     const theta = 0.9;
     const Rknown = rotZ(theta);
     const rest = unitCube();
@@ -247,7 +262,6 @@ describe('Phase 10 — SoftbodySystem Pass 2 (moment + polar decomp)', () => {
     // Orthogonality: R · R^T ≈ I
     const Rt = [R[0]!, R[3]!, R[6]!, R[1]!, R[4]!, R[7]!, R[2]!, R[5]!, R[8]!];
     const RRt = matMul(R, Rt);
-    // eslint-disable-next-line prettier/prettier
     expectMat3Close(RRt, [1, 0, 0, 0, 1, 0, 0, 0, 1], 1e-3);
 
     // Proper rotation: det = +1
@@ -259,124 +273,17 @@ describe('Phase 10 — SoftbodySystem Pass 2 (moment + polar decomp)', () => {
   });
 
   it('multiple bodies with different rotations each produce their own R', async () => {
-    // Two bodies in one ParticleSystem — Pass 2 is dispatched per-
-    // workgroup-per-body so each body gets its own (c, R) without
-    // cross-talk.
-    const theta0 = Math.PI / 4;
-    const theta1 = -Math.PI / 6;
-    const Rknown0 = rotZ(theta0);
-    const Rknown1 = rotY(theta1);
-    const rest0 = unitCube();
-    const rest1 = unitCube();
-    // Body 0 at slots [0, 8); Body 1 at slots [8, 16).
-    const def0 = rest0.map((r) => matVec(Rknown0, r));
-    const def1 = rest1.map((r) => matVec(Rknown1, r));
-
-    const renderer = await createParticleRenderer();
-    try {
-      const particles = new ParticleSystem(renderer, 16, 0.05);
-      const init: {
-        position: [number, number, number];
-        velocity: [number, number, number];
-        invMass: number;
-        phase: number;
-      }[] = [];
-      for (let i = 0; i < 8; i++) {
-        init.push({
-          position: [rest0[i]![0], rest0[i]![1], rest0[i]![2]],
-          velocity: [0, 0, 0],
-          invMass: 1,
-          phase: 1,
-        });
-      }
-      for (let i = 0; i < 8; i++) {
-        init.push({
-          position: [rest1[i]![0], rest1[i]![1], rest1[i]![2]],
-          velocity: [0, 0, 0],
-          invMass: 1,
-          phase: 2,
-        });
-      }
-      particles.uploadParticles(init);
-
-      const pp = particles.predictedPositions.value.array as Float32Array;
-      for (let i = 0; i < 8; i++) {
-        pp[4 * i + 0] = def0[i]![0];
-        pp[4 * i + 1] = def0[i]![1];
-        pp[4 * i + 2] = def0[i]![2];
-      }
-      for (let i = 0; i < 8; i++) {
-        pp[4 * (i + 8) + 0] = def1[i]![0];
-        pp[4 * (i + 8) + 1] = def1[i]![1];
-        pp[4 * (i + 8) + 2] = def1[i]![2];
-      }
-      particles.predictedPositions.value.needsUpdate = true;
-
-      const restFlat0 = new Float32Array(24);
-      const restFlat1 = new Float32Array(24);
-      for (let i = 0; i < 8; i++) {
-        restFlat0[3 * i + 0] = rest0[i]![0];
-        restFlat0[3 * i + 1] = rest0[i]![1];
-        restFlat0[3 * i + 2] = rest0[i]![2];
-        restFlat1[3 * i + 0] = rest1[i]![0];
-        restFlat1[3 * i + 1] = rest1[i]![1];
-        restFlat1[3 * i + 2] = rest1[i]![2];
-      }
-
-      const softbody = new SoftbodySystem({
-        particles,
-        xpbd: XPBD_FOR_TESTS,
-        bodies: [
-          {
-            particleRange: { start: 0, count: 8 },
-            restPositions: restFlat0,
-            surfaceFlag: new Uint8Array(8).fill(1),
-            phaseId: 1,
-            matchCompliance: 1e-6,
-          },
-          {
-            particleRange: { start: 8, count: 8 },
-            restPositions: restFlat1,
-            surfaceFlag: new Uint8Array(8).fill(1),
-            phaseId: 2,
-            matchCompliance: 1e-6,
-          },
-        ],
-      });
-
-      await renderer.computeAsync([...softbody.preIterKernels]);
-      const rotBuf = new Float32Array(
-        await renderer.getArrayBufferAsync(softbody.bodyRotations.value),
-      );
-      // R0 at slots 0..2, R1 at slots 3..5.
-      const R0: number[] = [
-        rotBuf[0]!,
-        rotBuf[1]!,
-        rotBuf[2]!, // eslint-disable-line prettier/prettier
-        rotBuf[4]!,
-        rotBuf[5]!,
-        rotBuf[6]!, // eslint-disable-line prettier/prettier
-        rotBuf[8]!,
-        rotBuf[9]!,
-        rotBuf[10]!, // eslint-disable-line prettier/prettier
-      ];
-      const R1: number[] = [
-        rotBuf[12]!,
-        rotBuf[13]!,
-        rotBuf[14]!, // eslint-disable-line prettier/prettier
-        rotBuf[16]!,
-        rotBuf[17]!,
-        rotBuf[18]!, // eslint-disable-line prettier/prettier
-        rotBuf[20]!,
-        rotBuf[21]!,
-        rotBuf[22]!, // eslint-disable-line prettier/prettier
-      ];
-      expectMat3Close(R0, Rknown0);
-      expectMat3Close(R1, Rknown1);
-
-      particles.destroy();
-    } finally {
-      renderer.dispose();
-    }
+    // Two bodies in one ParticleSystem. The fit is dispatched one workgroup
+    // per body, so each body gets its own (c, R) without cross-talk.
+    // Body 0 at slots [0, 8); body 1 at slots [8, 16).
+    const Rknown0 = rotZ(Math.PI / 4);
+    const Rknown1 = rotY(-Math.PI / 6);
+    const rest = unitCube();
+    const { rotations } = await fitFrames([
+      { rest, predicted: rest.map((r) => matVec(Rknown0, r)) },
+      { rest, predicted: rest.map((r) => matVec(Rknown1, r)) },
+    ]);
+    expectMat3Close(rotations[0]!, Rknown0);
+    expectMat3Close(rotations[1]!, Rknown1);
   });
 });

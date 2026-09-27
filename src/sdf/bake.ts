@@ -1,3 +1,8 @@
+import type { BufferGeometry } from 'three';
+
+import type { SDFData } from '../core/collision/SDFCollider.js';
+import { toTriangleMesh, type TriangleMesh } from '../core/mesh.js';
+
 /**
  * Offline SDF baker — brute-force CPU implementation.
  *
@@ -9,10 +14,9 @@
  *      when ≥ 2 of the 3 counts are odd).
  *   3. φ = sign · minDistance.
  *
- * Complexity: O(V · T) where V = resolution³, T = triangle count. No BVH in
- * v1 — the Phase 07 plan's "CPU baker only in v1" scope decision. Sufficient
- * for MVP test meshes (torus knots, spheres, user-supplied ≤ 10k-tri props);
- * a GPU or BVH baker is post-MVP.
+ * Complexity: O(V · T) where V = resolution³, T = triangle count; there is
+ * no acceleration structure, so bake offline (as `npm run assets:honey`
+ * does) and keep collision meshes to a few thousand triangles.
  *
  * Watertightness assumption: the ray-cast sign test is only correct on
  * manifold, watertight meshes. Meshes with holes, T-junctions, or doubled
@@ -21,29 +25,13 @@
  * {@link MAX_INCONSISTENT_VOXEL_FRACTION}, `bakeMeshToSdf` throws with
  * diagnostic counts so the caller can re-mesh rather than silently storing
  * a partly-wrong SDF.
- *
  */
 
-/** Mesh input: flat xyz positions and flat uint32 triangle indices. */
-export interface BakeInput {
-  readonly positions: Float32Array;
-  readonly indices: Uint32Array;
-  /** Per-axis voxel count. Grid is cubic (single scalar). */
+export interface BakeOptions {
+  /** Voxels along each axis of the cubic grid, at least 4. */
   readonly resolution: number;
-  /** World-space padding added around the mesh AABB on every side. */
-  readonly padding: number;
-}
-
-/** Baked SDF — in-memory representation; serialize with writeSdfBinary. */
-export interface SdfData {
-  /** Voxel values in z-major order: `data[x + y·resX + z·resX·resY]`. */
-  readonly data: Float32Array;
-  /** Per-axis voxel count. All three are equal in v1 (cubic grid). */
-  readonly resolution: readonly [number, number, number];
-  /** World-space coordinate of the grid's `(0, 0, 0)` corner. */
-  readonly origin: readonly [number, number, number];
-  /** World-space size of one voxel along each axis. */
-  readonly voxelSize: readonly [number, number, number];
+  /** Space added around the mesh's bounds on every side, in metres. Default 0. */
+  readonly padding?: number;
 }
 
 /**
@@ -86,7 +74,14 @@ interface Triangle {
  * scaled up so the longest axis fits exactly; the mesh stays centered in the
  * grid.
  */
-export function bakeMeshToSdf(input: BakeInput): SdfData {
+export function bakeMeshToSdf(mesh: BufferGeometry | TriangleMesh, options: BakeOptions): SDFData {
+  const { vertices, indices } = toTriangleMesh(mesh);
+  const input = {
+    positions: vertices,
+    indices,
+    resolution: options.resolution,
+    padding: options.padding ?? 0,
+  };
   validateInput(input);
 
   const triangles = extractTriangles(input.positions, input.indices);
@@ -134,7 +129,12 @@ export function bakeMeshToSdf(input: BakeInput): SdfData {
   };
 }
 
-function validateInput(input: BakeInput): void {
+function validateInput(input: {
+  readonly positions: Float32Array;
+  readonly indices: Uint32Array;
+  readonly resolution: number;
+  readonly padding: number;
+}): void {
   if (!Number.isInteger(input.resolution) || input.resolution < 4) {
     throw new Error(`bakeMeshToSdf: resolution must be an integer ≥ 4, got ${input.resolution}`);
   }

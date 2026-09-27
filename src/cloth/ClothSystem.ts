@@ -1,292 +1,267 @@
 import { Vector3 } from 'three';
+import {
+  Fn,
+  If,
+  Loop,
+  instanceIndex,
+  instancedArray,
+  mix,
+  uint,
+  uniform,
+  vec3,
+  vec4,
+} from 'three/tsl';
 import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import type UniformNode from 'three/src/nodes/core/UniformNode.js';
 
-import type { ConstraintType, Material, ParticleSystem, XpbdUniforms } from '../core/index.js';
-
-import { createClothAeroKernel, type ClothAeroKernel } from './aero.js';
+import {
+  assertRange,
+  constraintKernels,
+  type ConstraintType,
+  type Material,
+  type MaterialKernels,
+  type ParticleRange,
+  type ParticleSystem,
+  type SolverContext,
+} from '../core/index.js';
+import { createClothAeroKernel } from './aero.js';
 import { createClothBendingConstraints } from './bending.js';
 import { createClothDistanceConstraints } from './distance.js';
 import type { ClothGraph } from './graph.js';
 import { createClothTetherConstraints } from './tether.js';
-import { buildTethers } from './tetherBuild.js';
+import { buildTethers, type TetherConstraint } from './tetherBuild.js';
 
-/**
- * Cloth material — distance + bending (Phase 18) + tethers (Kim 2012)
- * + per-triangle aerodynamic drag / lift (Keckeisen 2004), Phase 19.
- * Implements {@link Material} so it plugs into `SimLoopOptions.materials`
- * exactly like `FluidSystem` and `SoftbodySystem`. Per-cloth state
- * (constraint storage, λ buffers, group inverted indices, aero
- * topology) is owned here; particle state lives in the shared
- * {@link ParticleSystem} the caller provides.
- *
- * **Lifecycle.** The caller is responsible for:
- *   1. Building the {@link ClothGraph} via {@link "./graph.js".fromBufferGeometry}.
- *   2. Allocating a `ParticleSystem` whose capacity covers the cloth's
- *      `graph.positions.length` slots starting at `particleOffset`.
- *   3. Calling `particleSystem.uploadParticles` with the positions and
- *      inverse masses from the graph (and any per-particle `phase`
- *      tag the scene uses for self-collision masking).
- *   4. Constructing `new ClothSystem({...})` with the graph + offset.
- *
- * **Pipeline placement.** Phase 19 adds two new dispatch points:
- *
- *   - `preIterKernels` — runs once per substep, after `predict`:
- *     `[distance.resetLambda, bending.resetLambda, tether.resetLambda,
- *       aero.kernel]`. The aero kernel adds a wind-driven Δx* on top
- *     of the gravity-only prediction, so the iter-loop constraint
- *     kernels see the wind-perturbed prediction. Paper §3 / §3.1
- *     (Macklin 2014 Algorithm 1 line 2 — external forces during
- *     predict).
- *   - `perIterKernels` — runs once per iter:
- *     `[distance groups, bending groups, tether groups]`. Order
- *     follows Kim 2012 Algorithm 1: local bilateral constraints
- *     (distance + bending) project first, then unilateral LRAs.
- *     Within each constraint type, graph-coloring groups dispatch in
- *     ascending color order.
- */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Any = any;
+
 export interface ClothSystemOptions {
-  readonly particles: ParticleSystem;
-  /**
-   * Shared XPBD uniforms — must be the *same instance* the
-   * `SimLoop` constructs with so the `dt` uniform broadcasts
-   * correctly. `SimLoop.xpbd` is the canonical source.
-   */
-  readonly xpbd: XpbdUniforms;
-  /**
-   * Pre-built cloth graph. Construct via
-   * {@link "./graph.js".fromBufferGeometry}.
-   */
+  /** Shape, masses, and pins; see {@link createClothGraph}. */
   readonly graph: ClothGraph;
-  /**
-   * Absolute slot offset of this cloth's first particle inside
-   * `particles`. The cloth's `i`-th vertex lives at slot
-   * `particleOffset + i`. `particleOffset + graph.positions.length`
-   * must be ≤ `particles.capacity`.
-   */
-  readonly particleOffset: number;
-  /**
-   * XPBD compliance for distance (stretch) constraints (s²/kg).
-   * Default `1e-7` — Phase 18 G1 drape test target ("stretch < 1 % of
-   * rest length" at MVP S/I).
-   */
+  /** First particle slot the cloth occupies. Default 0. */
+  readonly offset?: number;
+  /** Stretch compliance in s²/kg. Default 1e-7 (barely stretches). */
   readonly stretchCompliance?: number;
-  /**
-   * XPBD compliance for bending constraints (s²/(rad²·kg)).
-   * Default `1e-5` — produces visible bend resistance at MVP S/I
-   * without locking to a flat reference under gravity.
-   */
+  /** Bending compliance. Default 1e-5. Higher values drape more loosely. */
   readonly bendCompliance?: number;
   /**
-   * XPBD compliance for tether (LRA) constraints (s²/kg). Default
-   * `0` (strict inextensibility — matches Kim 2012's "infinite
-   * stiffness" PBD behaviour). Non-zero allows soft over-stretch.
+   * Compliance of the long-range attachments that stop pinned cloth from
+   * stretching under its own weight (Kim et al. 2012). Default 0.
    */
   readonly tetherCompliance?: number;
-  /**
-   * Kim 2012 §3.5 "Controlled Stretchiness" — every LRA rest radius
-   * is multiplied by `(1 + stretchTolerance)`. Default `0` (strict).
-   * Paper Fig. 5 shows `0.1`–`0.2` produces more natural-looking
-   * folds on hanging cloth.
-   */
+  /** How far past its rest distance a particle may drift from its pins, as a fraction. Default 0. */
   readonly stretchTolerance?: number;
-  /**
-   * Max LRAs per free particle (Kim 2012 §3.4). Default `4`. Scenes
-   * with fewer attachment islands than `N` produce fewer constraints
-   * per particle (a flag pinned along one edge degenerates to N=1).
-   */
-  readonly maxAttachmentsPerTether?: number;
-  /**
-   * Combined aerodynamic drag scalar `0.5 · C_D · ρ` (kg/m³). Default
-   * `0.6125` (`0.5 · 1.0 · 1.225` — sea-level air × flat-plate `C_D = 1`).
-   * Paper §3 — `dragCoeff` and `liftCoeff` are scene-tunable
-   * artist parameters.
-   */
-  readonly dragCoeff?: number;
-  /**
-   * Combined aerodynamic lift scalar `0.5 · C_L · ρ` (kg/m³).
-   * Default `0.3`.
-   */
-  readonly liftCoeff?: number;
-  /**
-   * Initial wind velocity in m/s (sampled at every triangle's
-   * centroid in MVP). Live-mutable through {@link ClothSystem.wind}
-   * after construction. Default `(0, 0, 0)` — no wind.
-   */
+  /** Wind velocity in m/s. Default none. */
   readonly wind?: Vector3;
+  /** Air drag, `½ · C_D · ρ_air` in kg/m³. Default 0.6125. */
+  readonly drag?: number;
+  /** Air lift, `½ · C_L · ρ_air` in kg/m³. Default 0.3. */
+  readonly lift?: number;
+  /**
+   * Blend each particle's velocity toward its neighbors' after every
+   * substep, from 0 (off) to 1. Calms high-frequency ripples, such as
+   * stretched cloth chattering against a collider, without slowing the
+   * cloth's overall motion. Default 0.
+   */
+  readonly damping?: number;
 }
 
-const DEFAULT_STRETCH_COMPLIANCE = 1e-7;
-const DEFAULT_BEND_COMPLIANCE = 1e-5;
-const DEFAULT_TETHER_COMPLIANCE = 0;
-const DEFAULT_STRETCH_TOLERANCE = 0;
-const DEFAULT_MAX_ATTACHMENTS = 4;
-
+/**
+ * Cloth made of particles joined by stretch, bending (Bergou et al. 2006),
+ * and long-range attachment constraints (Kim et al. 2012), with aerodynamic
+ * drag and lift per triangle (Keckeisen et al. 2004).
+ *
+ * The cloth writes its particles' positions and masses into the
+ * {@link ParticleSystem} from its graph, so there is no need to upload them.
+ *
+ * ```ts
+ * const graph = createClothGraph(new PlaneGeometry(1, 1, 40, 40), { pinnedIndices: [0, 40] });
+ * const particles = new ParticleSystem(renderer, graph.positions.length, 0.01);
+ * const cloth = new ClothSystem(particles, { graph, wind: new Vector3(0, 0, 2) });
+ * ```
+ */
 export class ClothSystem implements Material {
-  /** The graph this cloth was constructed from. Read-only after construction. */
+  readonly particles: ParticleSystem;
   readonly graph: ClothGraph;
-  /** First slot of this cloth in the shared `ParticleSystem`. */
-  readonly particleOffset: number;
-  /** Number of cloth particles ( = `graph.positions.length`). */
-  readonly nParticles: number;
-  /** Distance constraint type — exposed for tests / advanced inspection. */
-  readonly distance: ConstraintType;
-  /**
-   * Bending constraint type, or `null` if the input mesh had no
-   * shared edges (e.g. a single triangle, or a fully-disconnected
-   * fan). Most real cloth meshes produce a non-null bending type.
-   */
-  readonly bending: ConstraintType | null;
-  /**
-   * Tether constraint type, or `null` if the cloth has no pinned
-   * vertices (no attachment islands → no LRAs to build). Always
-   * non-null in practice for cloth scenes — pinning is the whole
-   * point of the LRA paper.
-   */
-  readonly tether: ConstraintType | null;
-  /** Aero kernel + uniforms (live-mutable wind / coefficients). */
-  readonly aero: ClothAeroKernel;
-  /** Live-mutable wind uniform — alias for {@link aero.wind}. */
-  readonly wind: UniformNode<'vec3', Vector3>;
-  /** Live-mutable drag coefficient — alias for {@link aero.dragCoeff}. */
-  readonly dragCoeff: UniformNode<'float', number>;
-  /** Live-mutable lift coefficient — alias for {@link aero.liftCoeff}. */
-  readonly liftCoeff: UniformNode<'float', number>;
-  /** Number of LRA constraints actually emitted by `buildTethers`. */
-  readonly nTethers: number;
+  readonly range: ParticleRange;
+  /** Long-range attachments built from the pins. */
+  readonly tethers: readonly TetherConstraint[];
 
-  readonly preIterKernels: readonly ComputeNode[];
-  readonly perIterKernels: readonly ComputeNode[];
-  readonly postAdvectKernels: readonly ComputeNode[] = [];
+  private readonly options: ClothSystemOptions;
+  private readonly windUniform: UniformNode<'vec3', Vector3>;
+  private readonly dragUniform: UniformNode<'float', number>;
+  private readonly liftUniform: UniformNode<'float', number>;
+  private readonly dampingUniform: UniformNode<'float', number>;
+  private bendComplianceValue: number;
+  private bending: ConstraintType | undefined;
 
-  constructor(options: ClothSystemOptions) {
-    const {
-      particles,
-      xpbd,
-      graph,
-      particleOffset,
-      stretchCompliance = DEFAULT_STRETCH_COMPLIANCE,
-      bendCompliance = DEFAULT_BEND_COMPLIANCE,
-      tetherCompliance = DEFAULT_TETHER_COMPLIANCE,
-      stretchTolerance = DEFAULT_STRETCH_TOLERANCE,
-      maxAttachmentsPerTether = DEFAULT_MAX_ATTACHMENTS,
-      dragCoeff,
-      liftCoeff,
-      wind,
-    } = options;
-
-    if (!Number.isInteger(particleOffset) || particleOffset < 0) {
-      throw new Error(
-        `ClothSystem: particleOffset must be a non-negative integer, got ${particleOffset}`,
-      );
+  constructor(particles: ParticleSystem, options: ClothSystemOptions) {
+    const { graph } = options;
+    this.range = { start: options.offset ?? 0, count: graph.positions.length };
+    assertRange(particles, this.range, 'ClothSystem');
+    for (const key of ['stretchCompliance', 'bendCompliance', 'tetherCompliance'] as const) {
+      const value = options[key];
+      if (value !== undefined && !(value >= 0 && Number.isFinite(value))) {
+        throw new Error(`ClothSystem: ${key} must be ≥ 0, got ${value}`);
+      }
     }
-    const nParticles = graph.positions.length;
-    if (particleOffset + nParticles > particles.capacity) {
-      throw new Error(
-        `ClothSystem: particleOffset (${particleOffset}) + cloth particle count (${nParticles}) exceeds ParticleSystem capacity (${particles.capacity})`,
-      );
-    }
-    if (!Number.isFinite(stretchCompliance) || stretchCompliance < 0) {
-      throw new Error(
-        `ClothSystem: stretchCompliance must be a non-negative finite number, got ${stretchCompliance}`,
-      );
-    }
-    if (!Number.isFinite(bendCompliance) || bendCompliance < 0) {
-      throw new Error(
-        `ClothSystem: bendCompliance must be a non-negative finite number, got ${bendCompliance}`,
-      );
-    }
-    if (!Number.isFinite(tetherCompliance) || tetherCompliance < 0) {
-      throw new Error(
-        `ClothSystem: tetherCompliance must be a non-negative finite number, got ${tetherCompliance}`,
-      );
-    }
-
+    this.particles = particles;
     this.graph = graph;
-    this.particleOffset = particleOffset;
-    this.nParticles = nParticles;
-
-    this.distance = createClothDistanceConstraints({
-      particles,
-      particleOffset,
-      edges: graph.distancePairs,
-      restLengths: graph.distanceRestLengths,
-      compliance: stretchCompliance,
-      xpbd,
-    });
-
-    this.bending =
-      graph.bendingTuples.length > 0
-        ? createClothBendingConstraints({
-            particles,
-            particleOffset,
-            tuples: graph.bendingTuples,
-            restAngles: graph.bendingRestAngles,
-            compliance: bendCompliance,
-            xpbd,
-          })
-        : null;
-
-    // Tethers — built from the graph's pinned set + edge topology
-    // (Kim 2012 §3.2 geodesic distance + §3.4 island assignment).
-    const tethers = buildTethers({
+    this.options = options;
+    this.bendComplianceValue = options.bendCompliance ?? 1e-5;
+    this.windUniform = uniform((options.wind ?? new Vector3()).clone());
+    this.dragUniform = uniform(options.drag ?? 0.6125, 'float');
+    this.liftUniform = uniform(options.lift ?? 0.3, 'float');
+    this.dampingUniform = uniform(options.damping ?? 0, 'float');
+    this.tethers = buildTethers({
       graph,
-      options: {
-        maxAttachmentsPerParticle: maxAttachmentsPerTether,
-        stretchTolerance,
-      },
+      options: { stretchTolerance: options.stretchTolerance ?? 0 },
     });
-    this.nTethers = tethers.length;
-    this.tether =
-      tethers.length > 0
-        ? createClothTetherConstraints({
-            particles,
-            particleOffset,
-            tethers,
-            compliance: tetherCompliance,
-            xpbd,
-          })
-        : null;
 
-    // Aero — runs every substep regardless of wind magnitude (a
-    // zero wind produces zero force per the |v_rel| guard, so the
-    // overhead is the per-vertex incident-triangle walk only).
-    this.aero = createClothAeroKernel({
-      particles,
-      particleOffset,
-      nClothParticles: nParticles,
-      triangles: graph.triangles,
-      xpbd,
-      ...(dragCoeff !== undefined ? { initialDragCoeff: dragCoeff } : {}),
-      ...(liftCoeff !== undefined ? { initialLiftCoeff: liftCoeff } : {}),
-      ...(wind !== undefined ? { initialWind: wind } : {}),
-    });
-    this.wind = this.aero.wind;
-    this.dragCoeff = this.aero.dragCoeff;
-    this.liftCoeff = this.aero.liftCoeff;
+    particles.uploadParticles(
+      graph.positions.map((position, i) => ({ position, invMass: graph.invMass[i]! })),
+      this.range.start,
+    );
+  }
 
-    // preIter — reset λ for each constraint type (Macklin 2016 Alg.
-    // 1 line 4) then apply aero. Aero adds Δx* on top of predict's
-    // gravity-only prediction, so the iter-loop constraint kernels
-    // see the wind-perturbed prediction.
-    const preIter: ComputeNode[] = [this.distance.resetLambdaKernel];
-    if (this.bending) preIter.push(this.bending.resetLambdaKernel);
-    if (this.tether) preIter.push(this.tether.resetLambdaKernel);
-    preIter.push(this.aero.kernel);
-    this.preIterKernels = preIter;
+  /** Wind velocity in m/s. Mutate it to change the wind. */
+  get wind(): Vector3 {
+    return this.windUniform.value;
+  }
 
-    // perIter — local bilateral constraints first (distance, then
-    // bending), then unilateral tethers — Kim 2012 Algorithm 1 order.
-    // Within each constraint type, graph-coloring groups dispatch in
-    // ascending color order.
-    const perIter: ComputeNode[] = [];
-    for (const g of this.distance.groups) perIter.push(g.solveKernel);
+  get drag(): number {
+    return this.dragUniform.value;
+  }
+  set drag(value: number) {
+    this.dragUniform.value = value;
+  }
+
+  get lift(): number {
+    return this.liftUniform.value;
+  }
+  set lift(value: number) {
+    this.liftUniform.value = value;
+  }
+
+  get damping(): number {
+    return this.dampingUniform.value;
+  }
+  set damping(value: number) {
+    this.dampingUniform.value = value;
+  }
+
+  /** Bending compliance. Changes take effect on the next step. */
+  get bendCompliance(): number {
+    return this.bendComplianceValue;
+  }
+  set bendCompliance(value: number) {
+    if (!(value >= 0) || !Number.isFinite(value)) {
+      throw new Error(`ClothSystem.bendCompliance must be ≥ 0, got ${value}`);
+    }
+    this.bendComplianceValue = value;
     if (this.bending) {
-      for (const g of this.bending.groups) perIter.push(g.solveKernel);
+      (this.bending.compliance.value.array as Float32Array).fill(value);
+      this.bending.compliance.value.needsUpdate = true;
     }
-    if (this.tether) {
-      for (const g of this.tether.groups) perIter.push(g.solveKernel);
+  }
+
+  build({ particles, dt }: SolverContext): MaterialKernels {
+    const { graph, options } = this;
+    const offset = this.range.start;
+    const constraints: ConstraintType[] = [
+      createClothDistanceConstraints({
+        particles,
+        particleOffset: offset,
+        edges: graph.distancePairs,
+        restLengths: graph.distanceRestLengths,
+        compliance: options.stretchCompliance ?? 1e-7,
+        dt,
+      }),
+    ];
+    if (graph.bendingTuples.length > 0) {
+      this.bending = createClothBendingConstraints({
+        particles,
+        particleOffset: offset,
+        tuples: graph.bendingTuples,
+        restAngles: graph.bendingRestAngles,
+        compliance: this.bendComplianceValue,
+        dt,
+      });
+      constraints.push(this.bending);
     }
-    this.perIterKernels = perIter;
+    const { tethers } = this;
+    if (tethers.length > 0) {
+      constraints.push(
+        createClothTetherConstraints({
+          particles,
+          particleOffset: offset,
+          tethers,
+          compliance: options.tetherCompliance ?? 0,
+          dt,
+        }),
+      );
+    }
+    const { preSolve, solve } = constraintKernels(constraints);
+    // Wind acts on the predicted positions before the constraints solve.
+    preSolve.push(
+      createClothAeroKernel({
+        particles,
+        particleOffset: offset,
+        nClothParticles: this.range.count,
+        triangles: graph.triangles,
+        dt,
+        wind: this.windUniform,
+        dragCoeff: this.dragUniform,
+        liftCoeff: this.liftUniform,
+      }),
+    );
+    return {
+      preSolve,
+      solve,
+      postSolve: options.damping === undefined ? [] : this.buildDamping(particles),
+    };
+  }
+
+  /** Blend velocities toward the average of each particle's edge neighbors. */
+  private buildDamping(particles: ParticleSystem): ComputeNode[] {
+    const { graph, range } = this;
+    const count = range.count;
+    const degree = new Uint32Array(count);
+    for (const [i, j] of graph.distancePairs) {
+      degree[i]!++;
+      degree[j]!++;
+    }
+    const offsets = new Uint32Array(count + 1);
+    for (let i = 0; i < count; i++) offsets[i + 1] = offsets[i]! + degree[i]!;
+    const neighbors = new Uint32Array(Math.max(1, offsets[count]!));
+    const cursor = offsets.slice(0, count);
+    for (const [i, j] of graph.distancePairs) {
+      neighbors[cursor[i]!++] = j;
+      neighbors[cursor[j]!++] = i;
+    }
+    const offsetBuffer = instancedArray(offsets, 'uint');
+    const neighborBuffer = instancedArray(neighbors, 'uint');
+    const smoothed = instancedArray(count, 'vec4');
+
+    const average = Fn(() => {
+      const local: Any = instanceIndex;
+      const v: Any = particles.velocities.element(local.add(uint(range.start)));
+      const sum: Any = vec3(0).toVar();
+      const from: Any = offsetBuffer.element(local);
+      const to: Any = offsetBuffer.element(local.add(uint(1)));
+      Loop({ start: from, end: to, type: 'uint', condition: '<' }, ({ i }: { i: Any }) => {
+        sum.addAssign(
+          particles.velocities.element(neighborBuffer.element(i).add(uint(range.start))).xyz,
+        );
+      });
+      const mean: Any = sum.div(to.sub(from).max(uint(1)).toFloat());
+      smoothed.element(local).assign(vec4(mix(v.xyz, mean, this.dampingUniform), v.w));
+    })().compute(count);
+    const apply = Fn(() => {
+      const i: Any = instanceIndex.add(uint(range.start));
+      If(particles.invMass.element(i).greaterThan(0), () => {
+        particles.velocities.element(i).assign(smoothed.element(instanceIndex));
+      });
+    })().compute(count);
+    return [average, apply];
   }
 }

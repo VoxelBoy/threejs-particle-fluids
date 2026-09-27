@@ -6,15 +6,19 @@ import {
   SimLoop,
   createParticleRenderer,
   type ParticleInit,
-} from '../../../src/core/index.js';
+} from '../../../src/index.js';
 
-// Phase 06 G3 — non-penetration invariant (plan §Validation > Automatic (G3)):
-// "No particle ends a frame with φ(x) < -r - ε (penetrating) for any collider."
+// Non-penetration invariant: no particle ends a frame with φ(x) < −r − ε
+// for any collider.
 //
-// Scene: three particles hitting three different colliders simultaneously
-// — a plane, a sphere, and a box. Check the invariant on every frame over
-// 2 s of simulation. If any collider's SDF under-projects on any frame we
-// expect a frame-level violation.
+// Scene: three particles and three primitives in one PrimitiveSet — a plane
+// at y = 0, a solid sphere below it, and an inverted box (a container)
+// around (1, 0, 0). Every primitive acts on every particle, so on the first
+// substep the container pulls particles 0 and 1 inside it (a correction of
+// up to ~1.8 m), and all three then settle on the plane inside the box. The
+// invariant is checked for every particle against every primitive on every
+// frame over 2 s; if any SDF under-projects on any frame, that frame
+// violates it.
 
 function sdfPlane(x: Vector3, normal: Vector3, point: Vector3): number {
   return normal.dot(new Vector3().subVectors(x, point));
@@ -38,20 +42,18 @@ function sdfBoxAA(x: Vector3, center: Vector3, he: Vector3, invert: boolean): nu
   return invert ? -d : d;
 }
 
-describe('Phase 06 — collider: non-penetration invariant (G3)', () => {
+describe('collider: non-penetration invariant', () => {
   it('no particle ever has φ < -r - ε for any collider across 2 s', async () => {
     const renderer = await createParticleRenderer();
     try {
       const r = 0.05;
 
-      // Scene: 3 particles dropped above 3 different colliders.
-      //   particle 0 drops onto a plane at y=0
-      //   particle 1 drops onto a sphere (solid, not inverted) at y=-0.5
-      //   particle 2 drops into an inverted box around origin
+      // Particle 0 starts above the plane, particle 1 on the plane above the
+      // sphere, and particle 2 inside the inverted box.
       const initial: ParticleInit[] = [
-        { position: [-1.0, 0.5, 0], velocity: [0, 0, 0], invMass: 1, phase: 0 },
-        { position: [0, 0.0, 0], velocity: [0, 0, 0], invMass: 1, phase: 0 },
-        { position: [1.0, 0.0, 0], velocity: [0, 0, 0], invMass: 1, phase: 0 },
+        { position: [-1.0, 0.5, 0], velocity: [0, 0, 0], invMass: 1 },
+        { position: [0, 0.0, 0], velocity: [0, 0, 0], invMass: 1 },
+        { position: [1.0, 0.0, 0], velocity: [0, 0, 0], invMass: 1 },
       ];
 
       const particles = new ParticleSystem(renderer, initial.length, r);
@@ -64,24 +66,22 @@ describe('Phase 06 — collider: non-penetration invariant (G3)', () => {
       const boxC = new Vector3(1.0, 0.0, 0);
       const boxHE = new Vector3(0.3, 0.3, 0.3);
 
-      const colliders = new PrimitiveSet(particles, { capacity: 3 });
+      const colliders = new PrimitiveSet(particles);
       colliders.addPlane(planeN, planeP, { muS: 0.3, muK: 0.2 });
       colliders.addSphere(sphereC, sphereR, { muS: 0.3, muK: 0.2 });
       colliders.addBox(boxC, boxHE, { invert: true, muS: 0.3, muK: 0.2 });
-      colliders.upload();
 
       const loop = new SimLoop(particles, {
         substeps: 4,
         iterations: 4,
-        colliders: { colliders },
+        colliders: [colliders],
       });
-      loop.kernels.floorY.value = -1e9;
       loop.gravity.set(0, -9.81, 0);
 
       const frameDt = 1 / 60;
       const totalFrames = 120; // 2 s
 
-      const eps = 5e-3; // per-frame overshoot tolerance (stabilization)
+      const eps = 5e-3; // per-frame overshoot tolerance
       let worstPhi = Infinity;
       let worstCollider = -1;
       let worstParticle = -1;
@@ -90,8 +90,8 @@ describe('Phase 06 — collider: non-penetration invariant (G3)', () => {
       for (let n = 0; n < totalFrames; n++) {
         await loop.step(frameDt);
         const snap = await particles.readback();
-        // For each particle, check each collider's SDF evaluated on CPU
-        // and verify `phi(x) ≥ -r - ε` — the particle's surface has not
+        // For each particle, evaluate each collider's SDF on the CPU and
+        // check `phi(x) ≥ -r - ε` — the particle's surface has not
         // penetrated past the collider surface.
         for (let pi = 0; pi < initial.length; pi++) {
           const x = new Vector3(
@@ -115,20 +115,19 @@ describe('Phase 06 — collider: non-penetration invariant (G3)', () => {
         }
       }
 
-      // eslint-disable-next-line no-console
       console.info(
         `[collider-non-penetration] worstPhi=${worstPhi.toFixed(5)} ` +
           `(particle=${worstParticle}, collider=${worstCollider}, frame=${worstFrame}) ` +
           `bound=-r-ε=${(-r - eps).toFixed(5)}`,
       );
 
-      // Invariant: `phi ≥ -r - ε`. Particle can be at most barely inside
-      // the collider by up to `r` (its surface touches) plus a small
-      // stabilization overshoot.
+      // Invariant: `phi ≥ -r - ε`. A particle can be inside a collider by
+      // at most `r` (its surface touches) plus a small overshoot.
       expect(worstPhi).toBeGreaterThan(-r - eps);
 
-      particles.destroy();
-      colliders.destroy();
+      loop.dispose();
+      particles.dispose();
+      colliders.dispose();
     } finally {
       renderer.dispose();
     }

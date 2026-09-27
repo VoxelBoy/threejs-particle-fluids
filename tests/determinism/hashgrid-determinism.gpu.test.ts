@@ -4,11 +4,9 @@ import {
   ParticleSystem,
   createParticleRenderer,
   type ParticleInit,
-} from '../../src/core/index.js';
+} from '../../src/index.js';
 
-// Phase 03 G4 — first concrete example of the two-tier G4 policy.
-//
-
+// HashGrid rebuild determinism, under the two-tier determinism policy:
 //
 //   Tier 1 — bit-exact.        Asserted on `cellStart`, `cellEnd`, and the
 //                               per-cell **set** of `sortedIndices`.
@@ -23,9 +21,8 @@ import {
 //
 // The intra-cell sequence of `sortedIndices` is NOT asserted. The atomic-
 // scatter cursor orders intra-cell particles in warp-schedule order, which
-// varies ULP-equivalently across rebuilds on the same GPU. Per the U-18
-// physical-accuracy analysis, the downstream effect is ≤1 ULP per f32
-// reduction, dominated by symplectic-Euler truncation and by XPBD's
+// can vary across rebuilds on the same GPU. The downstream effect is ≤1 ULP
+// per f32 reduction, dominated by symplectic-Euler truncation and by XPBD's
 // contractive constraint projection — a test-harness cost, not a physics
 // cost.
 
@@ -46,7 +43,6 @@ function buildScene(): ParticleInit[] {
       position: [rand(), rand(), rand()],
       velocity: [0, 0, 0],
       invMass: 1,
-      phase: 0,
     });
   }
   return data;
@@ -69,7 +65,7 @@ function sortedCellSlice(
   return slice;
 }
 
-describe('Phase 03 — HashGrid: determinism (tier-1, 100 rebuilds)', () => {
+describe('HashGrid: determinism over 100 rebuilds', () => {
   it('cellStart and cellEnd are bit-identical; per-cell sortedIndices set is stable', async () => {
     const renderer = await createParticleRenderer();
     try {
@@ -129,7 +125,6 @@ describe('Phase 03 — HashGrid: determinism (tier-1, 100 rebuilds)', () => {
       }
 
       if (startMismatchRun !== -1 || endMismatchRun !== -1 || sliceMismatchRun !== -1) {
-        // eslint-disable-next-line no-console
         console.error(
           `[hashgrid-determinism] start@run=${startMismatchRun} idx=${startMismatchIdx}; ` +
             `end@run=${endMismatchRun} idx=${endMismatchIdx}; ` +
@@ -141,8 +136,8 @@ describe('Phase 03 — HashGrid: determinism (tier-1, 100 rebuilds)', () => {
       expect(endMismatchRun).toBe(-1);
       expect(sliceMismatchRun).toBe(-1);
 
-      grid.destroy();
-      particles.destroy();
+      grid.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

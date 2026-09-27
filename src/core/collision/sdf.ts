@@ -14,7 +14,7 @@ type Any = any;
  * — `texture_3d<f32>` bindings are compile-time in WGSL, so a scene
  * with N SDFs compiles N distinct kernels (one per collider).
  *
- * Coordinate pipeline (U-23 resolution):
+ * Coordinate pipeline:
  *   - `position`   — world-space location of the mesh's LOCAL origin.
  *   - `rotation` / `invRotation` — forward and inverse of the mesh's
  *                   world rotation. `invRotation` maps world → local at
@@ -61,11 +61,11 @@ export interface SdfFields {
  * Macklin 2014 §6.1 eq. (22) projection arithmetic that the analytic
  * primitives feed into.
  *
- * Sampling model (plan §Step 2 + U-23 rotation/scale):
+ * Sampling model:
  *   - World → local:
  *       `x_local = invRotation · (x − position) · invScale`
- *     For an identity rotation + unit scale, `x_local = x − position`
- *     (the Phase 07 behavior). Under rotation, the particle position is
+ *     For an identity rotation + unit scale, `x_local = x − position`.
+ *     Under rotation, the particle position is
  *     mapped into the box's local frame before the grid lookup.
  *   - Grid coordinate:
  *       `g = (x_local − bakedOrigin) / voxelSize`

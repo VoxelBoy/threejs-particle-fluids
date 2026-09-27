@@ -1,20 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  decodeVoxelizeBinary,
-  encodeVoxelizeBinary,
-  voxelize,
-  type TriangleMesh,
-} from '../../../src/softbody/index.js';
+import { voxelize, type TriangleMesh } from '../../../src/index.js';
 
-// Phase 10 G1 — voxelizer surface classification.
+// Voxelizer surface classification.
 //
-// Plan test: voxelize a solid unit cube at particleRadius = 0.1.
-// Expected outcome: exactly the outermost layer of voxels is flagged
-// surface (interior voxels have all six face-axis neighbors occupied
-// and so are not on the boundary); ratio must match the 6-neighbor
-// analytic prediction within ±2 particles (allowing for axis-aligned-
-// boundary voxels whose face-neighbor offsets leave the grid).
+// Voxelize a solid unit cube at particleRadius = 0.1. Exactly the outermost
+// layer of voxels is surface (interior voxels have all six face neighbors
+// occupied and so are not on the boundary); the counts must match the
+// 6-neighbor analytic prediction within ±2 particles (allowing for
+// axis-aligned-boundary voxels whose face-neighbor offsets leave the grid).
 //
 // Analytic prediction for a unit cube [-0.5, 0.5]³ voxelized at
 // spacing = 2·particleRadius = 0.2:
@@ -25,7 +19,6 @@ import {
 
 function unitCubeMesh(): TriangleMesh {
   // 8 corners at ±0.5, 12 triangles (2 per face × 6 faces).
-  // eslint-disable-next-line prettier/prettier
   const vertices = new Float32Array([
     -0.5,
     -0.5,
@@ -53,7 +46,6 @@ function unitCubeMesh(): TriangleMesh {
     0.5, // 7
   ]);
   // Outward-normal winding on every face.
-  // eslint-disable-next-line prettier/prettier
   const indices = new Uint32Array([
     // -z face
     0, 2, 1, 1, 2, 3,
@@ -71,29 +63,33 @@ function unitCubeMesh(): TriangleMesh {
   return { vertices, indices };
 }
 
-describe('Phase 10 — voxelize (unit cube G1)', () => {
+describe('voxelize (unit cube)', () => {
   it('solid unit cube at particleRadius = 0.1 produces 125 voxels, 98 surface, 27 interior', async () => {
     const mesh = unitCubeMesh();
     const result = voxelize(mesh, { particleRadius: 0.1 });
 
     // Total count: exactly 5³ = 125.
     expect(Math.abs(result.count - 125)).toBeLessThanOrEqual(2);
-    // Surface count: 98 ± 2 per plan.
+    // Surface count: 98 ± 2.
     expect(Math.abs(result.surfaceCount - 98)).toBeLessThanOrEqual(2);
     // Interior count: count − surfaceCount = 27 ± 2.
     const interiorCount = result.count - result.surfaceCount;
     expect(Math.abs(interiorCount - 27)).toBeLessThanOrEqual(2);
   });
 
-  it('surfaceFlag matches the [surface..., interior...] ordering', () => {
+  it('orders particles [surface..., interior...]', () => {
     const mesh = unitCubeMesh();
     const result = voxelize(mesh, { particleRadius: 0.1 });
-    // First `surfaceCount` entries flagged 1, rest flagged 0.
+    // A particle is on the surface when one of its six face neighbors is
+    // missing; `edges` lists the face-adjacent pairs.
+    const neighbors = new Uint32Array(result.count);
+    for (const i of result.edges) neighbors[i]!++;
+    // The first `surfaceCount` particles are surface, the rest interior.
     for (let i = 0; i < result.surfaceCount; i++) {
-      expect(result.surfaceFlag[i]).toBe(1);
+      expect(neighbors[i]).toBeLessThan(6);
     }
     for (let i = result.surfaceCount; i < result.count; i++) {
-      expect(result.surfaceFlag[i]).toBe(0);
+      expect(neighbors[i]).toBe(6);
     }
   });
 
@@ -152,12 +148,10 @@ describe('Phase 10 — voxelize (unit cube G1)', () => {
     // 1 × 2 × 3 slab at origin. Should produce a rank-3 cloud and not
     // throw. Grid: ceil(1/0.2) × ceil(2/0.2) × ceil(3/0.2) = 5 × 10 × 15
     // = 750 voxels (all occupied for a filled cuboid).
-    // eslint-disable-next-line prettier/prettier
     const vertices = new Float32Array([
       -0.5, -1.0, -1.5, 0.5, -1.0, -1.5, -0.5, 1.0, -1.5, 0.5, 1.0, -1.5, -0.5, -1.0, 1.5, 0.5,
       -1.0, 1.5, -0.5, 1.0, 1.5, 0.5, 1.0, 1.5,
     ]);
-    // eslint-disable-next-line prettier/prettier
     const indices = new Uint32Array([
       0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4, 6, 1,
       3, 5, 3, 7, 5,
@@ -194,37 +188,5 @@ describe('Phase 10 — voxelize (unit cube G1)', () => {
         { particleRadius: 0.1 },
       ),
     ).toThrow(/indices/);
-  });
-});
-
-describe('Phase 10 — voxelize binary encode/decode', () => {
-  it('round-trips a voxelized cube through encode → decode', () => {
-    const mesh = unitCubeMesh();
-    const original = voxelize(mesh, { particleRadius: 0.1 });
-    const buf = encodeVoxelizeBinary(original);
-    const decoded = decodeVoxelizeBinary(buf);
-
-    expect(decoded.count).toBe(original.count);
-    expect(decoded.surfaceCount).toBe(original.surfaceCount);
-    for (let i = 0; i < original.positions.length; i++) {
-      expect(decoded.positions[i]).toBe(original.positions[i]);
-    }
-    for (let i = 0; i < original.surfaceFlag.length; i++) {
-      expect(decoded.surfaceFlag[i]).toBe(original.surfaceFlag[i]);
-    }
-  });
-
-  it('rejects a truncated buffer', () => {
-    const mesh = unitCubeMesh();
-    const original = voxelize(mesh, { particleRadius: 0.1 });
-    const buf = encodeVoxelizeBinary(original);
-    // Slice off the last 8 bytes — the surfaceFlag section is now short.
-    const truncated = buf.slice(0, buf.byteLength - 8);
-    expect(() => decodeVoxelizeBinary(truncated)).toThrow(/buffer size/);
-  });
-
-  it('rejects a too-small buffer', () => {
-    const buf = new ArrayBuffer(4);
-    expect(() => decodeVoxelizeBinary(buf)).toThrow(/too small/);
   });
 });

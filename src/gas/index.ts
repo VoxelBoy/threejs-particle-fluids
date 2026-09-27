@@ -1,11 +1,4 @@
-export { GasSystem, type GasSystemOptions } from './sim/GasSystem.js';
-export { buildSmokeAdvectKernel, type BuildSmokeAdvectKernelArgs } from './sim/smokeAdvect.js';
-export type { GasRenderer, SmokeTracers } from './render/types.js';
-export {
-  PointSpritesGasRenderer,
-  type PointSpritesGasRendererOptions,
-} from './render/PointSpritesGasRenderer.js';
-export {
-  VolumetricGasRenderer,
-  type VolumetricGasRendererOptions,
-} from './render/VolumetricGasRenderer.js';
+export { GasSystem, type GasSystemOptions } from './GasSystem.js';
+export { GasSpriteRenderer, type GasSpriteRendererOptions } from './render/GasSpriteRenderer.js';
+export { GasVolumeRenderer, type GasVolumeRendererOptions } from './render/GasVolumeRenderer.js';
+export type { SmokeTracers } from './render/types.js';

@@ -1,32 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
 import {
-  HashGrid,
+  FluidSystem,
   ParticleSystem,
   PrimitiveSet,
   SimLoop,
+  SoftbodySystem,
   createParticleRenderer,
-  createXpbdUniforms,
   type ParticleInit,
-} from '../../../src/core/index.js';
-import { FluidSystem } from '../../../src/fluids/index.js';
-import { SoftbodySystem } from '../../../src/softbody/index.js';
+} from '../../../src/index.js';
 
 /*
- * Phase 11 — fluid → solid mass-ratio monotonicity.
+ * Fluid → solid mass-ratio monotonicity.
  *
- * Drop three soft-body cubes with different inverse-mass into a settled
- * fluid pool, run for ~3 s of simulation time, and verify the
- * equilibrium COM_y ordering matches Archimedes' principle: lighter
- * bodies (higher invMass) settle higher than heavier bodies (lower
- * invMass). This is the regression test for the Phase 11 Newton-3
- * scatter — without it (or with the previous lambda-denominator bug)
- * either every body sinks, or every body rockets out, depending on
- * the failure mode.
+ * Place three soft-body cubes with different inverse masses in a fluid
+ * pool, run for ~6 s of simulation time, and verify the equilibrium
+ * COM_y ordering matches Archimedes' principle: lighter bodies (higher
+ * invMass) settle higher than heavier bodies (lower invMass). This is
+ * the regression test for the fluid → solid Newton-3 reaction — without
+ * it (or with a wrongly weighted λ denominator) either every body sinks,
+ * or every body rockets out, depending on the failure mode.
  *
  * The strict Archimedes-equilibrium assertion (within 5 % of the
- * analytical depth) is the companion test
- * `archimedes-equilibrium.gpu.test.ts`. This file isolates the
+ * analytical depth) is a separate concern. This file isolates the
  * monotonicity check, which is the cheaper and more robust signal —
  * absolute equilibrium depth depends on the solid body's effective
  * displaced volume per surface particle (≈ ψ_b / ρ_0), which is in
@@ -34,17 +30,18 @@ import { SoftbodySystem } from '../../../src/softbody/index.js';
  * ordering is insensitive to that detail.
  *
  * Scene:
- *   - Fluid: spacing 0.025 m, h = 0.05 m, ρ_0 = 1000 kg/m³, 8×4×8 = 256
- *     particles forming a shallow pool. m_fluid = 0.0156 kg, w_fluid =
+ *   - Fluid: spacing 0.025 m, h = 0.05 m, ρ_0 = 1000 kg/m³, 8×10×8 = 640
+ *     particles forming a pool. m_fluid = 0.0156 kg, w_fluid =
  *     1/m_fluid = 64.
- *   - Solid: 3×3×3 = 27 particles cube, side L = 0.075 m, dropped from
- *     above the surface. matchCompliance = 1e-7 (effectively rigid).
- *     surfaceFlag = 1 for every particle (all-surface — every solid
- *     particle is a fluid boundary).
- *   - Tank: floor + 4 walls (Phase 06 plane colliders), tank bottom at
- *     y = 0, walls at x = ±0.15, z = ±0.15.
- *   - Settle: 3.0 s of simulation at 60 fps × S = 4 substeps (180
- *     substeps total), gravity (0, -9.81, 0).
+ *   - Solid: 4×4×4 = 64 particles cube, side L = 0.1 m, starting
+ *     submerged mid-column. compliance = 1e-7 (effectively rigid).
+ *     Every particle is a surface particle (a fluid boundary).
+ *   - Tank: floor + 4 walls (plane colliders), tank bottom at
+ *     y = 0, walls at x = ±0.1, z = ±0.1.
+ *   - Particle contacts on, so the cube's particles collide with the
+ *     fluid particles as well as being pushed by the fluid pressure.
+ *   - Settle: 6.0 s of simulation at 60 fps × S = 4 substeps, gravity
+ *     (0, -9.81, 0).
  *
  * Mass-ratio sweep — chosen so all three cases FLOAT (ρ_body < ρ_fluid).
  * A neutral or heavy case would sink to the floor regardless of the
@@ -58,30 +55,24 @@ import { SoftbodySystem } from '../../../src/softbody/index.js';
  *
  * Equilibrium COM_y per Archimedes for cube side L:
  *   COM_y = y_water + L · (0.5 − ρ_body/ρ_fluid)
- *   ρ_body/ρ_fluid = 0.30 → +0.015 above waterline
- *   ρ_body/ρ_fluid = 0.60 → −0.0075 below waterline
- *   ρ_body/ρ_fluid = 0.90 → −0.030 below waterline
  *
- * Empirical observation (Phase 11, 2026-04-27): even with the deepest
- * pool that fits in the test budget (10×0.025 m), the buoyancy
- * mechanism does not lift the cube to its analytical Archimedes depth
- * within ~6 s of simulation. The cube settles near the floor, with
- * the lighter cubes lifted slightly higher than the heavier ones —
- * the monotonic Newton-3 buoyancy signal is *real* but small in
- * absolute terms. Adjacent COM_y differences land around 1.5–4 mm at
- * t = 6 s. The test asserts the monotonic ORDERING with a 1 mm
- * margin between adjacent ratios — a regression detector for the
- * sign of the Newton-3 reaction, not a quantitative Archimedes match.
+ * Observed behaviour: even with the deepest pool that fits in the test
+ * budget (10 × 0.025 m), the buoyancy mechanism does not lift the cube
+ * to its analytical Archimedes depth within ~6 s of simulation — every
+ * cube settles several centimetres below it. The monotonic Newton-3
+ * buoyancy signal is nonetheless clear (adjacent COM_y differences of
+ * roughly 15–25 mm at t = 6 s). The test asserts the monotonic ORDERING
+ * with a 1 mm margin between adjacent ratios — a regression detector for
+ * the sign of the Newton-3 reaction, not a quantitative Archimedes match.
  *
  * Why the analytical depth isn't reached: PBF buoyancy is generated by
  * the gravity-induced fluid density gradient acting asymmetrically on
  * the body's neighbour pairs (more fluid pressure below than above,
  * net upward Δp_j on the boundary). The cube is small (4³ particles)
  * and doesn't displace enough fluid above-below to develop the
- * gradient that real Archimedes assumes. Larger bodies (e.g. the
- * `bunny-swimming` demo, 200+ surface particles) accumulate enough
- * paired contributions to float visibly above the floor.
- *
+ * gradient that real Archimedes assumes. Larger bodies (200+ surface
+ * particles) accumulate enough paired contributions to float visibly
+ * above the floor.
  *
  * Assertion: COM_y(invMass=213) > COM_y(invMass=107) > COM_y(invMass=71).
  */
@@ -96,7 +87,6 @@ function buildCubeLattice(
   spacing: number,
   com: [number, number, number],
   invMassBody: number,
-  phase: number,
 ): BuildLatticeResult {
   const rest: [number, number, number][] = [];
   const initial: ParticleInit[] = [];
@@ -110,9 +100,7 @@ function buildCubeLattice(
         rest.push([rx, ry, rz]);
         initial.push({
           position: [rx + com[0], ry + com[1], rz + com[2]],
-          velocity: [0, 0, 0],
           invMass: invMassBody,
-          phase,
         });
       }
     }
@@ -141,7 +129,7 @@ async function runBuoyancyScene(args: RunSceneArgs): Promise<RunSceneResult> {
     const restDensity = 1000;
 
     // Fluid pool — 8×10×8. Depth ≈ 0.25 m — deep enough that a cube
-    // dropped near the surface has substantial fluid below it (and
+    // placed below the surface has substantial fluid below it (and
     // therefore a meaningful gravity-induced density gradient pushing
     // up on the cube). Shallower pools collapse the buoyancy signal:
     // once the cube reaches the floor, there's no fluid below it, no
@@ -154,8 +142,8 @@ async function runBuoyancyScene(args: RunSceneArgs): Promise<RunSceneResult> {
     // Solid cube — 4×4×4 = 64. Bigger gives stronger buoyancy
     // differential per ratio (more boundary particles each contributing
     // a ψ_b · W displacement to the fluid density spike); at dim = 3
-    // the per-pair scatter signal is small relative to the contact-
-    // pipeline drag and the cubes barely separate by 1·r at t = 6 s.
+    // the per-pair reaction is small relative to the contact drag and
+    // the cubes barely separate by 1·r at t = 6 s.
     const dim = 4;
     const bodyCount = dim * dim * dim;
     const total = fluidCount + bodyCount;
@@ -173,39 +161,21 @@ async function runBuoyancyScene(args: RunSceneArgs): Promise<RunSceneResult> {
               spacing * 0.5 + j * spacing,
               -((nz * spacing) / 2) + spacing * 0.5 + k * spacing,
             ],
-            velocity: [0, 0, 0],
-            invMass: 1, // overwritten by FluidSystem
-            phase: 0,
+            // invMass is set by FluidSystem.
           });
         }
       }
     }
 
     // Solid cube: start ALREADY submerged at a fixed depth, the same
-    // for every mass-ratio case. Isolates the buoyancy mechanism from
-    // the drop-and-bounce transient (which dominated the previous
-    // version of this test — the cubes sank past their analytical
-    // equilibria, then drag prevented them from rebounding within the
-    // simulation budget). Initial COM_y = water_level − L. Cube bottom
-    // ≈ 0.04 m above floor; cube top well below the settled water
-    // surface (~0.155 m). All three densities (0.3, 0.6, 0.9) experience
-    // upward net buoyancy from this start position; the test reads how
-    // far each rises.
-    // Start the cube ALREADY mid-column at y = 0.15. Pool depth ~0.25
-    // m gives ~0.10 m of fluid below the cube and ~0.05 m above —
-    // enough fluid below to develop a buoyancy gradient. Avoids the
-    // drop-and-bounce-on-floor transient that dominated earlier
-    // versions of this test (buoyancy mechanism is correct but in
-    // shallow pools the cube reaches the floor before equilibrium and
-    // can't rise once there).
+    // for every mass-ratio case, at y = 0.15. The ~0.25 m pool gives
+    // ~0.10 m of fluid below the cube and ~0.05 m above — enough fluid
+    // below to develop a buoyancy gradient. This isolates the buoyancy
+    // mechanism from a drop-and-bounce transient: a cube dropped from
+    // above sinks past its equilibrium and, in a shallow pool, reaches
+    // the floor before it can rebound.
     const cubeComY = 0.15;
-    const cube = buildCubeLattice(
-      dim,
-      spacing,
-      [0, cubeComY, 0],
-      invMassBody,
-      1, // distinct phase from fluid (suppresses self-collision pairing)
-    );
+    const cube = buildCubeLattice(dim, spacing, [0, cubeComY, 0], invMassBody);
     initial.push(...cube.initial);
 
     const particles = new ParticleSystem(renderer, total, r);
@@ -215,33 +185,22 @@ async function runBuoyancyScene(args: RunSceneArgs): Promise<RunSceneResult> {
     // horizontal extent so the column doesn't spread on settle (which
     // would halve the effective water depth and put the cube on the
     // floor for any floating test). Fluid block spans 8·spacing = 0.2 m
-    // wide; wall halfX = 0.1 m. Cube extent L = 0.075 m has 0.0625 m
-    // clearance to each wall on each axis at start (cube COM at
-    // origin), enough to avoid spurious wall contact.
+    // wide; wall halfX = 0.1 m.
     const tankHalfX = 0.1;
     const tankHalfZ = 0.1;
-    const colliders = new PrimitiveSet(particles, { capacity: 5 });
+    const colliders = new PrimitiveSet(particles);
     colliders.addPlane(new Vector3(0, 1, 0), new Vector3(0, 0, 0));
     colliders.addPlane(new Vector3(1, 0, 0), new Vector3(-tankHalfX, 0, 0));
     colliders.addPlane(new Vector3(-1, 0, 0), new Vector3(tankHalfX, 0, 0));
     colliders.addPlane(new Vector3(0, 0, 1), new Vector3(0, 0, -tankHalfZ));
     colliders.addPlane(new Vector3(0, 0, -1), new Vector3(0, 0, tankHalfZ));
-    colliders.upload();
 
-    const hashGrid = new HashGrid(particles, { cellSize: h });
-    const xpbd = createXpbdUniforms(1 / 60);
-
-    const fluid = new FluidSystem({
-      particles,
-      hashGrid,
-      xpbd,
+    const fluid = new FluidSystem(particles, {
+      range: { start: 0, count: fluidCount },
       restDensity,
-      h,
+      smoothingRadius: h,
       particleSpacing: spacing,
       compliance: 1e-4,
-      fluidParticles: { start: 0, count: fluidCount },
-      vorticity: { strength: 0 },
-      xsph: { c: 0 },
     });
 
     const restFlat = new Float32Array(bodyCount * 3);
@@ -250,37 +209,32 @@ async function runBuoyancyScene(args: RunSceneArgs): Promise<RunSceneResult> {
       restFlat[3 * i + 1] = cube.rest[i]![1];
       restFlat[3 * i + 2] = cube.rest[i]![2];
     }
-    const softbody = new SoftbodySystem({
-      particles,
-      xpbd,
+    // Every particle is a surface particle, so every solid particle is a
+    // fluid boundary. The body's particles don't collide with each other.
+    const softbody = new SoftbodySystem(particles, {
       bodies: [
         {
-          particleRange: { start: fluidCount, count: bodyCount },
+          range: { start: fluidCount, count: bodyCount },
           restPositions: restFlat,
-          surfaceFlag: new Uint8Array(bodyCount).fill(1),
-          phaseId: 1,
-          matchCompliance: 1e-7, // effectively rigid
+          surfaceCount: bodyCount,
+          compliance: 1e-7, // effectively rigid
         },
       ],
     });
 
     // Register every solid surface particle as a fluid boundary —
     // dynamic since the cube moves through the water. Must precede
-    // SimLoop construction (lazy-allocates the solid-reaction
-    // accumulator).
-    await fluid.registerBoundaryParticles(softbody.surfaceRange(0));
+    // SimLoop construction.
+    fluid.addBoundary(softbody.surfaceRange(0), { dynamic: true });
 
     const loop = new SimLoop(particles, {
       substeps: 4,
       iterations: 2,
-      xpbd,
-      hashGrid,
-      contact: { hashGrid, maxContacts: total * 8 },
-      colliders: { colliders },
+      gravity: new Vector3(0, -9.81, 0),
+      contact: { maxContacts: total * 8 },
+      colliders: [colliders],
       materials: [fluid, softbody],
     });
-    loop.kernels.floorY.value = -1e9;
-    loop.gravity.set(0, -9.81, 0);
 
     const dt = 1 / 60;
     const frames = Math.ceil(totalSeconds / dt);
@@ -306,8 +260,9 @@ async function runBuoyancyScene(args: RunSceneArgs): Promise<RunSceneResult> {
       if (y > waterLevel) waterLevel = y;
     }
 
-    particles.destroy();
-    hashGrid.destroy();
+    loop.dispose();
+    colliders.dispose();
+    particles.dispose();
 
     return { comYFinal, waterLevel };
   } finally {
@@ -315,8 +270,8 @@ async function runBuoyancyScene(args: RunSceneArgs): Promise<RunSceneResult> {
   }
 }
 
-describe('Phase 11 — fluid → solid mass-ratio monotonicity', () => {
-  it('lighter cube settles higher than heavier cube (sweep across invMass = {128, 64, 32})', async () => {
+describe('fluid → solid mass-ratio monotonicity', () => {
+  it('lighter cube settles higher than heavier cube (sweep across invMass = {213, 107, 71})', async () => {
     const totalSeconds = 6.0;
 
     // Run the three cases sequentially. Each renderer is owned by
@@ -334,27 +289,21 @@ describe('Phase 11 — fluid → solid mass-ratio monotonicity', () => {
       totalSeconds,
     });
 
-    const r = 0.025 * 0.5;
-    void r;
-    // eslint-disable-next-line no-console
     console.info(
       `[fluid-solid-mass-ratio] very-buoyant   invMass=213 (ρ/ρ_0≈0.30)  COM_y=${veryBuoyant.comYFinal.toFixed(4)}  waterLevel=${veryBuoyant.waterLevel.toFixed(4)}`,
     );
-    // eslint-disable-next-line no-console
     console.info(
       `[fluid-solid-mass-ratio] moderate       invMass=107 (ρ/ρ_0≈0.60)  COM_y=${moderate.comYFinal.toFixed(4)}  waterLevel=${moderate.waterLevel.toFixed(4)}`,
     );
-    // eslint-disable-next-line no-console
     console.info(
       `[fluid-solid-mass-ratio] barely-buoyant invMass=71  (ρ/ρ_0≈0.90)  COM_y=${barelyBuoyant.comYFinal.toFixed(4)}  waterLevel=${barelyBuoyant.waterLevel.toFixed(4)}`,
     );
 
     // Ordering: very-buoyant > moderate > barely-buoyant. Margin =
-    // 1 mm, well above floating-point noise but below the empirical
-    // 1.5–4 mm separation observed at t = 6 s for these mass ratios.
-    // See file-level docstring for why the spread is smaller than
-    // the analytical Archimedes prediction (~22 mm between ratios)
-    // and why a quantitative match is filed as follow-up.
+    // 1 mm, well above floating-point noise and well below the
+    // separation observed at t = 6 s for these mass ratios. See the
+    // file-level comment for why the cubes don't reach their analytical
+    // Archimedes depths.
     const margin = 0.001;
     expect(veryBuoyant.comYFinal).toBeGreaterThan(moderate.comYFinal + margin);
     expect(moderate.comYFinal).toBeGreaterThan(barelyBuoyant.comYFinal + margin);

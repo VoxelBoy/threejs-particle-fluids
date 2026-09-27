@@ -3,121 +3,51 @@ import { If, float, max, uint, vec3, vec4 } from 'three/tsl';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
-/**
- * Collider kind discriminator. Stored in {@link PrimitiveSet.kinds} as `u32`.
- * Values are numbered 0..3 so the kernel can dispatch on them with a plain
- * If-chain (TSL has no Switch). Warp coherence is preserved because adjacent
- * threads (= adjacent particles) iterate the same collider slot in the same
- * order — every thread in a warp hits the same branch at the same step.
- */
+/** Primitive kinds, stored in the high 16 bits of each slot's packed word. */
 export const KIND_PLANE = 0;
 export const KIND_SPHERE = 1;
 export const KIND_BOX = 2;
 export const KIND_CAPSULE = 3;
 
-/** Bit flags packed into {@link PrimitiveSet.flags}. */
+/** Flag bit (low 16 bits of the packed word): the inside is the valid region. */
 export const FLAG_INVERT = 1 << 0;
 
-/**
- * Rotate vector `v` by unit quaternion `q = (x, y, z, w)` via the optimized
- * two-cross-product form (Hamilton convention, q·v·q*).
- *
- *   t = 2 · (q.xyz × v)
- *   v' = v + q.w · t + (q.xyz × t)
- *
- * 15 fused multiply-adds vs. the 18 of the build-a-mat3-first formulation.
- * Identity quaternion `(0, 0, 0, 1)` collapses to `v' = v + 0 + 0 = v`, so
- * a default-identity collider incurs the ops but returns the input
- * unchanged — matches the "pay for what you use" shape of the inline
- * If-chain dispatch.
- *
- * Used twice per box SDF evaluation: once to rotate the particle position
- * into the box's local frame (via the conjugate `(-x, -y, -z, w)`), and
- * once to rotate the resulting gradient back to world space (via `q`).
- */
+/** Rotate `v` by unit quaternion `q`: `v + 2w(q × v) + q × (2(q × v))`. */
 function emitQuatRotate(q: Any, v: Any): Any {
-  // 2 · (q.xyz × v)
   const qxyz: Any = q.xyz;
   const t: Any = float(2.0).mul(qxyz.cross(v)).toVar();
   return v.add(t.mul(q.w)).add(qxyz.cross(t));
 }
 
-/** Quaternion conjugate — inverse for unit quaternions. */
 function emitQuatConjugate(q: Any): Any {
   return vec4(q.x.negate(), q.y.negate(), q.z.negate(), q.w);
 }
 
-/**
- * Numerical floor below which a gradient length is treated as degenerate.
- * Used by sphere / capsule / inside-AABB SDFs where the gradient is undefined
- * at the exact shape center or on a non-principal interior face. Particles
- * should never touch these measure-zero loci in practice, but the guard
- * prevents NaN propagation if they do (e.g. from rounded f32 landing exactly
- * at the center).
- */
-export const EPSILON_GRADIENT = 1e-8;
+/** Lengths below this are treated as zero when normalizing a gradient. */
+const EPSILON_GRADIENT = 1e-8;
 
-/**
- * Emit TSL code that evaluates the signed-distance function `phi(x)` and its
- * outward unit gradient `n(x)` for the collider at `colliderSlot`.
- *
- * Returns both values as `toVar`-bound locals; the caller threads them into
- * the contact-projection arithmetic in `collision/solve.ts`.
- *
- * SDFs implemented:
- *   - Plane       `phi = n · (x - p)`, `∇phi = n`                 — plan §Primitives
- *   - Sphere      `phi = |x - c| - R`, `∇phi = (x - c) / |x - c|` — plan §Primitives
- *   - Box         `q = |x_local| - e`
- *                 `phi = |max(q, 0)| + min(max(q.x, q.y, q.z), 0)` — plan §Primitives
- *                 (closed-form, axis-aligned; rotation is applied by the
- *                  caller at CPU-side upload — see `PrimitiveSet.addBox`'s
- *                  Unknown note regarding rotated boxes).
- *   - Capsule     closest-point-on-segment + sphere displacement — plan §Primitives
- *
- *
- * Invert flag (bit `FLAG_INVERT`): negates both `phi` and `gradient`. Used
- * by inverted-sphere bowls and inverted-box tanks where the interior is the
- * valid region (plan §"Inside-flip for containers").
- *
- * Written as a TSL helper that mutates `phiVar` and `gradientVar` in place
- * rather than returning a struct — TSL's expression builders interact
- * poorly with ad-hoc object returns inside If-chains, and mutating vars is
- * the established pattern in the Phase 05 contact kernels.
- *
- * @param fields  Parallel storage buffers from the owning `PrimitiveSet`.
- *                Only the fields the kernel needs are required here.
- * @param colliderSlot  `u32` TSL node indexing the collider.
- * @param x       `vec3` TSL node — the particle position to test.
- * @param phiVar  `float` TSL var the kernel writes the SDF value into.
- * @param gradientVar  `vec3` TSL var the kernel writes the outward unit normal into.
- */
+/** GPU buffers {@link emitColliderSdf} reads; see {@link PrimitiveSet}. */
 export interface ColliderFields {
-  /**
-   * `packed[c] = (kind << 16) | flags` — see
-   * `PrimitiveSet.ts::packKindFlags`. The GPU-side unpack below shifts out
-   * the 16-bit fields.
-   */
   readonly packed: Any;
   readonly data0: Any;
   readonly data1: Any;
-  /**
-   * Per-slot unit quaternion `(x, y, z, w)`. Identity `(0, 0, 0, 1)` for
-   * plane / sphere / capsule (they have no meaningful rotation). For box,
-   * the quaternion defines the box's world rotation: a particle position
-   * is rotated into the box's local frame via the **conjugate** before
-   * the axis-aligned SDF test, and the gradient is rotated back by the
-   * forward quaternion after. Resolves U-21.
-   */
   readonly rotation: Any;
-  /** Per-slot linear velocity (xyz) — required when `rewind` is passed. */
-  readonly linVel?: Any;
+  readonly velocity?: Any;
 }
 
 /**
- * @param rewind  Optional seconds to move the collider back along its linear
- *   velocity. Kinematic colliders are updated once per frame; rewinding by the
- *   time left in the frame sweeps them smoothly through the substeps instead
- *   of jumping, which would fling contacting particles away.
+ * Emit TSL that evaluates the signed distance `phi` to the primitive in
+ * `colliderSlot` and its outward unit gradient, writing both into the given
+ * vars. Distances are positive outside the shape; inverted primitives flip
+ * both signs.
+ *
+ * - Plane: `phi = n · (x − p)`
+ * - Sphere: `phi = |x − c| − r`
+ * - Box: `q = |x_local| − e`, `phi = |max(q, 0)| + min(max(q.x, q.y, q.z), 0)`
+ * - Capsule: sphere around the closest point on the segment
+ *
+ * `rewind` (seconds) moves the query point forward along the primitive's
+ * velocity, which is the same as moving the primitive back in time.
  */
 export function emitColliderSdf(
   fields: ColliderFields,
@@ -129,8 +59,8 @@ export function emitColliderSdf(
 ): void {
   // Evaluating at x + v·t is the same as moving a translating collider back by v·t.
   const x: Any =
-    rewind !== undefined && fields.linVel
-      ? xWorld.add(fields.linVel.element(colliderSlot).xyz.mul(rewind)).toVar()
+    rewind !== undefined && fields.velocity
+      ? xWorld.add(fields.velocity.element(colliderSlot).xyz.mul(rewind)).toVar()
       : xWorld;
   const packedVal: Any = fields.packed.element(colliderSlot);
   const kind: Any = packedVal.shiftRight(uint(16)).bitAnd(uint(0xffff));
@@ -166,7 +96,7 @@ export function emitColliderSdf(
   // Rotation is applied in two places: (1) the particle position is
   // rotated into the box's local frame via the conjugate quaternion
   // before the axis-aligned SDF, (2) the resulting gradient is rotated
-  // back to world space by the forward quaternion. Resolves U-21.
+  // back to world space by the forward quaternion.
   If(kind.equal(uint(KIND_BOX)), () => {
     const c: Any = data0.xyz;
     const e: Any = data1.xyz;

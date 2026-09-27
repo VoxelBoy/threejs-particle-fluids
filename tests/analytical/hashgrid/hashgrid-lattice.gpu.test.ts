@@ -6,9 +6,9 @@ import {
   createParticleRenderer,
   emitForEachNeighbor,
   type ParticleInit,
-} from '../../../src/core/index.js';
+} from '../../../src/index.js';
 
-// Phase 03 G1 — lattice correctness test.
+// Lattice correctness.
 //
 // 4×4×4 particles on a 0.05 lattice with h=0.08. h² = 0.0064 is cleanly between
 // the 2-axis pair distance² (0.005) and the 3-axis pair distance² (0.0075), so
@@ -18,7 +18,7 @@ import {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
-describe('Phase 03 — HashGrid: 4×4×4 lattice correctness', () => {
+describe('HashGrid: 4×4×4 lattice correctness', () => {
   it('per-particle neighbor count matches CPU brute force', async () => {
     const renderer = await createParticleRenderer();
     try {
@@ -36,7 +36,6 @@ describe('Phase 03 — HashGrid: 4×4×4 lattice correctness', () => {
               position: [i * SPACING, j * SPACING, k * SPACING],
               velocity: [0, 0, 0],
               invMass: 1,
-              phase: 0,
             });
           }
         }
@@ -81,7 +80,7 @@ describe('Phase 03 — HashGrid: 4×4×4 lattice correctness', () => {
         expect(c).toBeLessThan(grid.hashTableSize);
       }
 
-      // forEachNeighbor pass: per-particle neighbor count, matched against
+      // Neighbor-walk pass: per-particle neighbor count, matched against
       // CPU brute force using squared-distance comparison. Within-cell sort
       // order doesn't matter — the set of visited candidates does.
       const countsOut = instancedArray(N, 'uint');
@@ -89,24 +88,15 @@ describe('Phase 03 — HashGrid: 4×4×4 lattice correctness', () => {
         const p: Any = instanceIndex;
         const pos: Any = particles.positions.element(p).xyz;
         const count: Any = uint(0).toVar();
-        emitForEachNeighbor({
-          queryPosXyz: pos,
-          hashOrigin: grid.hashOriginUniform,
-          cellSize: grid.cellSizeUniform,
-          hashTableSize: grid.hashTableSize,
-          cellStart: grid.cellStart,
-          cellEnd: grid.cellEnd,
-          sortedIndices: grid.sortedIndices,
-          onCandidate: (n) => {
-            If((n as Any).notEqual(p), () => {
-              const npos: Any = particles.positions.element(n).xyz;
-              const diff: Any = pos.sub(npos);
-              const d2: Any = diff.dot(diff);
-              If(d2.lessThan(H2), () => {
-                count.addAssign(uint(1));
-              });
+        emitForEachNeighbor(grid, pos, (n) => {
+          If(n.notEqual(p), () => {
+            const npos: Any = particles.positions.element(n).xyz;
+            const diff: Any = pos.sub(npos);
+            const d2: Any = diff.dot(diff);
+            If(d2.lessThan(H2), () => {
+              count.addAssign(uint(1));
             });
-          },
+          });
         });
         countsOut.element(p).assign(count);
       })().compute(N);
@@ -134,8 +124,8 @@ describe('Phase 03 — HashGrid: 4×4×4 lattice correctness', () => {
         expect(gpuCounts[p]).toBe(cpuCounts[p]);
       }
 
-      grid.destroy();
-      particles.destroy();
+      grid.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

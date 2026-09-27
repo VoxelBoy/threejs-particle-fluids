@@ -1,8 +1,7 @@
-import type { SdfData } from './bake.js';
+import type { SDFData } from '../core/collision/SDFCollider.js';
 
 /**
  * Custom `.sdf.bin` binary format — v1.
- *
  *
  * Little-endian. Header is 48 bytes, followed by raw f32 voxel data in
  * z-major order: `voxel[x + y·resX + z·resX·resY]`.
@@ -23,8 +22,8 @@ export const SDF_MAGIC = 0x46445350; // "PSDF" read as little-endian u32
 export const SDF_VERSION = 1;
 const HEADER_BYTES = 48;
 
-/** Serialize an in-memory `SdfData` into the `.sdf.bin` wire format. */
-export function encodeSdfBinary(sdf: SdfData): ArrayBuffer {
+/** Serialize an in-memory `SDFData` into the `.sdf.bin` wire format. */
+export function encodeSdfBinary(sdf: SDFData): ArrayBuffer {
   const [resX, resY, resZ] = sdf.resolution;
   const voxelCount = resX * resY * resZ;
   if (voxelCount !== sdf.data.length) {
@@ -51,8 +50,8 @@ export function encodeSdfBinary(sdf: SdfData): ArrayBuffer {
   return buffer;
 }
 
-/** Deserialize a `.sdf.bin` buffer into an `SdfData` — inverse of encode. */
-export function decodeSdfBinary(buffer: ArrayBuffer): SdfData {
+/** Deserialize a `.sdf.bin` buffer into an `SDFData` — inverse of encode. */
+export function decodeSdfBinary(buffer: ArrayBuffer): SDFData {
   if (buffer.byteLength < HEADER_BYTES) {
     throw new Error(
       `decodeSdfBinary: buffer too small for header (${buffer.byteLength} < ${HEADER_BYTES})`,
@@ -96,9 +95,4 @@ export function decodeSdfBinary(buffer: ArrayBuffer): SdfData {
     origin: [originX, originY, originZ],
     voxelSize: [voxelX, voxelY, voxelZ],
   };
-}
-
-/** Bytes on disk for a given resolution — useful for U-07 VRAM logging. */
-export function sdfBinaryByteLength(resX: number, resY: number, resZ: number): number {
-  return HEADER_BYTES + resX * resY * resZ * 4;
 }

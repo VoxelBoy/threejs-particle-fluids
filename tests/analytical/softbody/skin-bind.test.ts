@@ -1,42 +1,38 @@
 import { BufferGeometry, Float32BufferAttribute, Uint32BufferAttribute } from 'three';
-import { describe, expect, it, vi } from 'vitest';
+import type { WebGPURenderer } from 'three/webgpu';
+import { describe, expect, it } from 'vitest';
 
+import { ParticleSystem, SoftbodySystem } from '../../../src/index.js';
 import { bindSoftbodyMesh } from '../../../src/softbody/bindMesh.js';
-import type { SoftbodySystem } from '../../../src/softbody/index.js';
 
 /**
- * Build a {@link SoftbodySystem}-shaped mock with just the fields
- * `bindSoftbodyMesh` reads. Avoids a full WebGPU construction (the
- * §Validation tests below are about CPU bind logic, not the GPU
- * pipeline).
+ * A one-body {@link SoftbodySystem} over the given rest positions. Binding is
+ * CPU-only, so the particles never touch a GPU and the renderer is a stub.
  */
-function makeMockSoftbody(
+function makeSoftbody(
   particleRadius: number,
   restPositions: Float32Array,
   baseSlot = 0,
   edges?: Uint32Array,
 ): SoftbodySystem {
   const count = restPositions.length / 3;
-  return {
-    particles: { particleRadius },
-    shapeMatchMode: 'explicit',
+  const particles = new ParticleSystem({} as WebGPURenderer, baseSlot + count, particleRadius);
+  return new SoftbodySystem(particles, {
     bodies: [
       {
-        particleRange: { start: baseSlot, count },
+        range: { start: baseSlot, count },
         restPositions,
-        surfaceFlag: new Uint8Array(count).fill(1),
-        phaseId: 1,
-        matchCompliance: 1e-6,
-        edges,
+        compliance: 1e-6,
+        ...(edges ? { edges } : {}),
       },
     ],
-  } as unknown as SoftbodySystem;
+  });
 }
 
 /**
  * 3x3x3 voxel grid of particles spaced 2·r apart, centered at origin
- * (mesh-frame). Identical to the layout the production voxelizer
- * produces for a small box, suitable for the bind tests.
+ * (mesh-frame). Identical to the layout the voxelizer produces for a small
+ * box, suitable for the bind tests.
  */
 function buildSmallGrid(particleRadius: number): Float32Array {
   const spacing = 2 * particleRadius;
@@ -76,15 +72,13 @@ function meshFromVertices(verts: Float32Array): BufferGeometry {
 
 const PARTICLE_RADIUS = 0.05;
 
-describe('Phase 13 G1 — bindSoftbodyMesh', () => {
+describe('bindSoftbodyMesh', () => {
   it('emits partition-of-unity weights (|Σw − 1| < 1e-6) for every vertex', () => {
     const rest = buildSmallGrid(PARTICLE_RADIUS);
-    const softbody = makeMockSoftbody(PARTICLE_RADIUS, rest);
+    const softbody = makeSoftbody(PARTICLE_RADIUS, rest);
 
-    // Mesh vertices coincident with particle slots — guarantees every
-    // vertex has a particle within reachRadius regardless of the body's
-    // packing density. The partition-of-unity invariant is independent
-    // of vertex placement; this just keeps the precondition satisfied.
+    // Mesh vertices at and near particle slots. The partition-of-unity
+    // invariant is independent of vertex placement.
     const verts = new Float32Array([
       0,
       0,
@@ -106,10 +100,12 @@ describe('Phase 13 G1 — bindSoftbodyMesh', () => {
       0.5 * PARTICLE_RADIUS,
     ]);
     const geom = meshFromVertices(verts);
-    const { K } = bindSoftbodyMesh(geom, softbody, 0);
-    expect(K).toBe(4);
+    expect(bindSoftbodyMesh(geom, softbody, 0)).toBe(geom);
 
-    const weights = geom.getAttribute('weights')!.array as Float32Array;
+    // Four influences per vertex.
+    const wts = geom.getAttribute('weights')!;
+    expect(wts.itemSize).toBe(4);
+    const weights = wts.array as Float32Array;
     for (let v = 0; v < verts.length / 3; v++) {
       const w =
         weights[4 * v + 0]! + weights[4 * v + 1]! + weights[4 * v + 2]! + weights[4 * v + 3]!;
@@ -119,7 +115,7 @@ describe('Phase 13 G1 — bindSoftbodyMesh', () => {
 
   it('writes 4-wide influence + weight attributes with the expected shape', () => {
     const rest = buildSmallGrid(PARTICLE_RADIUS);
-    const softbody = makeMockSoftbody(PARTICLE_RADIUS, rest, 17 /* baseSlot */);
+    const softbody = makeSoftbody(PARTICLE_RADIUS, rest, 17 /* baseSlot */);
     const verts = new Float32Array([0, 0, 0, 0.05, 0, 0, 0, 0.05, 0]);
     const geom = meshFromVertices(verts);
     bindSoftbodyMesh(geom, softbody, 0);
@@ -139,47 +135,12 @@ describe('Phase 13 G1 — bindSoftbodyMesh', () => {
     }
   });
 
-  it('warns (does not throw) when a vertex exceeds reachRadius by default', () => {
-    const rest = buildSmallGrid(PARTICLE_RADIUS);
-    const softbody = makeMockSoftbody(PARTICLE_RADIUS, rest);
-    const reachRadius = 2.0 * PARTICLE_RADIUS;
-    const farX = 6 * PARTICLE_RADIUS + reachRadius;
-    const verts = new Float32Array([0, 0, 0, farX, 0, 0]);
-    const geom = meshFromVertices(verts);
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    try {
-      expect(() => bindSoftbodyMesh(geom, softbody, 0)).not.toThrow();
-      expect(warnSpy).toHaveBeenCalledOnce();
-      expect(warnSpy.mock.calls[0]![0]).toMatch(/reachRadius/);
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  it('throws under strictReach when a vertex exceeds reachRadius', () => {
-    const rest = buildSmallGrid(PARTICLE_RADIUS);
-    const softbody = makeMockSoftbody(PARTICLE_RADIUS, rest);
-    const reachRadius = 2.0 * PARTICLE_RADIUS;
-    const farX = 6 * PARTICLE_RADIUS + reachRadius;
-    const verts = new Float32Array([0, 0, 0, farX, 0, 0]);
-    const geom = meshFromVertices(verts);
-    expect(() => bindSoftbodyMesh(geom, softbody, 0, { strictReach: true })).toThrow(/reachRadius/);
-  });
-
-  it('rejects invalid K (out of [1,4] MVP support)', () => {
-    const rest = buildSmallGrid(PARTICLE_RADIUS);
-    const softbody = makeMockSoftbody(PARTICLE_RADIUS, rest);
-    const geom = meshFromVertices(new Float32Array([0, 0, 0]));
-    expect(() => bindSoftbodyMesh(geom, softbody, 0, { K: 8 })).toThrow(/K=8/);
-    expect(() => bindSoftbodyMesh(geom, softbody, 0, { K: 0 })).toThrow();
-  });
-
-  it('excludes single-particle chain ends (degree < 3) from K-NN when edges are supplied', () => {
+  it('excludes single-particle chain ends (degree < 3) from the nearest particles when edges are supplied', () => {
     // 3x3x3 voxel grid where every particle has 6-face degree ≥ 3 (the
     // densest interior particle has 6, corners have 3), plus a single
-    // chain-end "ear-tip" particle connected only to one grid corner.
-    // The chain particle's degree is 1; it MUST be excluded from K-NN
-    // when a vertex is placed at its position.
+    // "ear-tip" particle off one face with no grid neighbor at the edge
+    // spacing. Its degree is below 3, so it MUST be excluded from the
+    // nearest-particle search even when a vertex sits right on it.
     const rGrid = buildSmallGrid(PARTICLE_RADIUS); // 27 particles, indices 0..26
     const earTip = [3 * PARTICLE_RADIUS, 0, 0];
     const positions = new Float32Array(rGrid.length + 3);
@@ -187,7 +148,7 @@ describe('Phase 13 G1 — bindSoftbodyMesh', () => {
     positions.set(earTip, rGrid.length);
     const earIndex = 27;
 
-    // Edge graph — every (i,j) pair within 2·r of each other.
+    // Edge graph — every (i,j) pair exactly 2·r apart.
     const all: number[][] = [];
     for (let i = 0; i < positions.length / 3; i++) {
       all.push([positions[3 * i + 0]!, positions[3 * i + 1]!, positions[3 * i + 2]!]);
@@ -202,29 +163,29 @@ describe('Phase 13 G1 — bindSoftbodyMesh', () => {
         if (Math.abs(d - 2 * PARTICLE_RADIUS) < 1e-6) edges.push(i, j);
       }
     }
-    const softbody = makeMockSoftbody(PARTICLE_RADIUS, positions, 0, new Uint32Array(edges));
+    const softbody = makeSoftbody(PARTICLE_RADIUS, positions, 0, new Uint32Array(edges));
 
     // Vertex placed AT the ear-tip particle. Without chain exclusion the
-    // 1-nearest particle would be index 27 (distance 0). With exclusion
-    // the K-NN must skip 27 entirely and bind to grid particles. Use a
-    // generous reachRadius so the absolute-1-NN check (which still
-    // inspects the chain particle for the throw decision) passes.
+    // nearest particle would be index 27 (distance 0). With exclusion the
+    // binding must skip 27 entirely and use grid particles.
     const verts = new Float32Array([3 * PARTICLE_RADIUS, 0, 0]);
     const geom = meshFromVertices(verts);
-    bindSoftbodyMesh(geom, softbody, 0, { reachRadius: 5 * PARTICLE_RADIUS });
+    bindSoftbodyMesh(geom, softbody, 0);
 
     const inf = geom.getAttribute('influences')!.array as Uint32Array;
     for (let k = 0; k < 4; k++) expect(inf[k]).not.toBe(earIndex);
   });
 
-  it('returns the body-local pre-centered cBar', () => {
-    // Shift the entire grid by (0.5, 0, 0) → cBar.x ≈ 0.5.
+  it("exposes the body's rest center, which skinning measures vertices from", () => {
+    // Skinning places vertices relative to the body's rest center. Shift the
+    // entire grid by (0.5, 0, 0) → restCenter ≈ (0.5, 0, 0).
     const rest = buildSmallGrid(PARTICLE_RADIUS);
     for (let i = 0; i < rest.length; i += 3) rest[i]! += 0.5;
-    const softbody = makeMockSoftbody(PARTICLE_RADIUS, rest);
+    const softbody = makeSoftbody(PARTICLE_RADIUS, rest);
     const verts = new Float32Array([0.5, 0, 0]);
     const geom = meshFromVertices(verts);
-    const { cBar } = bindSoftbodyMesh(geom, softbody, 0);
+    bindSoftbodyMesh(geom, softbody, 0);
+    const cBar = softbody.bodies[0]!.restCenter;
     expect(cBar[0]).toBeCloseTo(0.5, 6);
     expect(cBar[1]).toBeCloseTo(0, 6);
     expect(cBar[2]).toBeCloseTo(0, 6);

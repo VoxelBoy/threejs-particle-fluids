@@ -1,13 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { Fn, instancedArray } from 'three/tsl';
 
-import { createParticleRenderer } from '../../../src/core/index.js';
-import { emitPolarDecomposition, type Mat3Nodes } from '../../../src/softbody/index.js';
+import { createParticleRenderer } from '../../../src/index.js';
+import { emitPolarDecomposition, type Mat3Nodes } from '../../../src/softbody/polarDecomp.js';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Any = any;
-
-// Phase 10 G1 — emitPolarDecomposition unit tests.
+// emitPolarDecomposition unit tests.
 //
 // Construct A = R_known · S_known and verify the polar decomposition
 // recovers R_known. Covers:
@@ -101,28 +98,24 @@ function matMul(a: readonly number[], b: readonly number[]): number[] {
 function rotZ(theta: number): number[] {
   const c = Math.cos(theta);
   const s = Math.sin(theta);
-  // eslint-disable-next-line prettier/prettier
   return [c, -s, 0, s, c, 0, 0, 0, 1];
 }
 function rotY(theta: number): number[] {
   const c = Math.cos(theta);
   const s = Math.sin(theta);
-  // eslint-disable-next-line prettier/prettier
   return [c, 0, s, 0, 1, 0, -s, 0, c];
 }
 function rotX(theta: number): number[] {
   const c = Math.cos(theta);
   const s = Math.sin(theta);
-  // eslint-disable-next-line prettier/prettier
   return [1, 0, 0, 0, c, -s, 0, s, c];
 }
 function diag(sx: number, sy: number, sz: number): number[] {
-  // eslint-disable-next-line prettier/prettier
   return [sx, 0, 0, 0, sy, 0, 0, 0, sz];
 }
 const IDENTITY: number[] = diag(1, 1, 1);
 
-describe('Phase 10 — emitPolarDecomposition', () => {
+describe('emitPolarDecomposition', () => {
   it('identity A yields identity R', async () => {
     const R = await runPolarDecomposition(IDENTITY);
     expectMat3Close(R, IDENTITY);
@@ -182,7 +175,6 @@ describe('Phase 10 — emitPolarDecomposition', () => {
     const Rknown = matMul(rotX(0.4), rotZ(-0.3));
     // Symmetric PSD S: diag + small symmetric off-diagonals.
     // S[0][1] = S[1][0] = 0.2; rest diag.
-    // eslint-disable-next-line prettier/prettier
     const S = [1.5, 0.2, 0, 0.2, 1.2, 0, 0, 0, 1.0];
     const A = matMul(Rknown, S);
     const R = await runPolarDecomposition(A);

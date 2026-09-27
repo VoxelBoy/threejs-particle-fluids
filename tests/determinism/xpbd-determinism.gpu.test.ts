@@ -2,22 +2,23 @@ import { describe, expect, it } from 'vitest';
 import {
   ParticleSystem,
   SimLoop,
-  createParticleRenderer,
+  constraintKernels,
   createDistanceConstraints,
-  createXpbdUniforms,
+  createParticleRenderer,
+  type Material,
   type ParticleInit,
-} from '../../src/core/index.js';
+} from '../../src/index.js';
 
-// Phase 04 G4 — tier-1 bit-exact determinism (per ARCHITECTURE.md §Guardrails
-// G4 two-tier policy).
+// Bit-exact determinism for XPBD distance constraints (tier 1 of the
+// two-tier determinism policy).
 //
 // Gather-mode XPBD is order-independent at the kernel level: every per-
 // particle write lands in a single, predetermined slot and every per-
 // constraint λ accumulation is written by exactly one "leader" thread
 // (see `distance.ts` JSDoc). The residual sums computed inside
 // `xpbdDeltaLambda` are 2-term reductions (wi + wj) — not the unbounded
-// neighbor-sum reductions that tier 2 exists for — so there is no source
-// of run-to-run variation at this phase. Tier 1 (bit-identical) applies.
+// neighbor-sum reductions that tier 2 exists for — so there is no expected
+// source of run-to-run variation. Tier 1 (bit-identical) applies.
 //
 // Same-seed repeatability is asserted on `positions` after 300 frames of a
 // random chain-connected distance-constraint graph under gravity.
@@ -45,7 +46,6 @@ function buildScene(): Scene {
       position: [rand() * 2 - 1, 5 + rand() * 2, rand() * 2 - 1],
       velocity: [rand() - 0.5, rand() - 0.5, rand() - 0.5],
       invMass: i === 0 ? 0 : 1, // particle 0 pinned
-      phase: 0,
     });
   }
   // Chain: 0-1-2-...-(N-1)
@@ -69,35 +69,39 @@ async function runOnce(scene: Scene): Promise<Float32Array> {
     const particles = new ParticleSystem(renderer, scene.data.length, 0.02);
     particles.uploadParticles([...scene.data]);
 
-    const xpbd = createXpbdUniforms(1 / 60);
-    const dist = createDistanceConstraints({
-      particles,
-      pairs: [...scene.pairs],
-      compliance: 1e-4,
-      restLength: [...scene.restLengths],
-      xpbd,
-    });
+    const chain: Material = {
+      build: ({ dt }) =>
+        constraintKernels([
+          createDistanceConstraints({
+            particles,
+            pairs: [...scene.pairs],
+            compliance: 1e-4,
+            restLength: [...scene.restLengths],
+            dt,
+          }),
+        ]),
+    };
     const loop = new SimLoop(particles, {
-      xpbd,
-      constraints: [dist],
+      materials: [chain],
       substeps: 2,
       iterations: 2,
     });
-    loop.kernels.floorY.value = -1e9;
 
     const dt = 1 / 60;
     for (let n = 0; n < 300; n++) await loop.step(dt);
 
     const snap = await particles.readback();
-    particles.destroy();
+    loop.dispose();
+    particles.dispose();
     return snap.positions;
   } finally {
     renderer.dispose();
   }
 }
 
-// Disabled: this strict bitwise repeatability target remains unresolved on the GPU.
-describe.skip('Phase 04 — XPBD: same-seed determinism', () => {
+// Each constraint is solved by one thread that moves both endpoints, so no
+// thread reads a position another is writing and repeat runs match exactly.
+describe('XPBD: same-seed determinism', () => {
   it('bit-identical positions after 300 frames across repeat runs', async () => {
     const scene = buildScene();
     const runA = await runOnce(scene);
@@ -112,7 +116,6 @@ describe.skip('Phase 04 — XPBD: same-seed determinism', () => {
       }
     }
     if (firstMismatch !== -1) {
-      // eslint-disable-next-line no-console
       console.error(
         `First mismatch at index ${firstMismatch}: runA=${runA[firstMismatch]} runB=${runB[firstMismatch]}`,
       );

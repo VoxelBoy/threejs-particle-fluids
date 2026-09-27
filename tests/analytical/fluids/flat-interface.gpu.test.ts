@@ -1,32 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
 import {
-  HashGrid,
+  FluidSystem,
   ParticleSystem,
   PrimitiveSet,
   SimLoop,
   createParticleRenderer,
-  createXpbdUniforms,
   type ParticleInit,
-} from '../../../src/core/index.js';
-import { FluidSystem } from '../../../src/fluids/index.js';
+} from '../../../src/index.js';
 
-// Phase 09 G1 — flat-interface test.
+// Flat interface.
 //
-
-//
-// Scene: hydrostatic tank (same as Phase 08 hydrostatic-column) with
-// cohesion ON. After 1 s settle the column's top surface should remain
+// Scene: hydrostatic tank (same as the hydrostatic-column test) with
+// cohesion ON. After settling, the column's top surface should remain
 // approximately flat — the cohesion + curvature forces' combined
-// behavior on a flat interface should be close to zero (per Akinci 2013
-// §2.3: F_curvature = -γ·m·(n_i - n_j) is zero when n_i = n_j for all
-// pairs on a flat surface).
+// behavior on a flat interface should be close to zero (Akinci et al.
+// 2013 §2.3: F_curvature = -γ·m·(n_i - n_j) is zero when n_i = n_j for
+// all pairs on a flat surface).
 //
-// Phase 09 MVP tuning (UNKNOWN U-33): run at γ = 0.05 to keep the
-// drift in check. Metric: the range of top-surface y-coordinates should
-// be small relative to the column height.
+// Metric: the range of top-surface y-coordinates should be small
+// relative to the column height.
 
-describe('Phase 09 — fluid flat interface', () => {
+describe('fluid flat interface', () => {
   it('column top remains approximately flat under cohesion', async () => {
     const renderer = await createParticleRenderer();
     try {
@@ -47,12 +42,7 @@ describe('Phase 09 — fluid flat interface', () => {
             const x = -((nx * spacing) / 2) + spacing * 0.5 + i * spacing;
             const y = spacing * 0.5 + j * spacing;
             const z = -((nz * spacing) / 2) + spacing * 0.5 + k * spacing;
-            initial.push({
-              position: [x, y, z],
-              velocity: [0, 0, 0],
-              invMass: 1,
-              phase: 0,
-            });
+            initial.push({ position: [x, y, z] });
           }
         }
       }
@@ -64,41 +54,29 @@ describe('Phase 09 — fluid flat interface', () => {
       // free top surface).
       const tankHalfX = 0.15;
       const tankHalfZ = 0.15;
-      const colliders = new PrimitiveSet(particles, { capacity: 5 });
+      const colliders = new PrimitiveSet(particles);
       colliders.addPlane(new Vector3(0, 1, 0), new Vector3(0, 0, 0));
       colliders.addPlane(new Vector3(1, 0, 0), new Vector3(-tankHalfX, 0, 0));
       colliders.addPlane(new Vector3(-1, 0, 0), new Vector3(tankHalfX, 0, 0));
       colliders.addPlane(new Vector3(0, 0, 1), new Vector3(0, 0, -tankHalfZ));
       colliders.addPlane(new Vector3(0, 0, -1), new Vector3(0, 0, tankHalfZ));
-      colliders.upload();
 
-      const hashGrid = new HashGrid(particles, { cellSize: h });
-
-      const xpbd = createXpbdUniforms(1 / 60);
-      const fluid = new FluidSystem({
-        particles,
-        hashGrid,
-        xpbd,
+      const fluid = new FluidSystem(particles, {
         restDensity,
-        h,
+        smoothingRadius: h,
         particleSpacing: spacing,
         compliance: 1e-4,
-        fluidParticles: { start: 0, count },
-        vorticity: { strength: 0 },
-        xsph: { c: 0.1 },
+        viscosity: 0.1,
         surfaceTension: 0.2,
       });
 
       const loop = new SimLoop(particles, {
         substeps: 4,
         iterations: 2,
-        xpbd,
-        hashGrid,
-        colliders: { colliders },
+        gravity: new Vector3(0, -9.81, 0),
+        colliders: [colliders],
         materials: [fluid],
       });
-      loop.kernels.floorY.value = -1e9;
-      loop.gravity.set(0, -9.81, 0);
 
       // Settle for 3 s — long enough for the column to reach an
       // approximate hydrostatic equilibrium.
@@ -145,24 +123,22 @@ describe('Phase 09 — fluid flat interface', () => {
       const topRange = topYmax - topYmin;
       const columnHeight = yMax - yMin;
 
-      // eslint-disable-next-line no-console
       console.info(
         `[flat-interface] ys=${ys.length} yMin=${yMin.toFixed(4)} yMax=${yMax.toFixed(4)} columnHeight=${columnHeight.toFixed(4)} topN=${topYs.length} topRange=${topRange.toFixed(4)} ratio=${(topRange / columnHeight).toFixed(3)}`,
       );
 
-      // Plan gate (blocked on U-33): "surface curvature metric near
-      // zero". Our MVP-appropriate proxy: the vertical spread of the
-      // top-surface particles (topRange) should be at most 30% of the
-      // column height. For a perfectly flat surface it would be near
-      // zero (all top particles at the same y). For a cohesion-
-      // distorted surface, topRange grows relative to columnHeight.
-      // 30% is lenient enough to accept the U-33 drift while still
-      // catching a grossly bumpy cohesion-induced surface.
+      // The ideal check is "surface curvature near zero". The proxy used
+      // here: the vertical spread of the top-surface particles (topRange)
+      // should be at most 30% of the column height. For a perfectly flat
+      // surface it would be near zero (all top particles at the same y).
+      // For a cohesion-distorted surface, topRange grows relative to
+      // columnHeight. 30% tolerates the drift a fixed Δt allows while
+      // still catching a grossly bumpy cohesion-induced surface.
       expect(topRange / columnHeight).toBeLessThan(0.3);
 
-      particles.destroy();
-      colliders.destroy();
-      hashGrid.destroy();
+      loop.dispose();
+      colliders.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

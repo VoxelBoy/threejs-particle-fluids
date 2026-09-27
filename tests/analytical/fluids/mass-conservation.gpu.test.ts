@@ -1,25 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
 import {
-  HashGrid,
+  FluidSystem,
   ParticleSystem,
   PrimitiveSet,
   SimLoop,
   createParticleRenderer,
-  createXpbdUniforms,
   type ParticleInit,
-} from '../../../src/core/index.js';
-import { FluidSystem } from '../../../src/fluids/index.js';
+} from '../../../src/index.js';
 
-// Phase 08 G1 — mass conservation.
+// Mass conservation.
 //
 // Particle count is fixed by `ParticleSystem.capacity`; the interesting
 // test is "no particles escape the sealed box over 10 s of sim time".
-// Escapes would indicate either (a) integration NaN followed by the
-// floor-Y clamp pulling particles to `-∞`, (b) XPBD step over-correction
-// tunnelling past an analytic plane, or (c) the solver producing
-// velocities that exceed the plane-collider's capture response within
-// one substep.
+// Escapes would indicate either (a) an integration NaN, (b) XPBD
+// over-correction tunnelling a particle past an analytic plane, or
+// (c) the solver producing velocities that exceed the plane collider's
+// capture response within one substep.
 //
 // Scene matches the hydrostatic / incompressibility tests: 768
 // particles in a 0.3 × 0.3 m open-top tank, 10 s settle under gravity.
@@ -27,7 +24,7 @@ import { FluidSystem } from '../../../src/fluids/index.js';
 const TANK_HALF = 0.15; // m — plane colliders at ±0.15 in x and z.
 const CEILING = 10; // m — "sky"; any y > 10 m is considered escape.
 
-describe('Phase 08 — fluid mass conservation', () => {
+describe('fluid mass conservation', () => {
   it('no particles escape the sealed tank over 10 s', async () => {
     const renderer = await createParticleRenderer();
     try {
@@ -51,9 +48,6 @@ describe('Phase 08 — fluid mass conservation', () => {
                 spacing * 0.5 + j * spacing,
                 -((nz * spacing) / 2) + spacing * 0.5 + k * spacing,
               ],
-              velocity: [0, 0, 0],
-              invMass: 1,
-              phase: 0,
             });
           }
         }
@@ -62,38 +56,27 @@ describe('Phase 08 — fluid mass conservation', () => {
       const particles = new ParticleSystem(renderer, count, r);
       particles.uploadParticles(initial);
 
-      const colliders = new PrimitiveSet(particles, { capacity: 5 });
+      const colliders = new PrimitiveSet(particles);
       colliders.addPlane(new Vector3(0, 1, 0), new Vector3(0, 0, 0));
       colliders.addPlane(new Vector3(1, 0, 0), new Vector3(-TANK_HALF, 0, 0));
       colliders.addPlane(new Vector3(-1, 0, 0), new Vector3(TANK_HALF, 0, 0));
       colliders.addPlane(new Vector3(0, 0, 1), new Vector3(0, 0, -TANK_HALF));
       colliders.addPlane(new Vector3(0, 0, -1), new Vector3(0, 0, TANK_HALF));
-      colliders.upload();
 
-      const hashGrid = new HashGrid(particles, { cellSize: h });
-      const xpbd = createXpbdUniforms(1 / 60);
-      const fluid = new FluidSystem({
-        particles,
-        hashGrid,
-        xpbd,
+      const fluid = new FluidSystem(particles, {
         restDensity,
-        h,
+        smoothingRadius: h,
         particleSpacing: spacing,
         compliance: 1e-4,
-        fluidParticles: { start: 0, count },
-        vorticity: { strength: 0 },
       });
 
       const loop = new SimLoop(particles, {
         substeps: 4,
         iterations: 2,
-        xpbd,
-        hashGrid,
-        colliders: { colliders },
+        gravity: new Vector3(0, -9.81, 0),
+        colliders: [colliders],
         materials: [fluid],
       });
-      loop.kernels.floorY.value = -1e9;
-      loop.gravity.set(0, -9.81, 0);
 
       // 600 frames × 1/60 s = 10 s.
       for (let n = 0; n < 600; n++) await loop.step(1 / 60);
@@ -138,7 +121,6 @@ describe('Phase 08 — fluid mass conservation', () => {
         if (thisEscaped) escaped++;
       }
 
-      // eslint-disable-next-line no-console
       console.info(
         `[mass-conservation] count=${count} nan=${nan} escaped=${escaped} outsideX=${outsideX} outsideZ=${outsideZ} below=${below} above=${above}`,
       );
@@ -146,9 +128,9 @@ describe('Phase 08 — fluid mass conservation', () => {
       expect(nan).toBe(0);
       expect(escaped).toBe(0);
 
-      particles.destroy();
-      colliders.destroy();
-      hashGrid.destroy();
+      loop.dispose();
+      colliders.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

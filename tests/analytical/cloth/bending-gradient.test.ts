@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-// Phase 18 G1 — central-difference validation of the dihedral-angle
-// bending gradients ported from Bridson 2003 §4.
+// Central-difference validation of the dihedral-angle bending gradients
+// ported from Bridson 2003 §4.
 //
 // The closed-form gradients in `bending.ts` are translated from
 // Bridson's vertex labels `(x_1=far_1, x_2=far_2, x_3=edge_a, x_4=edge_b)`
@@ -118,7 +118,7 @@ function rng(seed: number): () => number {
   };
 }
 
-describe('Phase 18 — bending gradient closed form vs central difference', () => {
+describe('cloth bending gradient: closed form vs central difference', () => {
   it('matches central difference within 1e-5 on 64 random configurations', () => {
     const rand = rng(0xb1ac1234);
     const eps = 1e-5;
@@ -161,7 +161,6 @@ describe('Phase 18 — bending gradient closed form vs central difference', () =
           const err = Math.abs(closed[k]![d]! - numeric[k]![d]!);
           if (err > maxErr) maxErr = err;
           if (err > tol) {
-            // eslint-disable-next-line no-console
             console.error(
               `[bending-gradient] trial ${trial} k=${k} d=${d}\n` +
                 `  p1=${JSON.stringify(p1)}\n  p2=${JSON.stringify(p2)}\n  p3=${JSON.stringify(p3)}\n  p4=${JSON.stringify(p4)}\n` +
@@ -172,7 +171,6 @@ describe('Phase 18 — bending gradient closed form vs central difference', () =
         }
       }
     }
-    // eslint-disable-next-line no-console
     console.info(`[bending-gradient] max |∇_closed − ∇_numeric| = ${maxErr.toExponential(2)}`);
   });
 });

@@ -1,85 +1,35 @@
 import { float, uniform } from 'three/tsl';
 import type UniformNode from 'three/src/nodes/core/UniformNode.js';
 
-// TSL's @types surface many GPGPU nodes as bare `Node`, stripping the
-// proxy-provided `.element()/.mul()/.dot()/...` methods. The loose alias
-// matches the pattern already used in `src/core/src/contact/*`.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
 /**
- * CPU-side precomputed constants for the Müller 2003 Poly6 / Spiky SPH
- * kernels used by Macklin 2013 Position Based Fluids §3.
- *
- * The coefficients scale as high powers of `h` (`h^-9` for Poly6, `h^-6`
- * for Spiky), so precomputing them CPU-side avoids a `pow()` on every
- * neighbor pair. `h` is exposed as a mutable uniform; `setH(newH)`
- * rewrites all four entries in lock-step so they cannot drift apart.
- *
- *
-
+ * SPH smoothing kernels from Müller et al. 2003, as used by Position Based
+ * Fluids (Macklin & Müller 2013, §3). The `h`-dependent coefficients are
+ * computed once on the CPU.
  */
 export interface SphKernelUniforms {
-  /** Smoothing length `h` in metres. */
+  /** Smoothing radius. */
   readonly h: UniformNode<'float', number>;
-  /** `h²`, precomputed for Poly6's `(h² − r²)³` form. */
   readonly hSq: UniformNode<'float', number>;
-  /** Poly6 normalization `315 / (64·π·h⁹)`. */
   readonly poly6Coef: UniformNode<'float', number>;
-  /** Spiky-gradient magnitude coefficient `45 / (π·h⁶)`; sign applied in-kernel. */
   readonly spikyCoef: UniformNode<'float', number>;
-  /**
-   * Rewrite `h` and every derived coefficient in lock-step. The four
-   * uniforms MUST move together — independent mutation of any one produces
-   * SPH integrals that no longer correspond to a single kernel.
-   */
-  readonly setH: (newH: number) => void;
 }
 
-function poly6CoefFor(h: number): number {
-  return 315 / (64 * Math.PI * Math.pow(h, 9));
-}
-
-function spikyCoefFor(h: number): number {
-  return 45 / (Math.PI * Math.pow(h, 6));
-}
-
+/** Uniforms for the Poly6 and Spiky kernels (Müller et al. 2003) with smoothing radius `h`. */
 export function createSphKernelUniforms(h: number): SphKernelUniforms {
   if (!Number.isFinite(h) || h <= 0) {
-    throw new Error(`createSphKernelUniforms: h must be a positive finite number, got ${h}`);
+    throw new Error(`createSphKernelUniforms: h must be positive, got ${h}`);
   }
-  const hU = uniform(h, 'float');
-  const hSqU = uniform(h * h, 'float');
-  const poly6U = uniform(poly6CoefFor(h), 'float');
-  const spikyU = uniform(spikyCoefFor(h), 'float');
   return {
-    h: hU,
-    hSq: hSqU,
-    poly6Coef: poly6U,
-    spikyCoef: spikyU,
-    setH(newH: number): void {
-      if (!Number.isFinite(newH) || newH <= 0) {
-        throw new Error(`SphKernelUniforms.setH: h must be a positive finite number, got ${newH}`);
-      }
-      (hU as Any).value = newH;
-      (hSqU as Any).value = newH * newH;
-      (poly6U as Any).value = poly6CoefFor(newH);
-      (spikyU as Any).value = spikyCoefFor(newH);
-    },
+    h: uniform(h, 'float'),
+    hSq: uniform(h * h, 'float'),
+    poly6Coef: uniform(315 / (64 * Math.PI * h ** 9), 'float'),
+    spikyCoef: uniform(45 / (Math.PI * h ** 6), 'float'),
   };
 }
 
-/**
- * Emit Poly6 `W(|r|, h) = poly6Coef · (h² − |r|²)³` as a scalar TSL node.
- *
- * Returns 0 for `|r| ≥ h` (the `max(·, 0)` clamp on `(h² − r²)`). Direction-
- * independent — only `|r|²` matters. Takes `r_vec` for caller convenience;
- * if the caller already has `rSq` from a proximity filter, prefer
- * {@link emitPoly6FromRSq} to skip the redundant dot product.
- *
- * Paper: Müller 2003 Poly6; cited by Macklin 2013 §3 as the density
- * estimator. See the {@link SphKernelUniforms} module docstring.
- */
 export function emitPoly6(r_vec: Any, u: SphKernelUniforms): Any {
   const rSq: Any = r_vec.dot(r_vec);
   return emitPoly6FromRSq(rSq, u);
@@ -112,7 +62,6 @@ export function emitPoly6FromRSq(rSq: Any, u: SphKernelUniforms): Any {
  * with the gradient at `r = 0` being a point of ambiguity in the kernel
  * itself). The `rSafe = max(r, 1e-20)` guard prevents NaN at true-zero
  * separation.
- *
  */
 export function emitSpikyGrad(r_vec: Any, u: SphKernelUniforms): Any {
   const rSq: Any = r_vec.dot(r_vec).toVar();

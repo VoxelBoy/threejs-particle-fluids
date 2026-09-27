@@ -1,119 +1,63 @@
-// Phase Perf — Runner self-test (Guardrail 1).
-//
-// Synthetic two-kernel scene that exercises the harness's own correctness:
-// each registered kernel becomes a separate JSON entry with non-zero p50
-// and the statistics fields are populated.
-//
-// Picks deliberately distinct workloads so the two kernels report
-// distinguishable p50 (heavier kernel slower) — that protects against
-// accidental swaps in the harness.
+// Checks that the runner times whole frames: every measured frame yields one
+// sample, the statistics are ordered, and a frame with 16× the GPU work
+// reports clearly more GPU time than a light one (which would catch swapped
+// or stale timestamp reads).
 
-import { Fn, float, instanceIndex, instancedArray } from 'three/tsl';
 import { describe, expect, it } from 'vitest';
 
 import { PerfRenderer } from './PerfRenderer.js';
-import { PerfRunner, type PerfSceneSpec } from './PerfRunner.js';
+import { PerfRunner, type PerfStats } from './PerfRunner.js';
+import { saxpyScene } from './synthetic.js';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Any = any;
+const COUNT = 1 << 20;
+const WINDOW = { warmup: 5, measure: 20 };
 
-function buildSyntheticScene(perf: PerfRenderer): PerfSceneSpec {
-  const N = 1 << 18; // 256k elements
-  const a = 2.5;
-
-  const xNode = instancedArray(N, 'float');
-  const yNode = instancedArray(N, 'float');
-
-  const xArr = xNode.value.array as Float32Array;
-  const yArr = yNode.value.array as Float32Array;
-  for (let i = 0; i < N; i++) {
-    xArr[i] = Math.sin(i * 1e-3);
-    yArr[i] = Math.cos(i * 1e-3);
-  }
-
-  // Saxpy: y = a*x + y. Light per-element work.
-  const saxpy = Fn(() => {
-    const i = instanceIndex;
-    const x = (xNode as Any).element(i);
-    const y = (yNode as Any).element(i);
-    y.assign(x.mul(float(a)).add(y));
-  })().compute(N);
-
-  // Heavier kernel — strictly more work than saxpy so durations differ.
-  const heavy = Fn(() => {
-    const i = instanceIndex;
-    const x = (xNode as Any).element(i);
-    const y = (yNode as Any).element(i);
-    const r = x.mul(x).add(y.mul(y)).add(float(1.0)).sqrt().add(x.sin()).add(y.cos());
-    y.assign(r);
-  })().compute(N);
-
-  return {
-    id: 'self-test-synthetic',
-    particleCount: N,
-    substeps: 1,
-    iterations: 1,
-    stepFrame: async () => {
-      // Advance state by running saxpy once per "frame" — same role as
-      // `simLoop.step` in real scenes. Drains the timestamp pool so the
-      // per-kernel isolation that follows starts from a clean slate.
-      await perf.stepChain([saxpy]);
-    },
-    kernels: [
-      { name: 'self-test.saxpy', kernel: saxpy, dispatchesPerFrame: 1 },
-      { name: 'self-test.heavy', kernel: heavy, dispatchesPerFrame: 1 },
-    ],
-  };
+function expectOrdered(stats: PerfStats): void {
+  expect(stats.min).toBeGreaterThan(0);
+  expect(stats.min).toBeLessThanOrEqual(stats.p10);
+  expect(stats.p10).toBeLessThanOrEqual(stats.p50);
+  expect(stats.p50).toBeLessThanOrEqual(stats.p90);
+  expect(stats.p90).toBeLessThanOrEqual(stats.max);
 }
 
-describe('Phase Perf — runner self-test', () => {
-  it('measures two synthetic kernels as separate entries with non-zero p50', async () => {
+describe('PerfRunner', () => {
+  it('reports one sample per measured frame and separates light from heavy frames', async () => {
     const perf = await PerfRenderer.create();
     try {
       const runner = new PerfRunner(perf);
-      const scene = buildSyntheticScene(perf);
-      const result = await runner.runScene(scene, {
-        warmup: 5,
-        measure: 20,
-      });
-
-      expect(result.id).toBe('self-test-synthetic');
-      expect(result.kernels).toHaveLength(2);
-
-      const saxpy = result.kernels.find((k) => k.name === 'self-test.saxpy');
-      const heavy = result.kernels.find((k) => k.name === 'self-test.heavy');
-      expect(saxpy).toBeDefined();
-      expect(heavy).toBeDefined();
-
-      // Both kernels must report non-zero p50 (Outcome A) or non-zero
-      // wall-clock (gross-only fallback). Either way > 0.
-      expect(saxpy!.p50Ms).toBeGreaterThan(0);
-      expect(heavy!.p50Ms).toBeGreaterThan(0);
-
-      // Sample counts: measure × dispatchesPerFrame = 20 × 1 = 20.
-      expect(saxpy!.samples).toBe(20);
-      expect(heavy!.samples).toBe(20);
-
-      // Frame total > 0.
-      expect(result.frameTotalMs.p50).toBeGreaterThan(0);
-
-      // Distinguishability: heavier kernel should report at least as
-      // much p50 as saxpy. Allow 50% slack for noise, but flag a hard
-      // crossover (heavy < 0.5 × saxpy means the two were swapped).
-      expect(heavy!.p50Ms).toBeGreaterThan(saxpy!.p50Ms * 0.5);
-
-      // eslint-disable-next-line no-console
-      console.log(
-        '[self-test] timing method=' +
-          perf.timingMethod +
-          ' saxpy.p50=' +
-          saxpy!.p50Ms.toFixed(4) +
-          'ms heavy.p50=' +
-          heavy!.p50Ms.toFixed(4) +
-          'ms frame.p50=' +
-          result.frameTotalMs.p50.toFixed(2) +
-          'ms',
+      const light = await runner.runScene(
+        saxpyScene(perf, { id: 'light', count: COUNT, dispatches: 1 }),
+        WINDOW,
       );
+      const heavy = await runner.runScene(
+        saxpyScene(perf, { id: 'heavy', count: COUNT, dispatches: 16 }),
+        WINDOW,
+      );
+
+      for (const result of [light, heavy]) {
+        expect(result.framesWarmup).toBe(WINDOW.warmup);
+        expect(result.framesMeasure).toBe(WINDOW.measure);
+        expect(result.stepFrameMs.samples).toBe(WINDOW.measure);
+        expectOrdered(result.stepFrameMs);
+        expect(result.contactCount).toBeUndefined();
+      }
+
+      console.log(
+        `[self-test] timing=${perf.timingMethod} ` +
+          `light GPU p50=${light.gpuFrameMs?.p50.toFixed(4)} ms, ` +
+          `heavy GPU p50=${heavy.gpuFrameMs?.p50.toFixed(4)} ms, ` +
+          `light wall p50=${light.stepFrameMs.p50.toFixed(3)} ms`,
+      );
+
+      if (perf.timingMethod === 'timestamp') {
+        expect(light.gpuFrameMs?.samples).toBe(WINDOW.measure);
+        expect(heavy.gpuFrameMs?.samples).toBe(WINDOW.measure);
+        expectOrdered(light.gpuFrameMs!);
+        expectOrdered(heavy.gpuFrameMs!);
+        expect(heavy.gpuFrameMs!.p50).toBeGreaterThan(4 * light.gpuFrameMs!.p50);
+      } else {
+        expect(light.gpuFrameMs).toBeUndefined();
+      }
     } finally {
       perf.dispose();
     }

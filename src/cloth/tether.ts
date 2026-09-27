@@ -1,86 +1,37 @@
-import { Fn, If, Return, float, instanceIndex, instancedArray, uint, vec4 } from 'three/tsl';
+import type UniformNode from 'three/src/nodes/core/UniformNode.js';
+import { Fn, If, Return, float, instanceIndex, instancedArray, vec4 } from 'three/tsl';
 
 import {
-  NO_CONSTRAINT,
+  buildConstraintGroups,
   colorConstraints,
   xpbdDeltaLambda,
-  type ConstraintGroup,
   type ConstraintType,
   type ParticleSystem,
-  type XpbdUniforms,
 } from '../core/index.js';
 
 import type { TetherConstraint } from './tetherBuild.js';
 
-// TSL's @types surface many nodes as bare `Node`, dropping proxy methods.
-// Same loose-alias pattern as `distance.ts` and `bending.ts`.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
 /**
- * Cloth tether (Long-Range-Attachment) constraint factory — Kim,
- * Chentanez, Müller-Fischer 2012 §3.1.
+ * Long-range attachment (LRA) tethers (Kim et al. 2012 §3.1): each free
+ * particle `x_i` is kept within `r_i` of a pinned anchor `a`.
  *
- * **Constraint form (paper §3.1).** Per LRA between free particle
- * `p_i` and a fixed attachment point `a`:
+ *   `C(x_i) = |x_i − a| − r_i`,  active only when `C > 0`
+ *   `∇C = n = (x_i − a) / |x_i − a|`
  *
- *   `C(x_i) = |x_i - a| - r_i`     (active when `C > 0`, else inactive)
- *   `∇_i C = n = (x_i - a) / |x_i - a|`,   `|∇_i C|² = 1`
+ * The tether is unilateral: it stops the cloth over-stretching but never
+ * pulls inward, so buckling and wrinkles are left to the distance and
+ * bending constraints. When inactive, `λ` is reset to zero so a soft
+ * tether does not carry a stale multiplier into the next iteration.
+ * Compliance `0` (the default) projects straight onto the sphere, Kim's
+ * infinitely stiff tether.
  *
- * Unilateral semantics: the constraint forbids the particle from
- * leaving the sphere of radius `r_i` centered at `a`, but allows
- * free movement inside. The kernel returns early when `C ≤ 0` so
- * the constraint imposes no force during compression / buckling
- * — local distance + bending constraints (Phase 18) handle wrinkle
- * formation. Paper §3.1: "LRA constraints are unilateral - they
- * get activated only when cloth is stretched, and do not influence
- * the buckling behavior".
- *
- * **XPBD update (Macklin 2016).** When `C > 0`:
- *
- *   `α̃ = α / Δt²`,  `Δλ = (-C - α̃·λ) / (w + α̃)`,  `Δx_i = w · n · Δλ`
- *
- * `tetherCompliance = α = 0` (the default) reduces this to plain
- * PBD: `Δx_i = -C · n` projects `x_i` onto the constraint sphere
- * exactly — matching Kim 2012's implicit "infinite stiffness"
- * behaviour described in their abstract.
- *
- * **λ behaviour during inactive periods.** When `C ≤ 0` the kernel
- * resets `λ ← 0` before returning. For soft tethers (α > 0) this
- * matches the unilateral semantics: a satisfied tether must not
- * pull the particle inward via the historical-λ memory term. For
- * the strict default (α = 0) the reset is a no-op since `α̃·λ`
- * vanishes from `Δλ` anyway.
- *
- * **Multi-island averaging deviation from paper §3.4 (Assumed).**
- * Kim 2012 §3.4 specifies Jacobi-style averaging across the up-to-N
- * LRAs assigned to one free particle. We instead use graph-coloring
- * + Gauss-Seidel-across-colors via the standard
- * `ConstraintType` scaffolding — when a particle has K LRAs to K
- * different islands, the K constraints land in K distinct color
- * groups and are projected sequentially within an iter. For the
- * single-island scenes Phase 19's validation gates exercise (32×32
- * sheet pinned along one edge — N degenerates to 1 per particle),
- * the two are identical. For multi-island scenes (paper Fig. 7
- * dress pinned at shoulder + waist) the GS-across-colors path is
- * biased toward the last-processed island. Documented as a Phase 19
- * post-MVP item; would require a Jacobi-via-i32-scatter pipeline
- * (the per-(particle, LRA) average can't be expressed in the
- * graph-colored gather pattern without atomics).
- *
- * **Solve mode.** Gather + leader-write λ scatter, arity = 1. The
- * inverted index `particleToConstraint` maps the free particle's
- * slot directly to `c` and every other slot to `NO_CONSTRAINT`, so
- * the kernel dispatches over `particles.capacity` and returns
- * immediately on every non-participating thread. Same conflict-
- * free-write pattern as the Phase 18 distance / bending kernels;
- * graph coloring guarantees no two constraints in a color share
- * the free particle.
- *
- * **Pinned vertices** — never reach this kernel. `buildTethers`
- * filters them out at the build stage (no LRA is emitted for a
- * pinned particle), and the scatter-side per-particle inverted
- * index leaves their slot as `NO_CONSTRAINT`.
+ * A particle tethered to several pinned regions gets one tether per
+ * region, in different colors, solved one after another rather than
+ * averaged as in Kim §3.4. With a single pinned region the two agree.
+ * Pinned particles get no tether at all (`buildTethers` skips them).
  */
 export function createClothTetherConstraints(args: {
   readonly particles: ParticleSystem;
@@ -98,9 +49,9 @@ export function createClothTetherConstraints(args: {
    * "soft" tether that allows some over-stretch under load.
    */
   readonly compliance: number;
-  readonly xpbd: XpbdUniforms;
+  readonly dt: UniformNode<'float', number>;
 }): ConstraintType {
-  const { particles, particleOffset, tethers, compliance, xpbd } = args;
+  const { particles, particleOffset, tethers, compliance, dt } = args;
 
   if (!Number.isInteger(particleOffset) || particleOffset < 0) {
     throw new Error(
@@ -114,7 +65,7 @@ export function createClothTetherConstraints(args: {
   }
 
   const nConstraints = tethers.length;
-  const arity = 1;
+  if (nConstraints === 0) throw new Error('createClothTetherConstraints: tethers is empty');
 
   for (const t of tethers) {
     const abs = particleOffset + t.particle;
@@ -137,137 +88,71 @@ export function createClothTetherConstraints(args: {
     }
   }
 
-  // ---- Per-constraint SoA storage ----
-  const particleIndices = instancedArray(Math.max(1, nConstraints * arity), 'uint');
-  const anchorBuf = instancedArray(Math.max(1, nConstraints), 'vec4');
-  const complianceBuf = instancedArray(Math.max(1, nConstraints), 'float');
-  const restBuf = instancedArray(Math.max(1, nConstraints), 'float');
-  const lambda = instancedArray(Math.max(1, nConstraints), 'float');
+  const indices = Uint32Array.from(tethers, (t) => particleOffset + t.particle);
+  const particleIndices = instancedArray(indices, 'uint');
+  const anchorBuf = instancedArray(
+    Float32Array.from(tethers.flatMap((t) => [...t.anchor, 0])),
+    'vec4',
+  );
+  const complianceBuf = instancedArray(nConstraints, 'float');
+  const restBuf = instancedArray(
+    Float32Array.from(tethers, (t) => t.restRadius),
+    'float',
+  );
+  const lambda = instancedArray(nConstraints, 'float');
+  (complianceBuf.value.array as Float32Array).fill(compliance);
 
-  if (nConstraints > 0) {
-    const idxArr = particleIndices.value.array as Uint32Array;
-    const anchorArr = anchorBuf.value.array as Float32Array;
-    const compArr = complianceBuf.value.array as Float32Array;
-    const restArr = restBuf.value.array as Float32Array;
-    for (let c = 0; c < nConstraints; c++) {
-      const t = tethers[c]!;
-      idxArr[c] = particleOffset + t.particle;
-      anchorArr[c * 4 + 0] = t.anchor[0];
-      anchorArr[c * 4 + 1] = t.anchor[1];
-      anchorArr[c * 4 + 2] = t.anchor[2];
-      anchorArr[c * 4 + 3] = 0;
-      compArr[c] = compliance;
-      restArr[c] = t.restRadius;
-    }
-    particleIndices.value.needsUpdate = true;
-    anchorBuf.value.needsUpdate = true;
-    complianceBuf.value.needsUpdate = true;
-    restBuf.value.needsUpdate = true;
-  }
+  // Two tethers conflict only when they share a free particle, so a particle
+  // with K tethers spreads them over K colors.
+  const coloring = colorConstraints({ arity: 1, nConstraints, participantsPerConstraint: indices });
+  const groups = buildConstraintGroups(coloring, (c: Any) => {
+    const idx: Any = particleIndices.element(c).toVar();
+    const x: Any = particles.predictedPositions.element(idx).xyz.toVar();
+    const w: Any = particles.invMass.element(idx).toVar();
+    If(w.lessThanEqual(float(0.0)), () => {
+      Return();
+    });
 
-  // ---- Graph coloring ----
-  // For arity-1 LRAs, two constraints conflict iff they share the
-  // same free particle (i.e. the particle has multiple LRAs to
-  // different islands). The greedy pass produces one color per
-  // multiplicity level: a particle with K LRAs gets K colors.
-  const flat = new Uint32Array(nConstraints * arity);
-  for (let c = 0; c < nConstraints; c++) {
-    flat[c] = particleOffset + tethers[c]!.particle;
-  }
-  const { groupOf, numGroups } = colorConstraints({
-    arity,
-    nConstraints,
-    participantsPerConstraint: flat,
+    const a: Any = anchorBuf.element(c).xyz.toVar();
+    const alpha: Any = complianceBuf.element(c).toVar();
+    const rest: Any = restBuf.element(c).toVar();
+    const lamCurrent: Any = lambda.element(c).toVar();
+
+    const diff: Any = x.sub(a).toVar();
+    const len: Any = diff.length().toVar();
+
+    // Inside the sphere the tether is slack.
+    If(len.lessThanEqual(rest), () => {
+      lambda.element(c).assign(float(0.0));
+      Return();
+    });
+    // Degenerate (`x ≡ a`) — gradient undefined. Leave λ as-is.
+    If(len.lessThan(float(1e-12)), () => {
+      Return();
+    });
+
+    const C: Any = len.sub(rest);
+    const n: Any = diff.div(len).toVar();
+
+    const dtVal: Any = dt;
+    const alphaTilde: Any = alpha.div(dtVal.mul(dtVal));
+    const dLambda: Any = xpbdDeltaLambda({
+      C,
+      sumGradSqInvMass: w,
+      alphaTilde,
+      lambdaCurrent: lamCurrent,
+    }).toVar();
+
+    // ∇_i C = n  ⇒  Δx_i = w · n · Δλ
+    const dx: Any = n.mul(w.mul(dLambda));
+    const newX: Any = x.add(dx);
+    particles.predictedPositions.element(idx).assign(vec4(newX, float(0.0)));
+    lambda.element(c).assign(lamCurrent.add(dLambda));
   });
 
-  // ---- Per-group inverted index + solve kernel ----
-  const groups: ConstraintGroup[] = [];
-  for (let g = 0; g < numGroups; g++) {
-    const particleToConstraint = instancedArray(particles.capacity, 'uint');
-    const invArr = particleToConstraint.value.array as Uint32Array;
-    invArr.fill(NO_CONSTRAINT);
-    for (let c = 0; c < nConstraints; c++) {
-      if (groupOf[c] !== g) continue;
-      invArr[particleOffset + tethers[c]!.particle] = c;
-    }
-    particleToConstraint.value.needsUpdate = true;
-
-    const solveKernel = Fn(() => {
-      const p: Any = instanceIndex;
-      const c: Any = particleToConstraint.element(p).toVar();
-      If(c.equal(uint(NO_CONSTRAINT)), () => {
-        Return();
-      });
-
-      const idx: Any = particleIndices.element(c).toVar();
-      const x: Any = particles.predictedPositions.element(idx).xyz.toVar();
-      const w: Any = particles.invMass.element(idx).toVar();
-      If(w.lessThanEqual(float(0.0)), () => {
-        Return();
-      });
-
-      const a: Any = anchorBuf.element(c).xyz.toVar();
-      const alpha: Any = complianceBuf.element(c).toVar();
-      const rest: Any = restBuf.element(c).toVar();
-      const lamCurrent: Any = lambda.element(c).toVar();
-
-      const diff: Any = x.sub(a).toVar();
-      const len: Any = diff.length().toVar();
-
-      // Unilateral check (Kim 2012 §3.1): no projection when |x − a| ≤ r.
-      // Reset λ ← 0 so a soft tether (α > 0) doesn't carry stale
-      // historical multiplier into the next iter where the constraint
-      // might re-activate; for the α = 0 default the reset is a no-op
-      // since α̃·λ vanishes from Δλ regardless.
-      If(len.lessThanEqual(rest), () => {
-        lambda.element(c).assign(float(0.0));
-        Return();
-      });
-      // Degenerate (`x ≡ a`) — gradient undefined. Leave λ as-is.
-      If(len.lessThan(float(1e-12)), () => {
-        Return();
-      });
-
-      const C: Any = len.sub(rest);
-      const n: Any = diff.div(len).toVar();
-
-      const dtVal: Any = xpbd.dt;
-      const alphaTilde: Any = alpha.div(dtVal.mul(dtVal));
-      const dLambda: Any = xpbdDeltaLambda({
-        C,
-        sumGradSqInvMass: w,
-        alphaTilde,
-        lambdaCurrent: lamCurrent,
-      }).toVar();
-
-      // ∇_i C = n  ⇒  Δx_i = w · n · Δλ
-      const dx: Any = n.mul(w.mul(dLambda));
-      const newX: Any = x.add(dx);
-      particles.predictedPositions.element(idx).assign(vec4(newX, float(0.0)));
-      lambda.element(c).assign(lamCurrent.add(dLambda));
-    })().compute(particles.capacity);
-
-    groups.push({ particleToConstraint, solveKernel });
-  }
-
-  // ---- λ reset (Macklin 2016 Algorithm 1 line 4) ----
-  // Dispatch over at least one slot — `instancedArray` would refuse
-  // a 0-length compute. When `nConstraints === 0` the kernel runs
-  // over the placeholder slot, which is harmless (writes 0 to
-  // unused slot 0 of `lambda`).
   const resetLambdaKernel = Fn(() => {
-    const c: Any = instanceIndex;
-    lambda.element(c).assign(float(0.0));
-  })().compute(Math.max(1, nConstraints));
+    lambda.element(instanceIndex).assign(0);
+  })().compute(nConstraints);
 
-  return {
-    arity,
-    nConstraints,
-    particleIndices,
-    compliance: complianceBuf,
-    restValue: restBuf,
-    lambda,
-    groups,
-    resetLambdaKernel,
-  };
+  return { count: nConstraints, compliance: complianceBuf, lambda, groups, resetLambdaKernel };
 }

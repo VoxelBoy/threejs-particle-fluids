@@ -2,21 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { BufferGeometry, Float32BufferAttribute, Uint32BufferAttribute, Vector3 } from 'three';
 
 import {
+  ClothSystem,
   ParticleSystem,
   SimLoop,
+  createClothGraph,
   createParticleRenderer,
-  createXpbdUniforms,
-  type ParticleInit,
-} from '../../../src/core/index.js';
-import { ClothSystem, fromBufferGeometry } from '../../../src/cloth/index.js';
+} from '../../../src/index.js';
 
-// Phase 19 G1 #2 — terminal wind deflection (Keckeisen 2004 §3).
+// Terminal wind deflection (Keckeisen et al. 2004 §3).
 //
-// Plan §"Validation/Automatic G1": "32×32 sheet hanging, uniform wind
-// along +x. At steady state, the deflection angle of the sheet
-// matches an analytic estimate within 10% (rough — the analytic
-// estimate is itself approximate; this is a sanity gate, not a
-// precision one)."
+// A sheet hangs in a uniform wind perpendicular to it. At steady state,
+// the deflection angle of the sheet matches an analytic estimate within
+// 10% (rough — the analytic estimate is itself approximate; this is a
+// sanity check, not a precision one).
 //
 // **Analytic estimate** — pendulum-equilibrium of the cloth's
 // center of mass under gravity + Keckeisen drag + lift on a face
@@ -32,14 +30,13 @@ import { ClothSystem, fromBufferGeometry } from '../../../src/cloth/index.js';
 // vertical. Both drag (pushes in +wind direction) and lift (in our
 // (n̄,v̂_rel)-plane convention, pulls cloth more vertical-aligned)
 // act on the cloth's face, scaled by the face's exposure to the
-// flow. See block-comment derivation in the test source for the
-// full step-through.
+// flow.
 //
 // **Why the cloth doesn't rigid-rotate to that angle.** The cloth
 // catenary-bows under gravity; the analytic compares to the
 // pivot→COM angle (the closest single-angle proxy for a deformable
-// hinged cloth). At MVP wind speeds the bow-vs-rigid distinction is
-// a few degrees — well inside the plan's 10 % sanity gate.
+// hinged cloth). At these wind speeds the bow-vs-rigid distinction is
+// a few degrees — well inside the 10 % sanity check.
 //
 // Mesh size M=16 (a 16×16 sheet); the wind-equilibrium property is
 // mesh-size-independent. Iterations bumped to I=4 to converge the
@@ -148,46 +145,28 @@ async function runWindScene(args: {
   const renderer = await createParticleRenderer();
   try {
     const { geometry, pinnedIndices, topRowIndices } = buildHangingSheet(args.M);
-    const graph = fromBufferGeometry(geometry, {
+    const graph = createClothGraph(geometry, {
       surfaceDensity: args.surfaceDensity,
       pinnedIndices,
     });
 
-    const initial: ParticleInit[] = [];
-    for (let i = 0; i < graph.positions.length; i++) {
-      const p = graph.positions[i]!;
-      initial.push({
-        position: [p[0], p[1], p[2]],
-        velocity: [0, 0, 0],
-        invMass: graph.invMass[i]!,
-        phase: 1,
-      });
-    }
     const particles = new ParticleSystem(renderer, graph.positions.length, 0.05);
-    particles.uploadParticles(initial);
-
-    const xpbd = createXpbdUniforms(1 / 60);
-    const cloth = new ClothSystem({
-      particles,
-      xpbd,
+    const cloth = new ClothSystem(particles, {
       graph,
-      particleOffset: 0,
       stretchCompliance: 1e-7,
       bendCompliance: 1.0,
       tetherCompliance: 0,
-      dragCoeff: args.dragCoeff,
-      liftCoeff: args.liftCoeff,
+      drag: args.dragCoeff,
+      lift: args.liftCoeff,
       wind: new Vector3(0, 0, args.windSpeed),
     });
 
     const loop = new SimLoop(particles, {
       substeps: args.substeps,
       iterations: args.iterations,
-      xpbd,
+      gravity: new Vector3(0, -args.gravityMag, 0),
       materials: [cloth],
     });
-    loop.kernels.floorY.value = -1e9;
-    loop.gravity.set(0, -args.gravityMag, 0);
 
     const frameDt = 1 / 60;
     // Velocity damping speeds settling. Doesn't change the wind
@@ -248,7 +227,8 @@ async function runWindScene(args: {
     // atan2(z, |y|).
     const measuredAngle = Math.atan2(offsetZ, Math.abs(offsetY));
 
-    particles.destroy();
+    loop.dispose();
+    particles.dispose();
     return {
       measuredAngle,
       nanFree,
@@ -259,7 +239,7 @@ async function runWindScene(args: {
   }
 }
 
-describe('Phase 19 G1 #2 — terminal wind deflection (Keckeisen 2004)', () => {
+describe('cloth terminal wind deflection (Keckeisen et al. 2004)', () => {
   it('16×16 sheet hanging in uniform wind reaches deflection within 10% of analytic', async () => {
     const M = 16;
     const surfaceDensity = 0.2;
@@ -289,16 +269,15 @@ describe('Phase 19 G1 #2 — terminal wind deflection (Keckeisen 2004)', () => {
     const analyticDeg = (analytic * 180) / Math.PI;
     const measuredDeg = (result.measuredAngle * 180) / Math.PI;
     const relErr = Math.abs(measuredDeg - analyticDeg) / Math.max(analyticDeg, 1e-6);
-    // eslint-disable-next-line no-console
     console.info(
       `[wind-deflection] M=${M} v=${windSpeed} m/s → measured=${measuredDeg.toFixed(2)}°, analytic=${analyticDeg.toFixed(2)}°, relErr=${(relErr * 100).toFixed(2)}%, comOffset=(y=${result.comOffset.y.toFixed(3)}, z=${result.comOffset.z.toFixed(3)})`,
     );
 
     expect(result.nanFree).toBe(true);
-    // Plan: within 10 %. The analytic is itself approximate
-    // (treats cloth as rigid pendulum); 10 % gates that the
-    // cloth physically deflects in the wind direction by the
-    // right order of magnitude.
+    // Within 10 %. The analytic is itself approximate (it treats
+    // the cloth as a rigid pendulum); 10 % checks that the cloth
+    // physically deflects in the wind direction by the right order
+    // of magnitude.
     expect(relErr).toBeLessThan(0.1);
     // Sanity: cloth deflected in the +z direction (wind direction).
     expect(result.comOffset.z).toBeGreaterThan(0.01);

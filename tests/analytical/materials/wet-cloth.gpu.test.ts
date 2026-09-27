@@ -1,56 +1,53 @@
 import { describe, expect, it } from 'vitest';
 import { BufferGeometry, Float32BufferAttribute, Uint32BufferAttribute, Vector3 } from 'three';
 import {
-  HashGrid,
+  ClothSystem,
+  FluidSystem,
   ParticleSystem,
   PrimitiveSet,
   SimLoop,
+  createClothGraph,
   createParticleRenderer,
-  createXpbdUniforms,
   type ParticleInit,
-} from '../../../src/core/index.js';
-import { FluidSystem } from '../../../src/fluids/index.js';
-import { ClothSystem, fromBufferGeometry } from '../../../src/cloth/index.js';
+} from '../../../src/index.js';
 
 /*
- * Phase 20 — wet-cloth unified-architecture proof (G1 / blocking).
+ * Fluid and cloth coupled in one simulation.
  *
- * Re-runs the Phase 17 unified-proof structure on the fluid ↔ cloth axis.
  * One scene, one `ParticleSystem`, one `SimLoop`, two materials —
- * `[fluid, cloth]`. Coupling flows through the same Akinci 2012 §2 + §2.2
- * boundary-particle pipeline Phase 17 used for softbody + rigid surface
- * particles; Phase 20 invokes it on a cloth-vertex range.
+ * `[fluid, cloth]`. Coupling goes through the same boundary-particle
+ * pipeline (Akinci 2012 §2, §2.2) soft bodies use: the cloth's particle
+ * range is registered as a dynamic fluid boundary.
  *
- * Three blocking gates in one run:
+ * Checks, in one run:
  *
- *   (1) Fluid ↔ cloth non-penetration. < 0.5 % of fluid particles end
- *       up within `r` of any cloth particle (the contact pipeline gate
- *       fires at 2·r — anything below `r` has crossed the cloth's
- *       contact surface).
+ *   (1) Fluid ↔ cloth non-penetration. < 0.5 % of fluid particles end up
+ *       within `r` of any cloth particle (contacts act at 2·r, so anything
+ *       below `r` has crossed the cloth's contact surface).
  *
- *   (2) Mass conservation. Every position is finite (no NaN from
- *       boundary-volume blow-up, density divergence at the cloth
- *       boundary, or constraint solve singular A_pq).
+ *   (2) Mass conservation. Every position is finite (no NaN from a
+ *       boundary-volume blow-up, density divergence at the cloth boundary,
+ *       or a constraint solve going singular).
  *
+ *   (3) The pinned corners stay where they were pinned.
  *
- * Scene is smaller than the demo for test budget. Scene shape:
+ * The scene is smaller than the demo's, for the test budget:
  *
- *   - Tank: half-extent 0.18 m, water level 0.12 m, FLOOR_Y = 0. Fluid
+ *   - Tank: half-extent 0.18 m, water level 0.12 m, floor at y = 0. Fluid
  *     packed at 2·r spacing inside the tank below the water line —
- *     ~5×5×4 ≈ 100 fluid particles at r = 0.025.
- *   - Cloth: 8×8 quads (81 vertices), 0.20 × 0.20 m, pinned at the
- *     two TOP CORNERS (Phase 19's `cloth-curtain` topology — multi-
- *     island Kim 2012 §3.4 LRA assignment). Pin row at
- *     y = waterLevel + 0.20 m so the bottom half of the curtain
- *     submerges into the pool over the simulation time.
+ *     6×6×2 = 72 fluid particles at r = 0.025.
+ *   - Cloth: 8×8 quads (81 vertices), 0.20 × 0.20 m, pinned at the two TOP
+ *     CORNERS (a curtain; each corner anchors its own long-range
+ *     attachments, Kim 2012 §3.4). The pin row is 0.20 m above the water,
+ *     so the bottom half of the curtain submerges into the pool over the
+ *     run.
  *   - Materials: `[fluid, cloth]`, S = 4, I = 2, dt = 1/60 s.
- *   - One boundary registration: the entire cloth particle range,
- *     `{dynamic: true}` (paper §2.2 — moving / deforming boundaries).
+ *   - One boundary registration: the entire cloth range, dynamic (moving,
+ *     deforming boundary, Akinci 2012 §2.2).
  *
- * Run for 3 s (180 frames). 3 s is enough for the curtain to settle
- * onto the water and (at the 25-invMass cloth-mass default) start
- * sinking the lower edge. The fluid must not teleport through the
- * cloth even as the cloth deforms substantially.
+ * Run for 3 s (180 frames): enough for the curtain to settle onto the water
+ * and, at the explicit cloth mass used here, start sinking its lower edge.
+ * The fluid must not pass through the cloth even as the cloth deforms.
  */
 
 interface ClothMeshGeom {
@@ -103,7 +100,7 @@ function buildCurtainGeom(args: {
   return { geometry: geom, pinnedIndices, nParticles: nx * ny, nx, ny };
 }
 
-describe('Phase 20 — wet-cloth unified-architecture proof (G1)', () => {
+describe('materials: fluid and cloth in one simulation', () => {
   it('fluid + cloth couple via core only — non-penetration + mass conservation', async () => {
     const renderer = await createParticleRenderer();
     try {
@@ -128,10 +125,10 @@ describe('Phase 20 — wet-cloth unified-architecture proof (G1)', () => {
       }
       const fluidCount = fluidPositions.length;
 
-      // ---- Cloth: 8×8 curtain pinned at two top corners.
-      //      Pin row 0.20 m above water; cloth length 0.20 m so the
-      //      bottom edge lands at the water line at rest, and starts
-      //      submerging within the first second. ----
+      // ---- Cloth: 8×8 curtain pinned at its two top corners. The pin row
+      //      is 0.20 m above the water and the cloth is 0.20 m long, so its
+      //      bottom edge starts at the water line and submerges within the
+      //      first second. ----
       const clothWidth = 0.2;
       const clothHeight = 0.2;
       const widthSegments = 8;
@@ -149,77 +146,57 @@ describe('Phase 20 — wet-cloth unified-architecture proof (G1)', () => {
         heightSegments,
         originY: pinRowY,
       });
-      const graph = fromBufferGeometry(geometry, {
+      const graph = createClothGraph(geometry, {
         surfaceDensity: 0.2,
         pinnedIndices,
       });
 
       const totalCount = fluidCount + clothCount;
-      const initial: ParticleInit[] = new Array(totalCount);
 
-      const phaseFor = (id: number): number => ((id & 0xffff) << 16) >>> 0;
-      // Fluid slots [0, fluidCount).
-      for (let i = 0; i < fluidCount; i++) {
-        const p = fluidPositions[i]!;
-        initial[i] = {
-          position: [p[0], p[1], p[2]],
-          velocity: [0, 0, 0],
-          invMass: 1,
-          phase: phaseFor(1),
-        };
-      }
-      // Cloth slots [fluidCount, fluidCount + clothCount).
-      // Override surface-density-derived invMass with explicit value
-      // (25 → ρ ≈ 800 kg/m³ at the cloth particle radius — slightly
-      // less dense than fluid so the curtain settles slowly without
-      // ripping or rocketing through the surface). Pinned vertices
-      // keep invMass = 0.
-      const clothInvMass = 25;
-      for (let i = 0; i < clothCount; i++) {
-        const p = graph.positions[i]!;
-        const pinned = graph.invMass[i] === 0;
-        initial[fluidCount + i] = {
-          position: [p[0], p[1], p[2]],
-          velocity: [0, 0, 0],
-          invMass: pinned ? 0 : clothInvMass,
-          phase: phaseFor(2),
-        };
-      }
-
+      // Fluid slots [0, fluidCount). The cloth writes its own slots
+      // [fluidCount, fluidCount + clothCount) when it is created. Upload
+      // before creating the fluid, which then sets its particles' mass.
+      const fluidInit: ParticleInit[] = fluidPositions.map((p) => ({
+        position: [p[0], p[1], p[2]],
+        velocity: [0, 0, 0],
+        invMass: 1,
+      }));
       const particles = new ParticleSystem(renderer, totalCount, r);
-      particles.uploadParticles(initial);
+      particles.uploadParticles(fluidInit);
 
-      const xpbd = createXpbdUniforms(1 / 60);
-      const hashGrid = new HashGrid(particles, { cellSize: h });
-
-      const fluid = new FluidSystem({
-        particles,
-        hashGrid,
-        xpbd,
+      const fluid = new FluidSystem(particles, {
+        range: { start: 0, count: fluidCount },
         restDensity,
-        h,
         particleSpacing: spacing,
+        smoothingRadius: h,
         compliance: 1e-4,
-        fluidParticles: { start: 0, count: fluidCount },
-        vorticity: { strength: 0 },
-        xsph: { c: 0.1 },
-        surfaceTension: 0,
+        viscosity: 0.1,
         adhesion: 0.5,
       });
 
-      const cloth = new ClothSystem({
-        particles,
-        xpbd,
+      const cloth = new ClothSystem(particles, {
         graph,
-        particleOffset: fluidCount,
+        offset: fluidCount,
         stretchCompliance: 1e-7,
         bendCompliance: 1e-5,
         tetherCompliance: 1e-10,
         stretchTolerance: 0,
       });
+      // Override the surface-density-derived masses with one explicit value
+      // (invMass 25: 40 g per particle, against 125 g per fluid particle),
+      // so the curtain settles slowly without ripping or shooting through
+      // the surface. Pinned vertices keep invMass = 0.
+      const clothInvMass = 25;
+      particles.setInvMass(cloth.range, clothInvMass);
+      for (const pin of pinnedIndices) {
+        particles.setInvMass({ start: cloth.range.start + pin, count: 1 }, 0);
+      }
+      // Neighboring cloth particles sit closer than 2r, so the cloth must
+      // not collide with itself: give its particles a shared group.
+      particles.setCollisionGroup(cloth.range, 1);
 
-      // ---- Tank colliders: floor + 4 wall planes (analytic). ----
-      const colliders = new PrimitiveSet(particles, { capacity: 5 });
+      // ---- Tank colliders: floor + 4 wall planes. ----
+      const colliders = new PrimitiveSet(particles);
       colliders.addPlane(new Vector3(0, 1, 0), new Vector3(0, FLOOR_Y, 0), {
         muS: 0.5,
         muK: 0.35,
@@ -240,36 +217,27 @@ describe('Phase 20 — wet-cloth unified-architecture proof (G1)', () => {
         muS: 0.5,
         muK: 0.35,
       });
-      colliders.upload();
 
-      // ---- THE coupling line: register the cloth range as a
-      //      dynamic boundary. Akinci 2012 §2 + §2.2. Same call shape
-      //      Phase 17 used for softbody + rigid surface ranges. MUST
-      //      run before SimLoop construction. ----
-      await fluid.registerBoundaryParticles(
-        { start: cloth.particleOffset, count: cloth.nParticles },
-        { dynamic: true },
-      );
+      // ---- The coupling: register the cloth range as a dynamic boundary
+      //      (Akinci 2012 §2, §2.2), the same call soft bodies use. Must
+      //      happen before the SimLoop is created. ----
+      fluid.addBoundary(cloth.range, { dynamic: true });
 
       const loop = new SimLoop(particles, {
         substeps: 4,
         iterations: 2,
-        xpbd,
-        hashGrid,
         contact: {
-          hashGrid,
           maxContacts: Math.max(8192, totalCount * 6),
-          friction: { muS: 0.5, muK: 0.35 },
-          stabIters: 1,
+          muS: 0.5,
+          muK: 0.35,
         },
-        colliders: { colliders },
+        colliders: [colliders],
         materials: [fluid, cloth],
       });
-      loop.kernels.floorY.value = -1e9;
       loop.gravity.set(0, -9.81, 0);
 
-      // Run sim — 3 s is enough for the curtain to settle onto the
-      // water and start submerging.
+      // 3 s is enough for the curtain to settle onto the water and start
+      // submerging.
       const totalSeconds = 3.0;
       const dt = 1 / 60;
       const frames = Math.ceil(totalSeconds / dt);
@@ -279,7 +247,7 @@ describe('Phase 20 — wet-cloth unified-architecture proof (G1)', () => {
 
       const snap = await particles.readback();
 
-      // ---- Mass conservation: NaN-free finite positions.
+      // ---- Mass conservation: NaN-free, finite positions.
       for (let i = 0; i < totalCount; i++) {
         const x = snap.positions[4 * i + 0]!;
         const y = snap.positions[4 * i + 1]!;
@@ -290,23 +258,20 @@ describe('Phase 20 — wet-cloth unified-architecture proof (G1)', () => {
       }
 
       // ---- Fluid ↔ cloth non-penetration.
-      // For each fluid particle, find the closest cloth particle. If
-      // dist < r, the fluid has penetrated past the contact gate
-      // (which fires at 2·r). Count the violations.
-      const clothStart = fluidCount;
-      const clothEnd = fluidCount + clothCount;
+      // For each fluid particle, look for a cloth particle closer than r;
+      // such a fluid particle has crossed the cloth (contacts act at 2·r).
+      // Count the violations.
+      const clothStart = cloth.range.start;
+      const clothEnd = clothStart + cloth.range.count;
       let penetrators = 0;
       for (let f = 0; f < fluidCount; f++) {
         const fx = snap.positions[4 * f + 0]!;
         const fy = snap.positions[4 * f + 1]!;
         const fz = snap.positions[4 * f + 2]!;
         for (let c = clothStart; c < clothEnd; c++) {
-          const cx = snap.positions[4 * c + 0]!;
-          const cy = snap.positions[4 * c + 1]!;
-          const cz = snap.positions[4 * c + 2]!;
-          const dx = fx - cx;
-          const dy = fy - cy;
-          const dz = fz - cz;
+          const dx = fx - snap.positions[4 * c + 0]!;
+          const dy = fy - snap.positions[4 * c + 1]!;
+          const dz = fz - snap.positions[4 * c + 2]!;
           if (dx * dx + dy * dy + dz * dz < r * r) {
             penetrators += 1;
             break;
@@ -314,31 +279,28 @@ describe('Phase 20 — wet-cloth unified-architecture proof (G1)', () => {
         }
       }
       const penFraction = penetrators / fluidCount;
-      // eslint-disable-next-line no-console
       console.info(
         `[wet-cloth] T=${totalSeconds.toFixed(1)}s fluid=${fluidCount} cloth=${clothCount} penetrators=${penetrators} (${(penFraction * 100).toFixed(3)}%; target < 0.5%)`,
       );
       expect(penFraction).toBeLessThan(0.005);
 
-      // ---- Pinned-corner sanity: top-left and top-right cloth
-      //      vertices must still be at their initial pin positions.
-      //      A drift here means the pin (invMass = 0) was overridden
-      //      somewhere — which would be a regression in the cloth
-      //      pipeline, not a Phase 20 architectural failure, but
-      //      catching it here keeps the test from passing on a
-      //      half-broken setup.
+      // ---- Pinned corners: the top-left and top-right cloth vertices must
+      //      still be at their pin positions. Drift here means a pin
+      //      (invMass = 0) was overridden somewhere — a cloth regression
+      //      rather than a coupling failure, but catching it keeps the test
+      //      from passing on a half-broken setup.
       const pinIndices = [0, nx - 1];
       for (const pi of pinIndices) {
-        const slot = fluidCount + pi;
+        const slot = clothStart + pi;
         const py = snap.positions[4 * slot + 1]!;
         if (Math.abs(py - pinRowY) > 1e-3) {
           throw new Error(`pin slot ${slot} drifted from y=${pinRowY} to y=${py}`);
         }
       }
 
-      particles.destroy();
-      hashGrid.destroy();
-      colliders.destroy();
+      loop.dispose();
+      particles.dispose();
+      colliders.dispose();
     } finally {
       renderer.dispose();
     }

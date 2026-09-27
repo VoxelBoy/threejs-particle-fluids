@@ -2,6 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Three.js Particle Fluids — Perf bench report</title>
     <style>
       :root {
@@ -17,7 +18,6 @@
         --neutral: #6b7280;
         --bar-bg: #27272a;
         --bar-fill: #38bdf8;
-        --bar-fill-baseline: #475569;
         --border: #27272a;
       }
       * {
@@ -51,26 +51,25 @@
         font-size: 22px;
         font-weight: 600;
       }
-
-      .meta-grid {
+      .meta-grid,
+      .baseline-summary {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
         gap: 8px 24px;
-        margin-top: 8px;
       }
-      .meta-grid .cell {
+      .cell {
         display: flex;
         flex-direction: column;
         gap: 2px;
         min-width: 0;
       }
-      .meta-grid .label {
+      .cell .label {
         color: var(--fg-dim);
         font-size: 11px;
         text-transform: uppercase;
         letter-spacing: 0.04em;
       }
-      .meta-grid .value {
+      .cell .value {
         color: var(--fg);
         font-size: 13px;
         font-family: ui-monospace, monospace;
@@ -78,7 +77,10 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .meta-grid .value.wrap {
+      .cell.wide {
+        grid-column: span 2;
+      }
+      .cell.wide .value {
         white-space: normal;
         word-break: break-word;
       }
@@ -93,7 +95,8 @@
         gap: 16px;
         flex-wrap: wrap;
       }
-      .controls label {
+      .controls label,
+      .baseline-status {
         color: var(--fg-muted);
         font-size: 13px;
       }
@@ -104,12 +107,10 @@
         border: 1px solid var(--border);
         border-radius: 6px;
         font: inherit;
+        max-width: 100%;
       }
       .baseline-summary {
         flex: 1 1 100%;
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: 6px 16px;
         padding-top: 8px;
         border-top: 1px solid var(--border);
         margin-top: 4px;
@@ -117,26 +118,7 @@
       .baseline-summary.empty {
         display: none;
       }
-      .baseline-summary .cell {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-      }
-      .baseline-summary .label {
-        color: var(--fg-dim);
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-      }
-      .baseline-summary .value {
-        color: var(--fg);
-        font-size: 13px;
-        font-family: ui-monospace, monospace;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .baseline-clear {
+      button {
         background: transparent;
         color: var(--fg-muted);
         border: 1px solid var(--border);
@@ -146,238 +128,79 @@
         font-size: 12px;
         cursor: pointer;
       }
-      .baseline-clear:hover {
+      button:hover {
         color: var(--fg);
         border-color: var(--accent);
       }
+      button.copied {
+        color: var(--good);
+        border-color: var(--good);
+      }
 
-      .scene {
-        margin-bottom: 32px;
-      }
-      .scene h2 {
-        font-size: 17px;
-        font-weight: 600;
-        margin: 0 0 4px;
-      }
-      .scene-meta {
-        color: var(--fg-muted);
-        font-size: 12px;
-        margin-bottom: 12px;
-      }
-      .tabs {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px;
-        margin-bottom: 20px;
-        border-bottom: 1px solid var(--border);
-        padding-bottom: 0;
-      }
-      .tab {
-        background: transparent;
-        color: var(--fg-muted);
-        border: 1px solid transparent;
-        border-bottom: none;
-        border-radius: 6px 6px 0 0;
-        padding: 8px 14px;
-        font: inherit;
-        font-size: 13px;
-        font-family: ui-monospace, monospace;
-        cursor: pointer;
-        margin-bottom: -1px;
-        white-space: nowrap;
-      }
-      .tab:hover {
-        color: var(--fg);
-        background: var(--bg-panel);
-      }
-      .tab.active {
-        color: var(--fg);
-        background: var(--bg-panel);
-        border-color: var(--border);
-        border-bottom-color: var(--bg-panel);
-        font-weight: 600;
-      }
-      .frame-banner {
-        background: var(--bg-panel);
-        padding: 12px 16px;
-        border-radius: 8px;
-        margin-bottom: 12px;
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-      }
-      .frame-banner .row {
-        display: flex;
-        align-items: center;
-        gap: 24px;
-      }
-      .frame-banner .label {
-        color: var(--fg-muted);
-        font-size: 12px;
-        min-width: 200px;
-      }
-      .frame-banner .value {
-        font-size: 18px;
-        font-weight: 600;
-        font-family: ui-monospace, monospace;
-      }
-      .frame-banner .row.secondary .label {
-        font-size: 11px;
-      }
-      .frame-banner .row.secondary .value {
-        font-size: 13px;
-        font-weight: 500;
-        color: var(--fg-muted);
-      }
-      .frame-banner .compare {
-        color: var(--fg-muted);
-        font-size: 12px;
-        font-family: ui-monospace, monospace;
-        margin-left: 8px;
-      }
-      .frame-caveat {
+      .notes {
         color: var(--fg-dim);
-        font-size: 11px;
-        font-style: italic;
-        line-height: 1.4;
-        padding-bottom: 4px;
-        border-bottom: 1px solid var(--border);
-        margin-bottom: 4px;
+        font-size: 12px;
+        line-height: 1.5;
+        margin: 0 0 12px;
       }
-
+      .table-wrap {
+        overflow-x: auto;
+        border-radius: 8px;
+      }
       table {
         width: 100%;
         border-collapse: collapse;
         background: var(--bg-panel);
-        border-radius: 8px;
-        overflow: hidden;
       }
       th,
       td {
-        padding: 8px 12px;
+        padding: 8px 10px;
         text-align: left;
         border-bottom: 1px solid var(--border);
         font-family: ui-monospace, monospace;
         font-size: 13px;
+        white-space: nowrap;
       }
       th {
         font-family: -apple-system, sans-serif;
         color: var(--fg-muted);
         font-weight: 500;
-        cursor: pointer;
-        user-select: none;
-        white-space: nowrap;
         background: var(--bg-panel-2);
-      }
-      th:hover {
-        color: var(--fg);
       }
       td.num,
       th.num {
         text-align: right;
       }
-      tr.kernel-row:hover {
+      tbody tr:hover {
         background: rgba(255, 255, 255, 0.02);
       }
-      tr.totals-row td {
-        border-top: 2px solid var(--accent);
-        border-bottom: none;
-        background: rgba(56, 189, 248, 0.06);
-        font-weight: 700;
-        color: var(--fg);
-        font-size: 14px;
-      }
-      tr.totals-row td.label {
-        font-family: -apple-system, sans-serif;
-      }
-      tr.frame-step-row td {
-        background: var(--bg-panel-2);
-        color: var(--fg-muted);
-        font-size: 12px;
-        font-style: italic;
-      }
-      tr.frame-step-row td.label {
-        font-family: -apple-system, sans-serif;
-      }
-      .range-cell {
-        white-space: nowrap;
-        padding-top: 6px;
-        padding-bottom: 18px;
-      }
-      .range-cell .bound {
-        display: inline-block;
-        color: var(--fg-muted);
-        font-size: 11px;
-        font-family: ui-monospace, monospace;
-        vertical-align: middle;
-        min-width: 44px;
-      }
-      .range-cell .bound.lo {
-        text-align: right;
-      }
-      .range-cell .bound.hi {
-        text-align: left;
-      }
-      .range-bar {
-        display: inline-block;
-        position: relative;
-        width: 160px;
-        height: 4px;
-        margin: 0 10px;
-        background: var(--bar-bg);
-        border-radius: 2px;
-        vertical-align: middle;
-      }
-      .range-bar .marker {
-        position: absolute;
-        top: -4px;
-        transform: translateX(-50%);
-        width: 2px;
-        height: 12px;
-        background: var(--bar-fill);
-      }
-      .range-bar .marker .value {
-        position: absolute;
-        top: 14px;
-        left: 50%;
-        transform: translateX(-50%);
-        color: var(--fg);
-        font-size: 11px;
-        font-family: ui-monospace, monospace;
-        white-space: nowrap;
-      }
-      .share-cell {
-        white-space: nowrap;
+      .cost-cell {
         display: flex;
         align-items: center;
         gap: 10px;
-        min-width: 200px;
+        min-width: 180px;
       }
-      .share-bar {
+      .cost-bar {
         flex: 1 1 auto;
-        min-width: 80px;
-        max-width: 200px;
+        min-width: 60px;
         height: 10px;
         background: var(--bar-bg);
         border-radius: 2px;
         overflow: hidden;
       }
-      .share-fill {
+      .cost-fill {
         height: 100%;
         background: var(--bar-fill);
         border-radius: 2px;
       }
-      .share-num {
+      .cost-num {
         flex: 0 0 auto;
-        min-width: 48px;
+        min-width: 64px;
         text-align: right;
-        font-family: ui-monospace, monospace;
-        font-size: 13px;
-        color: var(--fg);
+        font-weight: 600;
       }
-      tr.totals-row .share-num,
-      tr.frame-step-row .share-num {
-        color: inherit;
+      .muted {
+        color: var(--fg-muted);
       }
       .delta-good {
         color: var(--good);
@@ -388,43 +211,16 @@
       .delta-neutral {
         color: var(--neutral);
       }
-      .baseline-cell {
-        color: var(--fg-muted);
-      }
       .actions {
         margin-top: 8px;
         display: flex;
         gap: 8px;
       }
-      button.copy-md {
-        background: transparent;
-        color: var(--fg-muted);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        padding: 4px 10px;
-        font: inherit;
-        font-size: 12px;
-        cursor: pointer;
-      }
-      button.copy-md:hover {
-        color: var(--fg);
-        border-color: var(--accent);
-      }
-      button.copy-md.copied {
-        color: var(--good);
-        border-color: var(--good);
-      }
-      .empty {
+      .empty-state {
         color: var(--fg-muted);
         font-style: italic;
         padding: 24px;
         text-align: center;
-      }
-      .col-current {
-        color: var(--fg);
-      }
-      .col-baseline {
-        color: var(--fg-muted);
       }
     </style>
   </head>
@@ -438,574 +234,266 @@
       <div class="controls">
         <label for="baseline-input">Compare to baseline (JSON):</label>
         <input id="baseline-input" type="file" accept="application/json" />
-        <button id="baseline-clear" class="baseline-clear" style="display: none">Clear</button>
-        <span
-          class="baseline-status"
-          id="baseline-status"
-          style="color: var(--fg-muted); font-size: 12px"
+        <button id="baseline-clear" style="display: none">Clear</button>
+        <span class="baseline-status" id="baseline-status"
           >No baseline loaded — showing absolute numbers only.</span
         >
         <div class="baseline-summary empty" id="baseline-summary"></div>
       </div>
 
+      <p class="notes">
+        Each scene steps at 60 fps; one frame is one <code>SimLoop.step</code>, which runs every
+        substep as a single GPU compute pass. <strong>GPU ms/frame</strong> is that pass's duration
+        from timestamp queries — the number to compare between runs. <strong>Wall-clock</strong>
+        runs from calling <code>step</code> until the GPU reports the frame done, so it adds CPU
+        encoding time and scheduling noise. Frame columns show the median (p50) over the measured
+        frames, with the p10 – p90 spread beside it. Bars show each scene's cost relative to the
+        slowest. Baseline deltas compare GPU p50 when both runs have it, wall-clock p50 otherwise.
+      </p>
       <main id="scenes"></main>
+      <div class="actions">
+        <button id="copy-md">Copy table as markdown</button>
+      </div>
     </div>
 
     <script>
       'use strict';
 
-      // The placeholder below is replaced inline by the harness's report
-      // generator with the JSON.stringify of the current run's data.
+      // The report generator replaces the placeholder below with this run's JSON.
       const CURRENT = __PARTICLE_FLUIDS_PERF_DATA__;
       let BASELINE = null;
       let BASELINE_NAME = null;
-      const NOISE_THRESHOLD = 0.05; // 5% delta below which we render neutral grey.
+      const NOISE_THRESHOLD = 0.05; // Deltas under 5% render neutral grey.
 
       function el(tag, opts, children) {
         const node = document.createElement(tag);
         if (opts) {
           if (opts.className) node.className = opts.className;
           if (opts.text !== undefined) node.textContent = String(opts.text);
-          if (opts.style) {
-            for (const k in opts.style) node.style[k] = opts.style[k];
-          }
-          if (opts.attrs) {
-            for (const k in opts.attrs) node.setAttribute(k, opts.attrs[k]);
-          }
-          if (opts.dataset) {
-            for (const k in opts.dataset) node.dataset[k] = opts.dataset[k];
-          }
-          if (opts.onClick) node.addEventListener('click', opts.onClick);
+          if (opts.title) node.title = opts.title;
+          if (opts.style) Object.assign(node.style, opts.style);
         }
-        if (children) {
-          for (const c of children) {
-            if (c == null) continue;
-            node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
-          }
+        for (const c of children || []) {
+          if (c != null) node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
         }
         return node;
       }
 
       function fmt(n, digits) {
         if (digits === undefined) digits = 3;
-        if (!Number.isFinite(n)) return '—';
-        if (Math.abs(n) < 0.001 && n !== 0) return n.toExponential(2);
+        if (typeof n !== 'number' || !Number.isFinite(n)) return '—';
         return n.toFixed(digits);
       }
 
       function fmtDelta(n, digits) {
-        if (digits === undefined) digits = 3;
-        const sign = n > 0 ? '+' : '';
-        return sign + fmt(n, digits);
+        return (n > 0 ? '+' : '') + fmt(n, digits);
       }
 
-      function deltaClass(deltaPct, lowerIsBetter) {
-        if (Math.abs(deltaPct) < NOISE_THRESHOLD) return 'delta-neutral';
-        if (lowerIsBetter) return deltaPct < 0 ? 'delta-good' : 'delta-bad';
-        return deltaPct > 0 ? 'delta-good' : 'delta-bad';
+      function deltaClass(fraction) {
+        if (Math.abs(fraction) < NOISE_THRESHOLD) return 'delta-neutral';
+        return fraction < 0 ? 'delta-good' : 'delta-bad';
       }
 
-      function findBaselineKernel(sceneId, kernelName) {
-        if (!BASELINE) return null;
-        const scene = BASELINE.scenes.find((s) => s.id === sceneId);
-        if (!scene) return null;
-        return scene.kernels.find((k) => k.name === kernelName) || null;
-      }
-
-      function findBaselineScene(sceneId) {
-        if (!BASELINE) return null;
-        return BASELINE.scenes.find((s) => s.id === sceneId) || null;
-      }
-
-      function metaCell(label, value, opts) {
-        const cell = el('div', { className: 'cell' });
-        cell.appendChild(el('div', { className: 'label', text: label }));
-        cell.appendChild(
-          el('div', {
-            className: 'value' + (opts && opts.wrap ? ' wrap' : ''),
-            text: value,
-          }),
-        );
-        return cell;
+      function metaCell(label, value, className) {
+        return el('div', { className: 'cell' + (className ? ' ' + className : '') }, [
+          el('div', { className: 'label', text: label }),
+          el('div', { className: 'value', text: value }),
+        ]);
       }
 
       function renderMeta() {
         const m = document.getElementById('meta');
-        while (m.firstChild) m.removeChild(m.firstChild);
         const platform = CURRENT.platform || {};
-        m.appendChild(metaCell('Date', CURRENT.date || '—'));
-        m.appendChild(metaCell('Commit', (CURRENT.commit || '—').slice(0, 12)));
-        m.appendChild(metaCell('GPU', platform.gpu || '—'));
-        m.appendChild(metaCell('OS', platform.os || '—'));
-        m.appendChild(metaCell('Timing method', CURRENT.timing_method || '—'));
-        m.appendChild(metaCell('Scenes', String(CURRENT.scenes.length)));
-        m.appendChild(metaCell('Browser', platform.browser || '—', { wrap: true }));
+        m.replaceChildren(
+          metaCell('Date', CURRENT.date || '—'),
+          metaCell('Commit', (CURRENT.commit || '—').slice(0, 12)),
+          metaCell('GPU', platform.gpu || '—'),
+          metaCell('OS', platform.os || '—'),
+          metaCell('Timing method', CURRENT.timing_method || '—'),
+          metaCell('Scenes', String(CURRENT.scenes.length)),
+          metaCell('Browser', platform.browser || '—', 'wide'),
+        );
       }
 
       function renderBaselineSummary() {
         const wrap = document.getElementById('baseline-summary');
         const status = document.getElementById('baseline-status');
-        const clearBtn = document.getElementById('baseline-clear');
-        while (wrap.firstChild) wrap.removeChild(wrap.firstChild);
+        const clear = document.getElementById('baseline-clear');
         if (!BASELINE) {
+          wrap.replaceChildren();
           wrap.classList.add('empty');
           status.textContent = 'No baseline loaded — showing absolute numbers only.';
-          clearBtn.style.display = 'none';
+          clear.style.display = 'none';
           return;
         }
+        const platform = BASELINE.platform || {};
+        wrap.replaceChildren(
+          metaCell('Baseline file', BASELINE_NAME || '—'),
+          metaCell('Baseline commit', (BASELINE.commit || '—').slice(0, 12)),
+          metaCell('Baseline date', BASELINE.date || '—'),
+          metaCell('Baseline GPU', platform.gpu || '—'),
+          metaCell('Baseline timing', BASELINE.timing_method || '—'),
+        );
         wrap.classList.remove('empty');
         status.textContent = 'Comparing against baseline:';
-        clearBtn.style.display = '';
-        wrap.appendChild(metaCell('Baseline file', BASELINE_NAME || '—', { wrap: true }));
-        wrap.appendChild(metaCell('Baseline commit', (BASELINE.commit || '—').slice(0, 12)));
-        wrap.appendChild(metaCell('Baseline date', BASELINE.date || '—'));
-        wrap.appendChild(
-          metaCell('Baseline scenes', String((BASELINE.scenes && BASELINE.scenes.length) || 0)),
-        );
-        const platform = BASELINE.platform || {};
-        wrap.appendChild(metaCell('Baseline GPU', platform.gpu || '—'));
+        clear.style.display = '';
       }
 
-      function primaryQuantiles(scene) {
-        return scene.frame_step_ms || scene.frame_total_ms;
+      function baselineScene(id) {
+        if (!BASELINE || !Array.isArray(BASELINE.scenes)) return null;
+        return BASELINE.scenes.find((s) => s.id === id) || null;
       }
 
-      function totalFrameContribution(scene) {
-        let s = 0;
-        for (const k of scene.kernels) s += k.p50_ms * k.dispatches_per_frame;
-        return s || 1;
+      /** The p50s to compare: GPU when both runs have it, else wall-clock. */
+      function comparison(scene) {
+        const base = baselineScene(scene.id);
+        if (!base) return null;
+        const gpu = scene.frame_gpu_ms && base.frame_gpu_ms;
+        const current = gpu ? scene.frame_gpu_ms : scene.frame_step_ms;
+        const baseline = gpu ? base.frame_gpu_ms : base.frame_step_ms;
+        if (!current || !baseline || !(baseline.p50 > 0)) return null;
+        const deltaMs = current.p50 - baseline.p50;
+        return {
+          metric: gpu ? 'GPU' : 'wall-clock',
+          baseline: baseline.p50,
+          deltaMs,
+          fraction: deltaMs / baseline.p50,
+        };
       }
 
-      function renderScenes() {
+      function spread(stats) {
+        return stats ? fmt(stats.p10) + ' – ' + fmt(stats.p90) : '—';
+      }
+
+      /**
+       * The table's columns. Each has a header, a cell for the HTML table, and
+       * a plain-text value for the markdown copy.
+       */
+      function columns() {
+        const scenes = CURRENT.scenes;
+        const hasGpu = scenes.some((s) => s.frame_gpu_ms);
+        // Bars go on the GPU column when there is one, else on wall-clock.
+        const barMetric = hasGpu ? 'frame_gpu_ms' : 'frame_step_ms';
+        const maxCost = Math.max(...scenes.map((s) => (s[barMetric] ? s[barMetric].p50 : 0))) || 1;
+        const barCell = (stats) =>
+          el('td', {}, [
+            el('div', { className: 'cost-cell' }, [
+              el('div', { className: 'cost-bar' }, [
+                el('div', {
+                  className: 'cost-fill',
+                  style: { width: stats ? ((stats.p50 / maxCost) * 100).toFixed(1) + '%' : '0' },
+                }),
+              ]),
+              el('span', { className: 'cost-num', text: stats ? fmt(stats.p50) : '—' }),
+            ]),
+          ]);
+        const num = (text, extra) => el('td', { className: 'num' + (extra ? ' ' + extra : ''), text });
+        const frameColumns = (label, key) => [
+          {
+            label,
+            num: key !== barMetric,
+            cell: (s) => (key === barMetric ? barCell(s[key]) : num(s[key] ? fmt(s[key].p50) : '—')),
+            text: (s) => (s[key] ? fmt(s[key].p50) : '—'),
+          },
+          {
+            label: 'p10 – p90',
+            num: true,
+            cell: (s) => num(spread(s[key]), 'muted'),
+            text: (s) => spread(s[key]),
+          },
+        ];
+
+        const cols = [
+          { label: 'Scene', cell: (s) => el('td', { text: s.id }), text: (s) => s.id },
+          {
+            label: 'Particles',
+            num: true,
+            cell: (s) => num(s.particle_count.toLocaleString()),
+            text: (s) => String(s.particle_count),
+          },
+          {
+            label: 'S × I',
+            num: true,
+            cell: (s) => num(s.substeps + ' × ' + s.iterations),
+            text: (s) => s.substeps + ' × ' + s.iterations,
+          },
+        ];
+        if (hasGpu) cols.push(...frameColumns('GPU ms/frame', 'frame_gpu_ms'));
+        cols.push(...frameColumns('Wall-clock ms/frame', 'frame_step_ms'));
+        if (scenes.some((s) => s.contact_count)) {
+          const contacts = (s) => (s.contact_count ? Math.round(s.contact_count.p50) : null);
+          cols.push({
+            label: 'Contacts/substep',
+            num: true,
+            cell: (s) => num(contacts(s) === null ? '—' : contacts(s).toLocaleString()),
+            text: (s) => (contacts(s) === null ? '—' : String(contacts(s))),
+          });
+        }
+        if (BASELINE) {
+          const delta = (label, value) => ({
+            label,
+            num: true,
+            cell: (s) => {
+              const cmp = comparison(s);
+              if (!cmp) return num(label === 'Δ ms' ? 'new' : '—', 'delta-neutral');
+              return num(value(cmp), deltaClass(cmp.fraction));
+            },
+            text: (s) => {
+              const cmp = comparison(s);
+              return cmp ? value(cmp) : label === 'Δ ms' ? 'new' : '—';
+            },
+          });
+          cols.push(
+            {
+              label: 'Baseline',
+              num: true,
+              cell: (s) => {
+                const cmp = comparison(s);
+                const td = num(cmp ? fmt(cmp.baseline) : '—', 'muted');
+                if (cmp) td.title = cmp.metric + ' p50';
+                return td;
+              },
+              text: (s) => {
+                const cmp = comparison(s);
+                return cmp ? fmt(cmp.baseline) + ' (' + cmp.metric + ')' : '—';
+              },
+            },
+            delta('Δ ms', (cmp) => fmtDelta(cmp.deltaMs)),
+            delta('Δ %', (cmp) => fmtDelta(cmp.fraction * 100, 1) + '%'),
+          );
+        }
+        return cols;
+      }
+
+      function renderTable() {
         const root = document.getElementById('scenes');
-        while (root.firstChild) root.removeChild(root.firstChild);
         if (CURRENT.scenes.length === 0) {
-          root.appendChild(el('div', { className: 'empty', text: '(no scenes in this run)' }));
+          root.replaceChildren(el('div', { className: 'empty-state', text: '(no scenes in this run)' }));
           return;
         }
-
-        const tabs = el('div', { className: 'tabs', attrs: { role: 'tablist' } });
-        const panels = [];
-        const tabButtons = [];
-
-        CURRENT.scenes.forEach((scene, i) => {
-          const tab = el('button', {
-            className: 'tab' + (i === 0 ? ' active' : ''),
-            text: scene.id,
-            attrs: { role: 'tab', 'aria-selected': i === 0 ? 'true' : 'false' },
-          });
-          const panel = renderScene(scene);
-          if (i !== 0) panel.style.display = 'none';
-          tab.addEventListener('click', () => {
-            tabButtons.forEach((b, j) => {
-              const active = j === i;
-              b.classList.toggle('active', active);
-              b.setAttribute('aria-selected', active ? 'true' : 'false');
-              panels[j].style.display = active ? '' : 'none';
-            });
-          });
-          tabButtons.push(tab);
-          panels.push(panel);
-          tabs.appendChild(tab);
-        });
-
-        root.appendChild(tabs);
-        for (const p of panels) root.appendChild(p);
-      }
-
-      function renderScene(scene) {
-        const wrap = el('section', { className: 'scene', dataset: { sceneId: scene.id } });
-        wrap.appendChild(el('h2', { text: scene.id }));
-        wrap.appendChild(
-          el('div', {
-            className: 'scene-meta',
-            text:
-              scene.particle_count.toLocaleString() +
-              ' particles · ' +
-              'S=' +
-              scene.substeps +
-              ' I=' +
-              scene.iterations +
-              ' · ' +
-              scene.frames_warmup +
-              ' warmup + ' +
-              scene.frames_measure +
-              ' measure frames',
-          }),
+        const cols = columns();
+        const head = el('tr', {}, cols.map((c) => el('th', { className: c.num ? 'num' : '', text: c.label })));
+        const body = CURRENT.scenes.map((s) => el('tr', {}, cols.map((c) => c.cell(s))));
+        root.replaceChildren(
+          el('div', { className: 'table-wrap' }, [
+            el('table', {}, [el('thead', {}, [head]), el('tbody', {}, body)]),
+          ]),
         );
-        wrap.appendChild(renderFrameBanner(scene));
-        wrap.appendChild(renderKernelTable(scene));
-
-        const actions = el('div', { className: 'actions' });
-        const btn = el('button', {
-          className: 'copy-md',
-          text: 'Copy table as markdown',
-        });
-        btn.addEventListener('click', () => copyTableMarkdown(scene, btn));
-        actions.appendChild(btn);
-        wrap.appendChild(actions);
-        return wrap;
       }
 
-      function renderFrameRow(label, current, baseline, opts) {
-        opts = opts || {};
-        const row = el('div', { className: 'row' + (opts.secondary ? ' secondary' : '') });
-        row.appendChild(el('span', { className: 'label', text: label }));
-
-        const valueText =
-          fmt(current.p10) + ' / ' + fmt(current.p50) + ' / ' + fmt(current.p90) + ' ms';
-        const valueNode = el('span', { className: 'value', text: valueText });
-        row.appendChild(valueNode);
-
-        if (baseline) {
-          const baseText =
-            'vs baseline ' +
-            fmt(baseline.p10) +
-            ' / ' +
-            fmt(baseline.p50) +
-            ' / ' +
-            fmt(baseline.p90) +
-            ' ms';
-          const compareNode = el('span', { className: 'compare', text: baseText });
-          const dms = current.p50 - baseline.p50;
-          const dpct = baseline.p50 > 0 ? dms / baseline.p50 : 0;
-          const cls = deltaClass(dpct, true);
-          compareNode.appendChild(
-            el('span', {
-              className: ' ' + cls,
-              text: '  Δ ' + fmtDelta(dms) + ' ms (' + fmtDelta(dpct * 100, 1) + '%)',
-            }),
-          );
-          row.appendChild(compareNode);
-        }
-        return row;
-      }
-
-      function renderFrameBanner(scene) {
-        const banner = el('div', { className: 'frame-banner' });
-        const baselineScene = findBaselineScene(scene.id);
-        const hasStep = !!scene.frame_step_ms;
-
-        // Caveat: frame_step_ms is wall-clock around await stepFrame() +
-        // onSubmittedWorkDone(). Susceptible to thermal throttling and host
-        // scheduler jitter. The Σ kernels row in the table below is the
-        // GPU-timestamped sum and is the trustworthy total to compare against
-        // baselines.
-        const caveat = el('div', {
-          className: 'frame-caveat',
-          text: 'Frame step is wall-clock — noise-prone (thermal, scheduler). For run-to-run comparison use the Σ kernels row below (GPU timestamps).',
-        });
-        banner.appendChild(caveat);
-
-        const primaryLabel = 'Frame step (wall-clock) p10 / p50 / p90:';
-        const primaryCurrent = hasStep ? scene.frame_step_ms : scene.frame_total_ms;
-        const primaryBaseline = baselineScene
-          ? baselineScene.frame_step_ms || baselineScene.frame_total_ms
-          : null;
-        banner.appendChild(renderFrameRow(primaryLabel, primaryCurrent, primaryBaseline));
-
-        if (hasStep) {
-          const secondaryBaseline =
-            baselineScene && baselineScene.frame_total_ms ? baselineScene.frame_total_ms : null;
-          banner.appendChild(
-            renderFrameRow(
-              'Frame total (incl. isolation overhead):',
-              scene.frame_total_ms,
-              secondaryBaseline,
-              { secondary: true },
-            ),
-          );
-        }
-        return banner;
-      }
-
-      function kernelHeaders(hasBaseline) {
-        const headers = [
-          { key: 'name', label: 'Kernel' },
-          { key: 'dispatches', label: 'Disp/frame', num: true },
-          { key: 'p50', label: 'Per-dispatch ms (min · p50 · max)' },
-          { key: 'frameContrib', label: 'Per-frame ms', num: true },
-          { key: 'share', label: '% of total' },
+      function tableMarkdown() {
+        const cols = columns();
+        const rows = [
+          cols.map((c) => c.label),
+          cols.map(() => '---'),
+          ...CURRENT.scenes.map((s) => cols.map((c) => c.text(s))),
         ];
-        if (hasBaseline) {
-          headers.push({ key: 'baselineP50', label: 'Baseline p50 ms', num: true });
-          headers.push({ key: 'baselineContrib', label: 'Baseline per-frame', num: true });
-          headers.push({ key: 'deltaMs', label: 'Δ p50 ms', num: true });
-          headers.push({ key: 'deltaPct', label: 'Δ %', num: true });
-        }
-        return headers;
+        return rows.map((r) => '| ' + r.join(' | ') + ' |').join('\n');
       }
 
-      function renderKernelTable(scene) {
-        const table = el('table');
-        const totalContrib = totalFrameContribution(scene);
-        const hasBaseline = !!findBaselineScene(scene.id);
-        const headers = kernelHeaders(hasBaseline);
-
-        const thead = el('thead');
-        const trH = el('tr');
-        for (const h of headers) {
-          const th = el('th', {
-            text: h.label,
-            className: h.num ? 'num' : '',
-            dataset: { key: h.key },
-          });
-          th.addEventListener('click', () => sortTable(table, scene, h.key, hasBaseline));
-          trH.appendChild(th);
-        }
-        thead.appendChild(trH);
-        table.appendChild(thead);
-
-        const tbody = el('tbody');
-        for (const k of scene.kernels) appendKernelRow(tbody, scene, k, totalContrib, hasBaseline);
-        appendTotalsRow(tbody, scene, hasBaseline);
-        appendFrameStepRow(tbody, scene, hasBaseline);
-        table.appendChild(tbody);
-        return table;
-      }
-
-      function appendRangeCell(tr, k) {
-        const cell = el('td', { className: 'range-cell' });
-        cell.appendChild(el('span', { className: 'bound lo', text: fmt(k.min_ms) }));
-        const bar = el('div', { className: 'range-bar' });
-        const span = k.max_ms - k.min_ms;
-        const pct =
-          span > 0 ? Math.max(0, Math.min(100, ((k.p50_ms - k.min_ms) / span) * 100)) : 50;
-        const marker = el('div', { className: 'marker', style: { left: pct.toFixed(2) + '%' } });
-        marker.appendChild(el('div', { className: 'value', text: fmt(k.p50_ms) }));
-        bar.appendChild(marker);
-        cell.appendChild(bar);
-        cell.appendChild(el('span', { className: 'bound hi', text: fmt(k.max_ms) }));
-        tr.appendChild(cell);
-      }
-
-      function appendShareCell(tr, frameContrib, totalContrib) {
-        const sharePct = totalContrib > 0 ? (frameContrib / totalContrib) * 100 : 0;
-        const cell = el('td', { className: 'share-cell' });
-        const bar = el('div', { className: 'share-bar' });
-        bar.appendChild(
-          el('div', { className: 'share-fill', style: { width: sharePct.toFixed(2) + '%' } }),
-        );
-        cell.appendChild(bar);
-        cell.appendChild(el('span', { className: 'share-num', text: sharePct.toFixed(1) + '%' }));
-        tr.appendChild(cell);
-      }
-
-      function appendKernelRow(tbody, scene, k, totalContrib, hasBaseline) {
-        const tr = el('tr', { className: 'kernel-row' });
-        const frameContrib = k.p50_ms * k.dispatches_per_frame;
-
-        tr.appendChild(el('td', { text: k.name }));
-        tr.appendChild(el('td', { className: 'num', text: String(k.dispatches_per_frame) }));
-        appendRangeCell(tr, k);
-        tr.appendChild(el('td', { className: 'num', text: fmt(frameContrib) }));
-        appendShareCell(tr, frameContrib, totalContrib);
-
-        if (hasBaseline) {
-          const baseline = findBaselineKernel(scene.id, k.name);
-          if (baseline) {
-            tr.appendChild(
-              el('td', { className: 'num baseline-cell', text: fmt(baseline.p50_ms) }),
-            );
-            const baseContrib = baseline.p50_ms * baseline.dispatches_per_frame;
-            tr.appendChild(el('td', { className: 'num baseline-cell', text: fmt(baseContrib) }));
-            const dms = k.p50_ms - baseline.p50_ms;
-            const dpct = baseline.p50_ms > 0 ? dms / baseline.p50_ms : 0;
-            const cls = deltaClass(dpct, true);
-            tr.appendChild(el('td', { className: 'num ' + cls, text: fmtDelta(dms) }));
-            tr.appendChild(
-              el('td', { className: 'num ' + cls, text: fmtDelta(dpct * 100, 1) + '%' }),
-            );
-          } else {
-            tr.appendChild(el('td', { className: 'num delta-neutral', text: '—' }));
-            tr.appendChild(el('td', { className: 'num delta-neutral', text: '—' }));
-            tr.appendChild(el('td', { className: 'num delta-neutral', text: 'new' }));
-            tr.appendChild(el('td', { className: 'num delta-neutral', text: '—' }));
-          }
-        }
-        tbody.appendChild(tr);
-      }
-
-      function totalsFor(kernels) {
-        let p50 = 0,
-          contrib = 0;
-        for (const k of kernels) {
-          p50 += k.p50_ms * k.dispatches_per_frame;
-          contrib += k.p50_ms * k.dispatches_per_frame;
-        }
-        return { p50, contrib };
-      }
-
-      function appendTotalsRow(tbody, scene, hasBaseline) {
-        const t = totalsFor(scene.kernels);
-        const tr = el('tr', { className: 'totals-row' });
-        tr.appendChild(
-          el('td', {
-            className: 'label',
-            text: 'Σ kernels (total per frame, GPU-timestamped)',
-            attrs: { colspan: '2' },
-          }),
-        );
-        tr.appendChild(el('td', { className: 'num', text: '—' }));
-        tr.appendChild(el('td', { className: 'num', text: fmt(t.contrib) }));
-        tr.appendChild(el('td', { className: 'num', text: '100.0%' }));
-
-        if (hasBaseline) {
-          const baselineScene = findBaselineScene(scene.id);
-          if (baselineScene) {
-            const tb = totalsFor(baselineScene.kernels);
-            tr.appendChild(el('td', { className: 'num baseline-cell', text: fmt(tb.p50) }));
-            tr.appendChild(el('td', { className: 'num baseline-cell', text: fmt(tb.contrib) }));
-            const dms = t.p50 - tb.p50;
-            const dpct = tb.p50 > 0 ? dms / tb.p50 : 0;
-            const cls = deltaClass(dpct, true);
-            tr.appendChild(el('td', { className: 'num ' + cls, text: fmtDelta(dms) }));
-            tr.appendChild(
-              el('td', { className: 'num ' + cls, text: fmtDelta(dpct * 100, 1) + '%' }),
-            );
-          } else {
-            tr.appendChild(el('td', { className: 'num delta-neutral', text: '—' }));
-            tr.appendChild(el('td', { className: 'num delta-neutral', text: '—' }));
-            tr.appendChild(el('td', { className: 'num delta-neutral', text: '—' }));
-            tr.appendChild(el('td', { className: 'num delta-neutral', text: '—' }));
-          }
-        }
-        tbody.appendChild(tr);
-      }
-
-      function appendFrameStepRow(tbody, scene, hasBaseline) {
-        const fs = scene.frame_step_ms || scene.frame_total_ms;
-        const tr = el('tr', { className: 'frame-step-row' });
-        tr.appendChild(
-          el('td', {
-            className: 'label',
-            text: 'Frame step (wall-clock, noise-prone)',
-            attrs: { colspan: '2' },
-          }),
-        );
-        tr.appendChild(el('td', { className: 'num', text: '—' }));
-        tr.appendChild(el('td', { className: 'num', text: fmt(fs.p50) }));
-        // Gap between Σ kernels and frame step = unattributed time (contact
-        // pipeline kernels not exposed, dispatch overhead, etc.)
-        const t = totalsFor(scene.kernels);
-        const gap = fs.p50 - t.p50;
-        tr.appendChild(
-          el('td', {
-            className: 'num',
-            text: 'gap ' + fmtDelta(gap) + ' ms',
-          }),
-        );
-        if (hasBaseline) {
-          const baselineScene = findBaselineScene(scene.id);
-          if (baselineScene) {
-            const fb = baselineScene.frame_step_ms || baselineScene.frame_total_ms;
-            tr.appendChild(el('td', { className: 'num baseline-cell', text: fmt(fb.p50) }));
-            tr.appendChild(el('td', { className: 'num baseline-cell', text: '—' }));
-            const dms = fs.p50 - fb.p50;
-            const dpct = fb.p50 > 0 ? dms / fb.p50 : 0;
-            const cls = deltaClass(dpct, true);
-            tr.appendChild(el('td', { className: 'num ' + cls, text: fmtDelta(dms) }));
-            tr.appendChild(
-              el('td', { className: 'num ' + cls, text: fmtDelta(dpct * 100, 1) + '%' }),
-            );
-          } else {
-            tr.appendChild(el('td', { className: 'num delta-neutral', text: '—' }));
-            tr.appendChild(el('td', { className: 'num delta-neutral', text: '—' }));
-            tr.appendChild(el('td', { className: 'num delta-neutral', text: '—' }));
-            tr.appendChild(el('td', { className: 'num delta-neutral', text: '—' }));
-          }
-        }
-        tbody.appendChild(tr);
-      }
-
-      function sortTable(table, scene, key, hasBaseline) {
-        const kernels = scene.kernels.slice();
-        const cmp = {
-          name: (a, b) => a.name.localeCompare(b.name),
-          dispatches: (a, b) => b.dispatches_per_frame - a.dispatches_per_frame,
-          p50: (a, b) => b.p50_ms - a.p50_ms,
-          frameContrib: (a, b) =>
-            b.p50_ms * b.dispatches_per_frame - a.p50_ms * a.dispatches_per_frame,
-          share: (a, b) => b.p50_ms * b.dispatches_per_frame - a.p50_ms * a.dispatches_per_frame,
-          baselineP50: (a, b) => {
-            const ba = findBaselineKernel(scene.id, a.name);
-            const bb = findBaselineKernel(scene.id, b.name);
-            return (bb ? bb.p50_ms : -1) - (ba ? ba.p50_ms : -1);
-          },
-          baselineContrib: (a, b) => {
-            const ba = findBaselineKernel(scene.id, a.name);
-            const bb = findBaselineKernel(scene.id, b.name);
-            const ca = ba ? ba.p50_ms * ba.dispatches_per_frame : -1;
-            const cb = bb ? bb.p50_ms * bb.dispatches_per_frame : -1;
-            return cb - ca;
-          },
-          deltaMs: (a, b) => {
-            const ba = findBaselineKernel(scene.id, a.name);
-            const bb = findBaselineKernel(scene.id, b.name);
-            const da = ba ? a.p50_ms - ba.p50_ms : 0;
-            const db = bb ? b.p50_ms - bb.p50_ms : 0;
-            return db - da;
-          },
-          deltaPct: (a, b) => {
-            const ba = findBaselineKernel(scene.id, a.name);
-            const bb = findBaselineKernel(scene.id, b.name);
-            const da = ba && ba.p50_ms > 0 ? (a.p50_ms - ba.p50_ms) / ba.p50_ms : 0;
-            const db = bb && bb.p50_ms > 0 ? (b.p50_ms - bb.p50_ms) / bb.p50_ms : 0;
-            return db - da;
-          },
-        };
-        kernels.sort(cmp[key] || cmp.p50);
-        const tbody = table.querySelector('tbody');
-        while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
-        const totalContrib = totalFrameContribution(scene);
-        for (const k of kernels) appendKernelRow(tbody, scene, k, totalContrib, hasBaseline);
-        appendTotalsRow(tbody, scene, hasBaseline);
-        appendFrameStepRow(tbody, scene, hasBaseline);
-      }
-
-      function copyTableMarkdown(scene, btn) {
-        const lines = [];
-        const baselineScene = findBaselineScene(scene.id);
-        const headers = ['Kernel', 'Disp/frame', 'p50 ms', 'Frame contrib'];
-        if (baselineScene) headers.push('Baseline p50', 'Baseline contrib', 'Δ p50 ms', 'Δ %');
-        lines.push('| ' + headers.join(' | ') + ' |');
-        lines.push('|' + headers.map(() => '---').join('|') + '|');
-        for (const k of scene.kernels) {
-          const frameContrib = (k.p50_ms * k.dispatches_per_frame).toFixed(3);
-          const row = [k.name, String(k.dispatches_per_frame), k.p50_ms.toFixed(3), frameContrib];
-          if (baselineScene) {
-            const baseline = findBaselineKernel(scene.id, k.name);
-            if (baseline) {
-              const baseContrib = (baseline.p50_ms * baseline.dispatches_per_frame).toFixed(3);
-              const dms = k.p50_ms - baseline.p50_ms;
-              const dpct = baseline.p50_ms > 0 ? (dms / baseline.p50_ms) * 100 : 0;
-              row.push(
-                baseline.p50_ms.toFixed(3),
-                baseContrib,
-                fmtDelta(dms),
-                fmtDelta(dpct, 1) + '%',
-              );
-            } else {
-              row.push('—', '—', 'new', '—');
-            }
-          }
-          lines.push('| ' + row.join(' | ') + ' |');
-        }
-        // Totals row
-        let cP50 = 0;
-        for (const k of scene.kernels) {
-          cP50 += k.p50_ms * k.dispatches_per_frame;
-        }
-        const totalsRow = ['**Σ kernels**', '', cP50.toFixed(3), cP50.toFixed(3)];
-        if (baselineScene) {
-          let bP50 = 0;
-          for (const k of baselineScene.kernels) bP50 += k.p50_ms * k.dispatches_per_frame;
-          const dms = cP50 - bP50;
-          const dpct = bP50 > 0 ? (dms / bP50) * 100 : 0;
-          totalsRow.push(bP50.toFixed(3), bP50.toFixed(3), fmtDelta(dms), fmtDelta(dpct, 1) + '%');
-        }
-        lines.push('| ' + totalsRow.join(' | ') + ' |');
-        const md = lines.join('\n');
+      document.getElementById('copy-md').addEventListener('click', (e) => {
+        const btn = e.currentTarget;
+        const md = tableMarkdown();
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(md).then(() => {
             btn.classList.add('copied');
@@ -1019,17 +507,16 @@
           console.log(md);
           btn.textContent = 'Logged to console';
         }
-      }
+      });
 
       document.getElementById('baseline-input').addEventListener('change', async (e) => {
         const file = e.target.files && e.target.files[0];
         if (!file) return;
         try {
-          const text = await file.text();
-          BASELINE = JSON.parse(text);
+          BASELINE = JSON.parse(await file.text());
           BASELINE_NAME = file.name;
           renderBaselineSummary();
-          renderScenes();
+          renderTable();
         } catch (err) {
           document.getElementById('baseline-status').textContent =
             'Failed to load baseline: ' + (err && err.message ? err.message : err);
@@ -1041,12 +528,12 @@
         BASELINE_NAME = null;
         document.getElementById('baseline-input').value = '';
         renderBaselineSummary();
-        renderScenes();
+        renderTable();
       });
 
       renderMeta();
       renderBaselineSummary();
-      renderScenes();
+      renderTable();
     </script>
   </body>
 </html>

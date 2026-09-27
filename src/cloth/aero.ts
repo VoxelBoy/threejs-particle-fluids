@@ -1,4 +1,4 @@
-import { Vector3 } from 'three';
+import type { Vector3 } from 'three';
 import {
   Fn,
   If,
@@ -9,22 +9,19 @@ import {
   instanceIndex,
   instancedArray,
   uint,
-  uniform,
   vec3,
   vec4,
 } from 'three/tsl';
 import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import type UniformNode from 'three/src/nodes/core/UniformNode.js';
 
-import type { ParticleSystem, XpbdUniforms } from '../core/index.js';
+import type { ParticleSystem } from '../core/index.js';
 
-// TSL's @types surface many nodes as bare `Node`, dropping proxy methods.
-// Same loose-alias pattern as `distance.ts`, `bending.ts`, `tether.ts`.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
 /**
- *
+ * Aerodynamic drag and lift on cloth (Keckeisen et al. 2004, §3).
  *
  * **Kernel shape — per-vertex gather (not per-triangle scatter).**
  * The kernel dispatches one thread per cloth particle. Each thread
@@ -48,9 +45,8 @@ type Any = any;
  *   `u_raw   = (n̄ × v̂_rel) × v̂_rel`                  (perpendicular to v_rel, in (n̄,v̂_rel) plane)
  *   `F_lift  = liftCoeff · |v_rel|² · A · u_raw`
  *
- * `dragCoeff = 0.5 · C_D · ρ` and `liftCoeff = 0.5 · C_L · ρ` —
- * the constant `0.5 · ρ` is folded into the artist-tuned coeffs
- * once at config time per the plan §"Aerodynamic drag + lift".
+ * `dragCoeff = 0.5 · C_D · ρ` and `liftCoeff = 0.5 · C_L · ρ`: the
+ * constant `0.5 · ρ` is folded into the tunable coefficients.
  *
  * **Why `F_lift = liftCoeff · |v_rel|² · A · u_raw` (no extra
  * `cos(θ)` factor).** The paper writes
@@ -77,17 +73,14 @@ type Any = any;
  * (`x* = x + dt · (v + dt · a) = x + dt·v + dt²·a` for any external
  * acceleration `a = F · invMass`).
  *
- * **Pipeline placement.** Runs in `preIterKernels` immediately after
- * `predict` (so `velocities` and `positions` are at substep-start;
- * `predictedPositions` already has the gravity-only prediction).
- * The aero `Δx*` adds onto that existing `x*` so the iter-loop
- * constraint kernels see the wind-perturbed prediction.
+ * **Pipeline placement.** Runs once per substep before the constraint
+ * iterations, so `velocities` and `positions` are at the substep start
+ * and `predictedPositions` holds the gravity-only prediction. The aero
+ * `Δx*` adds onto that, so the constraints see the wind-perturbed
+ * prediction.
  *
- * **Wind sampling.** MVP: a single uniform `vec3 wind` constant
- * across the whole cloth — represents a steady directional wind
- * (paper Fig. 2 "Directional"). Spatially-varying wind via a
- * callback is post-MVP (would require either per-frame TSL rebuild
- * or a 3-D texture sampling path in the kernel).
+ * **Wind.** One uniform velocity across the whole cloth, a steady
+ * directional wind (paper Fig. 2 "Directional").
  *
  * **Skipping degenerate triangles.** Per-triangle inside the loop
  * we guard against `|v_rel|² < 1e-12` (no relative motion → no
@@ -95,38 +88,6 @@ type Any = any;
  * normal). The `If` blocks gate the force accumulation; the loop
  * body always completes uniformly so the per-thread iteration
  * count stays `incidenceCount[v]` regardless of triangle quality.
- */
-export interface ClothAeroKernel {
-  /** TSL compute node — dispatch one thread per cloth particle. */
-  readonly kernel: ComputeNode;
-  /**
-   * Live-mutable wind velocity (m/s) sampled at every triangle's
-   * centroid. Default `(0, 0, 0)` — no wind. Mutate via
-   * `wind.value.set(x, y, z)` between frames.
-   */
-  readonly wind: UniformNode<'vec3', Vector3>;
-  /**
-   * Combined drag scalar `0.5 · C_D · ρ` (kg/m³). Default `0.6125`
-   * (`0.5 · 1.0 · 1.225` — sea-level air with `C_D = 1.0`, the typical
-   * flat-plate normal-incidence drag coefficient).
-   */
-  readonly dragCoeff: UniformNode<'float', number>;
-  /**
-   * Combined lift scalar `0.5 · C_L · ρ` (kg/m³). Default `0.3` —
-   * roughly half the drag scalar at sea-level air; cloth lift is
-   * generally smaller than drag for the angle-of-attack range
-   * thin-fabric scenes exercise.
-   */
-  readonly liftCoeff: UniformNode<'float', number>;
-}
-
-const DEFAULT_DRAG_COEFF = 0.6125;
-const DEFAULT_LIFT_COEFF = 0.3;
-
-/**
- * Build the per-vertex aero gather kernel. Allocates internal
- * topology buffers (the triangle list + incidence CSR) — the
- * caller owns the resulting `ComputeNode` lifetime via `ClothSystem`.
  */
 export function createClothAeroKernel(args: {
   readonly particles: ParticleSystem;
@@ -139,21 +100,16 @@ export function createClothAeroKernel(args: {
    * `0 ≤ i_k < nClothParticles`. Typically `graph.triangles`.
    */
   readonly triangles: readonly (readonly [number, number, number])[];
-  readonly xpbd: XpbdUniforms;
-  readonly initialDragCoeff?: number;
-  readonly initialLiftCoeff?: number;
-  readonly initialWind?: Vector3;
-}): ClothAeroKernel {
-  const {
-    particles,
-    particleOffset,
-    nClothParticles,
-    triangles,
-    xpbd,
-    initialDragCoeff = DEFAULT_DRAG_COEFF,
-    initialLiftCoeff = DEFAULT_LIFT_COEFF,
-    initialWind,
-  } = args;
+  readonly dt: UniformNode<'float', number>;
+  /** Wind velocity, m/s. */
+  readonly wind: UniformNode<'vec3', Vector3>;
+  /** `½ · C_D · ρ_air`. */
+  readonly dragCoeff: UniformNode<'float', number>;
+  /** `½ · C_L · ρ_air`. */
+  readonly liftCoeff: UniformNode<'float', number>;
+}): ComputeNode {
+  const { particles, particleOffset, nClothParticles, triangles, dt, wind, dragCoeff, liftCoeff } =
+    args;
 
   if (!Number.isInteger(particleOffset) || particleOffset < 0) {
     throw new Error(
@@ -235,11 +191,6 @@ export function createClothAeroKernel(args: {
     inArr.set(incidenceData);
     incidenceDataBuf.value.needsUpdate = true;
   }
-
-  // ---- Uniforms (live-mutable) ----
-  const wind = uniform(initialWind ? initialWind.clone() : new Vector3(0, 0, 0));
-  const dragCoeff = uniform(initialDragCoeff, 'float');
-  const liftCoeff = uniform(initialLiftCoeff, 'float');
 
   // ---- Kernel ----
   const kernel = Fn(() => {
@@ -324,12 +275,12 @@ export function createClothAeroKernel(args: {
     });
 
     // Δx* = dt² · invMass · F_sum  (semi-implicit Euler external-force step).
-    const dtVal: Any = xpbd.dt;
+    const dtVal: Any = dt;
     const dtSq: Any = dtVal.mul(dtVal).toVar();
     const dxStar: Any = fSum.mul(dtSq.mul(w)).toVar();
     const xStar: Any = particles.predictedPositions.element(absSlot).xyz.toVar();
     particles.predictedPositions.element(absSlot).assign(vec4(xStar.add(dxStar), float(0.0)));
   })().compute(nClothParticles);
 
-  return { kernel, wind, dragCoeff, liftCoeff };
+  return kernel;
 }

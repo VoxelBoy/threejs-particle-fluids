@@ -28,59 +28,28 @@ function nextPow2(n: number): number {
 
 export interface HashGridOptions {
   /**
-   *
-   *
-   * For paper §9 expanded-radius queries (Macklin 2014 "catches particles
-   * that move into range during the constraint solve"), the caller inflates
-   * this by `(1 + ε)` at construction time and applies the actual query
-   * radius as a per-pair distance filter inside the `onCandidate` callback.
+   * Cell edge length. A neighbor query visits the 27 cells around a point,
+   * so this must be at least the largest query radius.
    */
   readonly cellSize: number;
   /**
-   * Number of buckets in the Teschner §4.1 hash table. MUST be a power of
-   * two (the bitmask `& (hashTableSize − 1)` implements `mod n`). If
-   * omitted, defaults to `nextPow2(2 · particles.capacity)`, matching
-   * Teschner Fig. 3 / Fig. 4's "flattened" load-factor regime (`n ≳
-   * 2 × occupied-cell count`). Raising `n` reduces hash collisions and
-   * the narrow-phase false-positive rate at the cost of buffer memory
-   * (`counts`, `cellStart`, `cellEnd`, `writeCursor` are each sized to
-   * `padToScanWorkgroup(hashTableSize) · 4 bytes`).
-   *
-   * Capped at `MAX_CELLS_SINGLE_LEVEL_SCAN` (1,048,576). Larger values
-   * require a multi-level scan (deferred — file a new UNKNOWN at the
-   * requesting phase).
+   * Hash buckets; a power of two. Default: the next power of two above
+   * `2 × capacity`, which keeps collisions between distant cells rare.
+   * At most 1,048,576.
    */
   readonly hashTableSize?: number;
   /**
-   * Optional scene-centering offset subtracted before the f32→i32 cell-
-   * coordinate quantization. Preserves sub-millimetre cell-index precision
-   * for scenes centered far from the world origin. Defaults to `(0, 0, 0)`
-   * — the standard precision-optimal choice when particles cluster near
-   * the origin. This is NOT a domain declaration: particles may sit
-   * arbitrarily far from the origin without being clamped.
+   * Offset subtracted from positions before they are quantized to cells.
+   * Keeps cell indices precise for scenes far from the origin. Default
+   * `(0, 0, 0)`.
    */
   readonly hashOrigin?: Vector3;
 }
 
 /**
- * CPU-side snapshot returned by {@link HashGrid.readback}. Debug / test only.
- *
- * Layout:
- *   `cellIndex[p]`      — per-particle hash-bucket index, length `capacity`.
- *   `counts[c]`         — particles in bucket `c` after the histogram pass.
- *   `cellStart[c]`      — first index into `sortedIndices` belonging to
- *                         bucket `c`; = exclusive prefix of `counts`.
- *   `cellEnd[c]`        — one past the last index for bucket `c`;
- *                         = `cellStart[c] + counts[c]`.
- *   `sortedIndices[k]`  — particle indices sorted by bucket. Length
- *                         `capacity`. The **sequence within a bucket** is
- *                         not guaranteed stable across runs (see
- *                         `sort.ts` "Stability (non-)guarantee").
- *
- * `counts`, `cellStart`, `cellEnd` are each `hashTableSizePadded`-sized;
- * callers that iterate up to `hashTableSize` (the semantically-valid
- * prefix) must bring their own bound — padded tail entries are
- * zero-filled and benign.
+ * The grid's buffers read back to the CPU, for tests and debugging. `counts`,
+ * `cellStart`, and `cellEnd` are padded past `hashTableSize` with zeros.
+ * Particle order within a bucket may differ from run to run.
  */
 export interface HashGridSnapshot {
   readonly capacity: number;
@@ -94,42 +63,25 @@ export interface HashGridSnapshot {
 }
 
 /**
- * Unbounded spatial-hash neighbor search (Teschner et al. 2003) for
- * Three.js Particle Fluids core.
+ * Spatial hash for neighbor search (Teschner et al. 2003), rebuilt on the GPU
+ * with a counting sort:
  *
+ * 1. hash each particle's cell (Morton order) and count particles per bucket;
+ * 2. prefix-sum the counts (Blelloch scan) into each bucket's start and end;
+ * 3. scatter particle indices into bucket order;
+ * 4. copy predicted positions into that order too, so neighbor walks read
+ *    memory contiguously.
  *
- * Pipeline per `rebuild()`:
- *   1. resetCounts              — `counts[c] = 0`
- *   2. resetOverflowFlag        — `overflowFlag = 0`
- *   3. cellIndexAndHistogram    — `cellIndex[p]` + `atomicAdd(counts, 1)`
- *   4. blockScan                — Blelloch per-block exclusive scan
- *   5. blockSumScan             — scan of block totals (single workgroup)
- *   6. finalizeCellRanges       — fused: addPrefix + resetWriteCursor +
- *                                 cellBounds. After this, `cellStart[c]`
- *                                 is the global exclusive prefix of
- *                                 `counts`, `writeCursor[c] = cellStart[c]`,
- *                                 and `cellEnd[c] = cellStart[c] + counts[c]`.
- *                                 (Phase Perf-17.)
- *   7. scatter                  — `sortedIndices[atomicAdd(cursor)] = p`
- *   8. sortedPositions          — `sortedPredictedPositions[k] =
- *                                  predictedPositions[sortedIndices[k]]`
- *                                  (Phase Perf-09; consumed by pair-list build).
- *
- * Steps 4–6 are the standard three-pass extension of the Blelloch scan
- * (Probe 2, `tests/_helpers/probes/scan.ts`) with the post-scan finalize pass fused
- * (Phase Perf-17). Steps 1 + 2 + 3 + 7 are straight bookkeeping. Step 8
- * materializes a Morton-permuted shadow of `predictedPositions` for
- * coalesced reads in the pair-list build (see `sortedPositions.ts`). All
- * eight run in a single `renderer.computeAsync([...])` dispatch so
- * command-encoder ordering is sufficient — same pattern validated by
- * Phase 01 Probe 5 (`_probe/kernelChain.ts`).
+ * The space is unbounded: distant cells share buckets, and queries filter
+ * the extra candidates by distance. {@link SimLoop} owns and rebuilds a grid
+ * for you; build one directly only for custom tools.
  */
 export class HashGrid {
   readonly renderer: WebGPURenderer;
   readonly particles: ParticleSystem;
   readonly cellSize: number;
   readonly hashOrigin: Vector3;
-  /** Hash-table size (Teschner §4.1 `n`). Power of two. */
+  /** Number of hash buckets, a power of two. */
   readonly hashTableSize: number;
   /** `hashTableSize` rounded up to a multiple of `SCAN_WORKGROUP_SIZE`. */
   readonly hashTableSizePadded: number;
@@ -139,18 +91,9 @@ export class HashGrid {
   readonly cellStart: StorageBufferNode<'uint'>;
   readonly cellEnd: StorageBufferNode<'uint'>;
   readonly sortedIndices: StorageBufferNode<'uint'>;
-  /**
-   * Morton-permuted shadow copy of `particles.predictedPositions`.
-   * Rebuilt once per substep as the last stage of {@link rebuildPipeline}.
-   * `sortedPredictedPositions[k].xyz =
-   *  predictedPositions[sortedIndices[k]].xyz` for `k ∈ [0, capacity)`.
-   * Read by {@link buildPairListKernel} so the inner cell-bucket loop's
-   * candidate-position reads coalesce across adjacent `k` values
-   * instead of scattering through the original layout. See
-   * `sortedPositions.ts` for the design rationale.
-   */
+  /** `predictedPositions` in bucket order, refreshed by every rebuild. */
   readonly sortedPredictedPositions: StorageBufferNode<'vec4'>;
-  /** `u32[1]`, atomic; set to 1 if any particle's cell coord saturated. */
+  /** Atomic flag set to 1 when a particle's cell coordinate saturated during a rebuild. */
   readonly overflowFlag: StorageBufferNode<'uint'>;
 
   readonly hashOriginUniform: UniformNode<'vec3', Vector3>;
@@ -181,8 +124,7 @@ export class HashGrid {
       throw new Error(
         `HashGrid: hashTableSize=${hashTableSize} padded to ${hashTableSizePadded} ` +
           `exceeds the single-level Blelloch scan cap (${MAX_CELLS_SINGLE_LEVEL_SCAN} = ` +
-          `SCAN_WORKGROUP_SIZE²). Reduce hashTableSize (at the cost of higher hash- ` +
-          `collision rate) or file an UNKNOWN for recursive multi-level scan.`,
+          `SCAN_WORKGROUP_SIZE²). Use a smaller hashTableSize.`,
       );
     }
 
@@ -205,8 +147,9 @@ export class HashGrid {
     this.blockSums = instancedArray(SCAN_WORKGROUP_SIZE, 'uint');
     this.writeCursor = instancedArray(hashTableSizePadded, 'uint').toAtomic();
 
+    // Bin by predicted positions: every query runs after prediction, at predicted positions.
     const cellIndexKernels = buildCellIndexKernels(
-      particles.positions,
+      particles.predictedPositions,
       this.cellIndex,
       this.counts,
       this.overflowFlag,
@@ -249,23 +192,13 @@ export class HashGrid {
     ];
   }
 
-  /**
-   * Dispatch the full eight-stage rebuild pipeline for the current
-   * `particles.positions`. Awaitable so callers can chain `predict →
-   * rebuild → contacts → solve → advect` at Phase 04+.
-   */
+  /** Rebuild the grid from the current `particles.predictedPositions`. */
   async rebuild(): Promise<void> {
     this.assertAlive();
     await this.renderer.computeAsync(this.pipeline);
   }
 
-  /**
-   * Read-only access to the ordered kernel chain that {@link rebuild}
-   * dispatches. Exposed so {@link SimLoop} can splice the grid rebuild into
-   * its larger per-substep `computeAsync` call instead of doing one
-   * `computeAsync` per stage. The array is the same one the instance holds
-   * internally — callers MUST NOT mutate it.
-   */
+  /** The rebuild's kernels, for batching into a larger dispatch. Don't modify it. */
   get rebuildPipeline(): readonly ComputeNode[] {
     return this.pipeline;
   }
@@ -291,18 +224,18 @@ export class HashGrid {
     };
   }
 
-  /** Read the CPU-visible overflow flag. 1 = any particle's cell coord was clamped last rebuild. */
+  /** 1 if a particle was too far out for its cell coordinate during the last rebuild. Stalls on the GPU. */
   async readbackOverflow(): Promise<number> {
     this.assertAlive();
     const buf = await this.renderer.getArrayBufferAsync(this.overflowFlag.value);
     return new Uint32Array(buf)[0]!;
   }
 
-  destroy(): void {
+  dispose(): void {
     this.disposed = true;
   }
 
   private assertAlive(): void {
-    if (this.disposed) throw new Error('HashGrid has been destroyed');
+    if (this.disposed) throw new Error('HashGrid has been disposed');
   }
 }

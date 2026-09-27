@@ -4,9 +4,9 @@ import {
   ParticleSystem,
   createParticleRenderer,
   type ParticleInit,
-} from '../../../src/core/index.js';
+} from '../../../src/index.js';
 
-// HashGrid overflow-flag invariant (G3).
+// HashGrid overflow-flag invariant.
 //
 // The hash grid carries TWO overflow checks, both surfaced through a single
 // `overflowFlag`:
@@ -30,16 +30,16 @@ import {
 //   - Reset behavior: the rebuild pipeline's `resetOverflowFlag` runs
 //     first, so a previous frame's set flag does not stay sticky.
 
-describe('HashGrid: overflow flag (G3)', () => {
+describe('HashGrid: overflow flag', () => {
   it('stays 0 when all particles are within the Morton cell-coordinate range', async () => {
     const renderer = await createParticleRenderer();
     try {
       // At cellSize = 0.1 the Morton range is ±51.1 m. These positions sit
       // comfortably within that window.
       const data: ParticleInit[] = [
-        { position: [0, 0, 0], velocity: [0, 0, 0], invMass: 1, phase: 0 },
-        { position: [40, -25, 30], velocity: [0, 0, 0], invMass: 1, phase: 0 },
-        { position: [-30, 15, -45], velocity: [0, 0, 0], invMass: 1, phase: 0 },
+        { position: [0, 0, 0], velocity: [0, 0, 0], invMass: 1 },
+        { position: [40, -25, 30], velocity: [0, 0, 0], invMass: 1 },
+        { position: [-30, 15, -45], velocity: [0, 0, 0], invMass: 1 },
       ];
       const particles = new ParticleSystem(renderer, data.length, 0.02);
       particles.uploadParticles(data);
@@ -50,8 +50,8 @@ describe('HashGrid: overflow flag (G3)', () => {
       const flag = await grid.readbackOverflow();
       expect(flag).toBe(0);
 
-      grid.destroy();
-      particles.destroy();
+      grid.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }
@@ -64,8 +64,8 @@ describe('HashGrid: overflow flag (G3)', () => {
       // that AND past the f32→i32 saturation clamp at ~10⁸ m, so both
       // overflow conditions fire — either alone would suffice.
       const data: ParticleInit[] = [
-        { position: [0, 0, 0], velocity: [0, 0, 0], invMass: 1, phase: 0 },
-        { position: [1e10, 0, 0], velocity: [0, 0, 0], invMass: 1, phase: 0 },
+        { position: [0, 0, 0], velocity: [0, 0, 0], invMass: 1 },
+        { position: [1e10, 0, 0], velocity: [0, 0, 0], invMass: 1 },
       ];
       const particles = new ParticleSystem(renderer, data.length, 0.02);
       particles.uploadParticles(data);
@@ -76,8 +76,8 @@ describe('HashGrid: overflow flag (G3)', () => {
       const flag = await grid.readbackOverflow();
       expect(flag).toBe(1);
 
-      grid.destroy();
-      particles.destroy();
+      grid.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }
@@ -87,8 +87,8 @@ describe('HashGrid: overflow flag (G3)', () => {
     const renderer = await createParticleRenderer();
     try {
       const data: ParticleInit[] = [
-        { position: [0, 0, 0], velocity: [0, 0, 0], invMass: 1, phase: 0 },
-        { position: [1e10, 0, 0], velocity: [0, 0, 0], invMass: 1, phase: 0 },
+        { position: [0, 0, 0], velocity: [0, 0, 0], invMass: 1 },
+        { position: [1e10, 0, 0], velocity: [0, 0, 0], invMass: 1 },
       ];
       const particles = new ParticleSystem(renderer, data.length, 0.02);
       particles.uploadParticles(data);
@@ -101,14 +101,14 @@ describe('HashGrid: overflow flag (G3)', () => {
       // pipeline's resetOverflowFlag kernel runs before the histogram
       // kernel that would otherwise leave the previous frame's flag sticky.
       particles.uploadParticles([
-        { position: [0, 0, 0], velocity: [0, 0, 0], invMass: 1, phase: 0 },
-        { position: [0.5, 0, 0], velocity: [0, 0, 0], invMass: 1, phase: 0 },
+        { position: [0, 0, 0], velocity: [0, 0, 0], invMass: 1 },
+        { position: [0.5, 0, 0], velocity: [0, 0, 0], invMass: 1 },
       ]);
       await grid.rebuild();
       expect(await grid.readbackOverflow()).toBe(0);
 
-      grid.destroy();
-      particles.destroy();
+      grid.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

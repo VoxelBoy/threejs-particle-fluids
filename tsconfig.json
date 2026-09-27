@@ -17,6 +17,6 @@
     "verbatimModuleSyntax": true,
     "noEmit": true
   },
-  "include": ["src", "demo", "tests", "scripts", "*.config.ts"],
+  "include": ["src", "demo", "examples", "tests", "scripts", "*.config.ts"],
   "exclude": ["node_modules", "dist"]
 }

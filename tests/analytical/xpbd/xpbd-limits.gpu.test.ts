@@ -2,27 +2,44 @@ import { describe, expect, it } from 'vitest';
 import {
   ParticleSystem,
   SimLoop,
-  createParticleRenderer,
+  constraintKernels,
   createDistanceConstraints,
-  createXpbdUniforms,
+  createParticleRenderer,
+  type Material,
   type ParticleInit,
-} from '../../../src/core/index.js';
+} from '../../../src/index.js';
 
-// Phase 04 G1 — rigid and soft compliance limits (BLOCKING).
+// Rigid and soft compliance limits.
 //
 // Rigid (α = 0): under gravity, a one-pinned / one-free pair connected by a
-// rigid distance constraint must preserve distance across 1000 frames. Plan
-// tolerance: |length − rest| < 1e-4 at any point during the run. In XPBD
-// α = 0 reduces eq. (18) to the classic PBD scaling factor `s_j` (Macklin
-// 2016 §4.1: "in the case of α_j = 0 it corresponds exactly to the scaling
-// factor s_j in the original PBD algorithm (2)"), so this exercises PBD's
-// own iteration-count-stiff regime — a few iterations are enough.
+// rigid distance constraint must preserve distance across 1000 frames.
+// Tolerance: |length − rest| < 1e-4 at any sampled point during the run. In
+// XPBD α = 0 reduces eq. (18) to the classic PBD scaling factor `s_j`
+// (Macklin 2016 §4.1: "in the case of α_j = 0 it corresponds exactly to the
+// scaling factor s_j in the original PBD algorithm (2)"), so this exercises
+// PBD's own iteration-count-stiff regime — a few iterations are enough.
 //
 // Soft (α → ∞): the constraint is effectively absent and free-fall matches
 // unconstrained motion. With α = 1e12 the per-step correction is of order
 // C/(α̃+w) ≈ C·dt²/α ≈ 3e-16, well below f32 precision at particle-1's
 // falling magnitudes. We run an instance without any constraint alongside
-// and compare per-frame.
+// and compare per frame.
+
+/** A material that solves one distance constraint between particles 0 and 1. */
+function distanceMaterial(particles: ParticleSystem, compliance: number, rest: number): Material {
+  return {
+    build: ({ dt }) =>
+      constraintKernels([
+        createDistanceConstraints({
+          particles,
+          pairs: [[0, 1]],
+          compliance,
+          restLength: [rest],
+          dt,
+        }),
+      ]),
+  };
+}
 
 async function runRigid(): Promise<{ maxLengthDrift: number }> {
   const renderer = await createParticleRenderer();
@@ -30,26 +47,16 @@ async function runRigid(): Promise<{ maxLengthDrift: number }> {
     const L0 = 1.0;
     const particles = new ParticleSystem(renderer, 2, 0.02);
     const data: ParticleInit[] = [
-      { position: [0, 0, 0], velocity: [0, 0, 0], invMass: 0, phase: 0 },
-      { position: [0, -L0, 0], velocity: [0, 0, 0], invMass: 1, phase: 0 },
+      { position: [0, 0, 0], velocity: [0, 0, 0], invMass: 0 },
+      { position: [0, -L0, 0], velocity: [0, 0, 0], invMass: 1 },
     ];
     particles.uploadParticles(data);
 
-    const xpbd = createXpbdUniforms(1 / 60);
-    const dist = createDistanceConstraints({
-      particles,
-      pairs: [[0, 1]],
-      compliance: 0,
-      restLength: [L0],
-      xpbd,
-    });
     const loop = new SimLoop(particles, {
-      xpbd,
-      constraints: [dist],
+      materials: [distanceMaterial(particles, 0, L0)],
       substeps: 4,
       iterations: 4,
     });
-    loop.kernels.floorY.value = -1e9;
 
     let maxDrift = 0;
     const dt = 1 / 60;
@@ -67,7 +74,8 @@ async function runRigid(): Promise<{ maxLengthDrift: number }> {
       }
     }
 
-    particles.destroy();
+    loop.dispose();
+    particles.dispose();
     return { maxLengthDrift: maxDrift };
   } finally {
     renderer.dispose();
@@ -84,29 +92,18 @@ async function runSoft(): Promise<{ maxDeviation: number }> {
     const constrained = new ParticleSystem(renderer, 2, 0.02);
     const bare = new ParticleSystem(renderer, 2, 0.02);
     const initial: ParticleInit[] = [
-      { position: [0, 0, 0], velocity: [0, 0, 0], invMass: 0, phase: 0 },
-      { position: [0, -L0, 0], velocity: [0, 0, 0], invMass: 1, phase: 0 },
+      { position: [0, 0, 0], velocity: [0, 0, 0], invMass: 0 },
+      { position: [0, -L0, 0], velocity: [0, 0, 0], invMass: 1 },
     ];
     constrained.uploadParticles(initial);
     bare.uploadParticles(initial);
 
-    const xpbdC = createXpbdUniforms(1 / 60);
-    const dist = createDistanceConstraints({
-      particles: constrained,
-      pairs: [[0, 1]],
-      compliance: 1e12,
-      restLength: [L0],
-      xpbd: xpbdC,
-    });
     const loopC = new SimLoop(constrained, {
-      xpbd: xpbdC,
-      constraints: [dist],
+      materials: [distanceMaterial(constrained, 1e12, L0)],
       substeps: 1,
       iterations: 2,
     });
     const loopB = new SimLoop(bare, { substeps: 1 });
-    loopC.kernels.floorY.value = -1e9;
-    loopB.kernels.floorY.value = -1e9;
 
     const dt = 1 / 60;
     let maxDev = 0;
@@ -122,27 +119,27 @@ async function runSoft(): Promise<{ maxDeviation: number }> {
       }
     }
 
-    constrained.destroy();
-    bare.destroy();
+    loopC.dispose();
+    loopB.dispose();
+    constrained.dispose();
+    bare.dispose();
     return { maxDeviation: maxDev };
   } finally {
     renderer.dispose();
   }
 }
 
-describe('Phase 04 — XPBD: rigid limit (α = 0)', () => {
+describe('XPBD: rigid limit (α = 0)', () => {
   it('distance drift < 1e-4 over 1000 frames under gravity', async () => {
     const { maxLengthDrift } = await runRigid();
-    // eslint-disable-next-line no-console
     console.info(`[xpbd-rigid] max |len − L₀| = ${maxLengthDrift.toExponential(3)}`);
     expect(maxLengthDrift).toBeLessThan(1e-4);
   }, 120_000);
 });
 
-describe('Phase 04 — XPBD: soft limit (α → ∞)', () => {
+describe('XPBD: soft limit (α → ∞)', () => {
   it('particle 1 trajectory matches no-constraint free fall within 1e-6', async () => {
     const { maxDeviation } = await runSoft();
-    // eslint-disable-next-line no-console
     console.info(
       `[xpbd-soft] max |x_constrained − x_unconstrained| = ${maxDeviation.toExponential(3)}`,
     );

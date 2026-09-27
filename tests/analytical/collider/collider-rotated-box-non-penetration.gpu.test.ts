@@ -6,27 +6,26 @@ import {
   SimLoop,
   createParticleRenderer,
   type ParticleInit,
-} from '../../../src/core/index.js';
+} from '../../../src/index.js';
 
-// Phase 07 U-21 resolution — oriented boxes in PrimitiveSet.
+// Oriented boxes in a PrimitiveSet.
 //
-// Mirrors the Phase 06 `collider-non-penetration` test shape but gives
-// each of three boxes a non-identity world rotation. Each frame we CPU-
-// evaluate the OBB signed-distance to every particle's position and
-// confirm the non-penetration invariant `φ(x) ≥ -r - ε` holds across a
-// 2 s simulation.
+// Mirrors `collider-non-penetration` with three rotated boxes: two solid
+// slabs tilted 30° about Z and 45° about X, and an inverted box (a
+// container) rotated 36° about Y. Every frame, the oriented-box signed
+// distance of every particle is evaluated on the CPU, and the
+// non-penetration invariant `φ(x) ≥ −r − ε` must hold across 2 s.
 //
-// If the kernel's rotation plumbing is wrong — identity quaternion
-// leaked into the box, or gradient not rotated back to world — the
-// particles will either drift through the rotated top face or be
-// pushed off along the box's local axes rather than its rotated
-// surface normal. Either failure mode would trip the invariant.
+// Every primitive acts on every particle, so on the first substep the
+// rotated container pulls all three particles inside it, where they then
+// settle. That exercises the rotated SDF and the rotation of its gradient
+// back to world space: if either is wrong, particles are pushed along the
+// box's local axes instead of its rotated walls.
 
 /**
- * CPU oriented-box SDF. Rotates the query point into the box's local
- * frame via the conjugate quaternion, then applies the standard AABB
- * SDF. `invert = true` negates the return — matches the kernel's
- * `FLAG_INVERT` behaviour.
+ * CPU oriented-box SDF. Rotates the query point into the box's local frame
+ * with the conjugate quaternion, then applies the standard AABB SDF.
+ * `invert = true` negates the result, matching the kernel's `FLAG_INVERT`.
  */
 function sdfOrientedBox(
   x: Vector3,
@@ -49,20 +48,18 @@ function sdfOrientedBox(
   return invert ? -d : d;
 }
 
-describe('Phase 07 — U-21: oriented-box non-penetration', () => {
+describe('collider: oriented-box non-penetration', () => {
   it('three particles drop onto 3 rotated boxes; φ ≥ -r - ε across 2 s', async () => {
     const renderer = await createParticleRenderer();
     try {
       const r = 0.05;
 
-      // Scene: three particles, three rotated boxes.
-      //   particle 0 drops onto a box tilted 30° around Z
-      //   particle 1 drops onto a box tilted 45° around X
-      //   particle 2 drops into an inverted-box container rotated around Y
+      // Particles 0 and 1 start above the tilted slabs, particle 2 inside the
+      // rotated container.
       const initial: ParticleInit[] = [
-        { position: [-1.0, 0.8, 0], velocity: [0, 0, 0], invMass: 1, phase: 0 },
-        { position: [0, 0.8, 0], velocity: [0, 0, 0], invMass: 1, phase: 0 },
-        { position: [1.0, 0.0, 0], velocity: [0, 0, 0], invMass: 1, phase: 0 },
+        { position: [-1.0, 0.8, 0], velocity: [0, 0, 0], invMass: 1 },
+        { position: [0, 0.8, 0], velocity: [0, 0, 0], invMass: 1 },
+        { position: [1.0, 0.0, 0], velocity: [0, 0, 0], invMass: 1 },
       ];
 
       const particles = new ParticleSystem(renderer, initial.length, r);
@@ -80,7 +77,7 @@ describe('Phase 07 — U-21: oriented-box non-penetration', () => {
       const boxCHE = new Vector3(0.3, 0.3, 0.3);
       const boxCRot = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.PI / 5);
 
-      const colliders = new PrimitiveSet(particles, { capacity: 3 });
+      const colliders = new PrimitiveSet(particles);
       colliders.addBox(boxAC, boxAHE, {
         rotation: boxARot,
         muS: 0.3,
@@ -97,14 +94,12 @@ describe('Phase 07 — U-21: oriented-box non-penetration', () => {
         muS: 0.3,
         muK: 0.2,
       });
-      colliders.upload();
 
       const loop = new SimLoop(particles, {
         substeps: 4,
         iterations: 4,
-        colliders: { colliders },
+        colliders: [colliders],
       });
-      loop.kernels.floorY.value = -1e9;
       loop.gravity.set(0, -9.81, 0);
 
       const frameDt = 1 / 60;
@@ -140,7 +135,6 @@ describe('Phase 07 — U-21: oriented-box non-penetration', () => {
         }
       }
 
-      // eslint-disable-next-line no-console
       console.info(
         `[collider-rotated-box-non-penetration] worstPhi=${worstPhi.toFixed(5)} ` +
           `(particle=${worstParticle}, collider=${worstCollider}, frame=${worstFrame}) ` +
@@ -149,8 +143,9 @@ describe('Phase 07 — U-21: oriented-box non-penetration', () => {
 
       expect(worstPhi).toBeGreaterThan(-r - eps);
 
-      particles.destroy();
-      colliders.destroy();
+      loop.dispose();
+      particles.dispose();
+      colliders.dispose();
     } finally {
       renderer.dispose();
     }

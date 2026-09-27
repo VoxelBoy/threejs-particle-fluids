@@ -5,10 +5,10 @@ import {
   ParticleSystem,
   createParticleRenderer,
   type ParticleInit,
-} from '../../../src/core/index.js';
+} from '../../../src/index.js';
 import { MORTON_BIAS } from '../../../src/core/hashGrid/mortonHash.js';
 
-// Phase Perf Z-sort G1 — Morton encoding correctness.
+// Morton encoding correctness.
 //
 // Hand-verified Morton encoding for a small set of (cx, cy, cz) cell-coord
 // triples covering origin, axis-aligned offsets, and edge cases at the
@@ -36,7 +36,7 @@ function mortonCPU(cx: number, cy: number, cz: number): number {
   return (part1by2CPU(ux) | (part1by2CPU(uy) << 1) | (part1by2CPU(uz) << 2)) >>> 0;
 }
 
-describe('HashGrid Morton encoding (G1)', () => {
+describe('HashGrid: Morton bucket encoding', () => {
   it('GPU bucket index matches CPU Morton encoding for hand-verified cells', async () => {
     const renderer = await createParticleRenderer();
     try {
@@ -66,7 +66,6 @@ describe('HashGrid Morton encoding (G1)', () => {
         position: [(cx + 0.5) * CELL, (cy + 0.5) * CELL, (cz + 0.5) * CELL],
         velocity: [0, 0, 0],
         invMass: 1,
-        phase: 0,
       }));
 
       const particles = new ParticleSystem(renderer, data.length, 0.02);
@@ -92,8 +91,8 @@ describe('HashGrid Morton encoding (G1)', () => {
       // Overflow flag should stay 0 for cells inside the Morton range.
       expect(await grid.readbackOverflow()).toBe(0);
 
-      grid.destroy();
-      particles.destroy();
+      grid.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }
@@ -109,7 +108,6 @@ describe('HashGrid Morton encoding (G1)', () => {
           position: [(MORTON_BIAS + 0.5) * CELL, 0, 0],
           velocity: [0, 0, 0],
           invMass: 1,
-          phase: 0,
         },
       ];
       const particles = new ParticleSystem(renderer, data.length, 0.02);
@@ -120,8 +118,8 @@ describe('HashGrid Morton encoding (G1)', () => {
 
       expect(await grid.readbackOverflow()).toBe(1);
 
-      grid.destroy();
-      particles.destroy();
+      grid.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

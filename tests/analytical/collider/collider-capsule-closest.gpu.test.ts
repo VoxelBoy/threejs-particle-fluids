@@ -6,17 +6,17 @@ import {
   SimLoop,
   createParticleRenderer,
   type ParticleInit,
-} from '../../../src/core/index.js';
+} from '../../../src/index.js';
 
-// Phase 06 G1 — "Capsule closest-point" (plan §Validation > Automatic (G1)):
-// "For 100 random points around a fixed capsule, computed projection
-// direction matches analytical closest-point direction within 1e-5."
+// Capsule closest point: for 100 random points around a fixed capsule, the
+// direction the solve pushes each particle must match the analytical
+// closest-point direction.
 //
 // Strategy: place each test particle at a position `p` whose CPU-computed
 // projection onto the capsule gives a known outward normal `n_expected`.
-// After one gravity-free step of collider-solve, the particle should have
-// been pushed along `n_expected`; the observed correction direction
-// `(x_after - x_before).normalized()` is then compared.
+// After one gravity-free step of the collider solve, the particle should
+// have been pushed along `n_expected`; the observed correction direction
+// `(x_after − x_before).normalized()` is compared against it.
 
 function closestPointOnSegment(p: Vector3, a: Vector3, b: Vector3): { c: Vector3; t: number } {
   const ab = new Vector3().subVectors(b, a);
@@ -29,7 +29,7 @@ function closestPointOnSegment(p: Vector3, a: Vector3, b: Vector3): { c: Vector3
   return { c, t };
 }
 
-describe('Phase 06 — collider: capsule closest-point direction', () => {
+describe('collider: capsule closest-point direction', () => {
   it('100 random test points: solve-kernel normal matches analytical closest-point within 1e-3', async () => {
     const renderer = await createParticleRenderer();
     try {
@@ -62,26 +62,24 @@ describe('Phase 06 — collider: capsule closest-point direction', () => {
         ny /= len;
         nz /= len;
 
-        // Pick a random point along the capsule axis, then offset by
-        // `capsuleR - penetration` along the random unit direction.
+        // Pick a random point along the capsule axis, then offset it along
+        // the random unit direction.
         const t = (rand() + 1) * 0.5; // [0, 1]
         const baseX = capsuleA.x + (capsuleB.x - capsuleA.x) * t;
         const baseY = capsuleA.y + (capsuleB.y - capsuleA.y) * t;
         const baseZ = capsuleA.z + (capsuleB.z - capsuleA.z) * t;
-        // Penetration depth for the particle: `d = r_particle - ε`
-        // (particle surface sits just inside the capsule surface so the
-        // kernel fires and projects outward along the expected normal).
+        // The particle's surface sits just inside the capsule surface, so
+        // the solve fires and projects it outward along the expected normal.
         const offset = capsuleR - r + 0.01; // offset from axis to particle centre
         const px = baseX + nx * offset;
         const py = baseY + ny * offset;
         const pz = baseZ + nz * offset;
 
-        // Expected normal: (particle − closest-on-segment) normalized.
-        // For this construction the direction from segment to particle
-        // centre equals (nx, ny, nz) — but recompute via the same
-        // closest-point routine the kernel uses, to avoid a tautology
-        // caused by the segment endpoint being collinear with the
-        // radial construction axis.
+        // Expected normal: (particle − closest point on segment), normalized.
+        // The construction direction (nx, ny, nz) is not the closest-point
+        // direction in general (it has a component along the axis, and near
+        // the ends the projection clamps onto an end cap), so recompute it
+        // with the same closest-point routine the kernel uses.
         const { c } = closestPointOnSegment(new Vector3(px, py, pz), capsuleA, capsuleB);
         const nxE = px - c.x;
         const nyE = py - c.y;
@@ -89,30 +87,23 @@ describe('Phase 06 — collider: capsule closest-point direction', () => {
         const lenE = Math.sqrt(nxE * nxE + nyE * nyE + nzE * nzE);
         expectedNormals.push(new Vector3(nxE / lenE, nyE / lenE, nzE / lenE));
 
-        initial.push({
-          position: [px, py, pz],
-          velocity: [0, 0, 0],
-          invMass: 1,
-          phase: 0,
-        });
+        initial.push({ position: [px, py, pz], velocity: [0, 0, 0], invMass: 1 });
       }
 
       const particles = new ParticleSystem(renderer, N, r);
       particles.uploadParticles(initial);
 
-      const colliders = new PrimitiveSet(particles, { capacity: 1 });
+      const colliders = new PrimitiveSet(particles);
       colliders.addCapsule(capsuleA, capsuleB, capsuleR, {
         muS: 0.0,
-        muK: 0.0, // disable friction — isolate normal projection.
+        muK: 0.0, // no friction — isolate the normal projection.
       });
-      colliders.upload();
 
       const loop = new SimLoop(particles, {
         substeps: 1,
         iterations: 1,
-        colliders: { colliders },
+        colliders: [colliders],
       });
-      loop.kernels.floorY.value = -1e9;
       loop.gravity.set(0, 0, 0); // no gravity — isolate the projection.
 
       await loop.step(1 / 60);
@@ -134,28 +125,27 @@ describe('Phase 06 — collider: capsule closest-point direction', () => {
         correctedCount++;
         const nObs = new Vector3(dx / dLen, dy / dLen, dz / dLen);
         const nExp = expectedNormals[i]!;
-        // Angular error via dot product (|error| ≤ acos(dot)).
+        // Angular error via the dot product.
         const dot = Math.min(1, Math.max(-1, nObs.dot(nExp)));
         const angleErr = Math.acos(dot);
         if (angleErr > maxAngleErr) maxAngleErr = angleErr;
       }
 
-      // eslint-disable-next-line no-console
       console.info(
         `[collider-capsule-closest] N=${N} corrected=${correctedCount} maxAngleErr=${maxAngleErr.toExponential(3)} rad`,
       );
 
-      // Expected angular error: 0 for a perfect kernel. The plan gate is
-      // "within 1e-5". Our observed path is CPU → GPU f32 → CPU f32; the
-      // single-correction kernel should give angular error ≲ 1e-5 rad in
-      // the common case. Relaxed to 1e-3 to absorb the corner case where
-      // the particle sits exactly on the sphere-cap vs. cylindrical-body
-      // transition (sub-ULP numerical instability in `clamp(t, 0, 1)`).
+      // A perfect kernel gives zero angular error. The path is CPU → GPU f32
+      // → CPU f32, so a single correction should be accurate to ≲ 1e-5 rad
+      // in the common case; 1e-3 absorbs the corner case where a particle
+      // sits exactly on the end-cap / cylinder transition (sub-ULP
+      // instability in `clamp(t, 0, 1)`).
       expect(correctedCount).toBeGreaterThanOrEqual(Math.floor(N * 0.9));
       expect(maxAngleErr).toBeLessThan(1e-3);
 
-      particles.destroy();
-      colliders.destroy();
+      loop.dispose();
+      particles.dispose();
+      colliders.dispose();
     } finally {
       renderer.dispose();
     }

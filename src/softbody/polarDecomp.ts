@@ -23,12 +23,7 @@ export interface Mat3Nodes {
  * TSL emitter for the 3x3 polar decomposition `A = R · S` via Jacobi
  * diagonalization of the symmetric PSD matrix `M = A^T · A`.
  *
- *
-
- *
- * Shared with Phase 15's rigid stiff-stack stabilization, per the plan's
- * §"Deliverables" split between `shapeMatch.ts` (the per-body kernel)
- * and `polarDecomp.ts` (the math primitive reused by rigid bodies).
+ * Used by both global and local shape matching.
  *
  * Input / output are `Mat3Nodes` objects (nine float nodes in row-major
  * order). The caller is responsible for driving this inside an `If` /

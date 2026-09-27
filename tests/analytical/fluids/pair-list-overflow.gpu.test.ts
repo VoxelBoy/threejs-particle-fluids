@@ -1,9 +1,9 @@
-// Phase Perf — pair-list overflow flag G1.
+// Neighbor-list overflow flag.
 //
-// When a particle has more than MAX_NEIGHBORS within-h candidates,
-// the build kernel must (a) set `pairOverflowFlag` to 1 and (b)
-// truncate that particle's pair list to MAX_NEIGHBORS entries
-// without corrupting other particles' lists.
+// When a particle has more than MAX_NEIGHBORS neighbors within the
+// radius, the build kernel must (a) set the overflow flag and (b)
+// truncate that particle's list to MAX_NEIGHBORS entries without
+// corrupting other particles' lists.
 //
 
 import { describe, expect, it } from 'vitest';
@@ -11,20 +11,19 @@ import { uniform } from 'three/tsl';
 import {
   HashGrid,
   MAX_NEIGHBORS,
+  NeighborList,
   ParticleSystem,
-  allocatePairListStorage,
-  buildPairListKernel,
   createParticleRenderer,
   type ParticleInit,
-} from '../../../src/core/index.js';
+} from '../../../src/index.js';
 
-describe('Phase Perf — pair-list overflow flag', () => {
+describe('neighbor list overflow flag', () => {
   it('fires when a particle exceeds MAX_NEIGHBORS within h', async () => {
     const renderer = await createParticleRenderer();
     try {
       // Cluster of N = MAX_NEIGHBORS + 32 particles all within h of
       // each other — guarantees every particle has > MAX_NEIGHBORS
-      // candidates in its pair list. We use a tiny lattice spacing so
+      // candidates in its list. We use a tiny lattice spacing so
       // every pair is within h.
       const N = MAX_NEIGHBORS + 32;
       const H = 1.0;
@@ -38,12 +37,7 @@ describe('Phase Perf — pair-list overflow flag', () => {
       for (let z = 0; z < SIDE && initial.length < N; z++) {
         for (let y = 0; y < SIDE && initial.length < N; y++) {
           for (let x = 0; x < SIDE && initial.length < N; x++) {
-            initial.push({
-              position: [x * SPACING, y * SPACING, z * SPACING],
-              velocity: [0, 0, 0],
-              invMass: 1,
-              phase: 0,
-            });
+            initial.push({ position: [x * SPACING, y * SPACING, z * SPACING] });
           }
         }
       }
@@ -65,34 +59,23 @@ describe('Phase Perf — pair-list overflow flag', () => {
       particles.uploadParticles(initial);
 
       const grid = new HashGrid(particles, { cellSize: H });
-      const storage = allocatePairListStorage(N);
-      const hSqU = uniform(H_SQ, 'float');
-      const buildKernel = buildPairListKernel({
-        particles,
-        hashGrid: grid,
-        hSq: hSqU,
-        fluidParticles: { start: 0, count: N },
-        ...storage,
-      });
+      const neighbors = new NeighborList(particles, { start: 0, count: N });
+      const buildKernels = neighbors.buildKernels(grid, uniform(H_SQ, 'float'));
 
-      await renderer.computeAsync([...grid.rebuildPipeline, buildKernel]);
+      await renderer.computeAsync([...grid.rebuildPipeline, ...buildKernels]);
 
-      const [pairCountBuf, overflowBuf] = await Promise.all([
-        renderer.getArrayBufferAsync(storage.pairCount.value),
-        renderer.getArrayBufferAsync(storage.pairOverflowFlag.value),
-      ]);
-      const pairCount = new Uint32Array(pairCountBuf);
-      const overflow = new Uint32Array(overflowBuf)[0]!;
+      const counts = new Uint32Array(await renderer.getArrayBufferAsync(neighbors.counts.value));
 
-      expect(overflow).toBe(1);
+      expect(await neighbors.readbackOverflow()).toBe(true);
       // Every particle's count must be clamped to MAX_NEIGHBORS — they
-      // all have N - 1 = MAX_NEIGHBORS + 31 actual candidates within h.
+      // all have N = MAX_NEIGHBORS + 32 actual neighbors within h
+      // (self included).
       for (let i = 0; i < N; i++) {
-        expect(pairCount[i]).toBe(MAX_NEIGHBORS);
+        expect(counts[i]).toBe(MAX_NEIGHBORS);
       }
 
-      grid.destroy();
-      particles.destroy();
+      grid.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

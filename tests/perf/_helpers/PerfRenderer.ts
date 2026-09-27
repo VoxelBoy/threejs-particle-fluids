@@ -1,42 +1,39 @@
 import { TimestampQuery } from 'three/src/constants.js';
 import type { WebGPURenderer } from 'three/webgpu';
-import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
-import { createParticleRenderer } from '../../../src/core/index.js';
+
+import { createParticleRenderer } from '../../../src/index.js';
 
 export interface PerfRendererOptions {
   /**
-   * Force the gross-timing fallback path even if `timestamp-query` is
-   * available on the device. Used by `runner-fallback.gpu.perf.ts` to
-   * exercise the fallback path on a platform that natively supports
-   * Outcome A.
+   * Measure wall-clock time only, even when the device supports
+   * `timestamp-query`. Lets `runner-fallback.gpu.perf.ts` exercise the
+   * fallback path on any machine.
    */
   readonly forceFallback?: boolean;
 }
 
-export type PerfTimingMethod = 'per-kernel-pass' | 'gross-only';
+/**
+ * - `timestamp`: three.js writes GPU timestamps at the start and end of every
+ *   compute pass, and {@link PerfRenderer.readGpuMs} reads them back.
+ * - `wall-clock`: no GPU timestamps; the runner times frames on the CPU.
+ */
+export type PerfTimingMethod = 'timestamp' | 'wall-clock';
 
+/** A WebGPU renderer set up for benchmarking, and the GPU timing it supports. */
 export class PerfRenderer {
   readonly renderer: WebGPURenderer;
   readonly device: GPUDevice;
   readonly timingMethod: PerfTimingMethod;
 
   static async create(options: PerfRendererOptions = {}): Promise<PerfRenderer> {
-    const trackTimestamp = !options.forceFallback;
-    const renderer = await createParticleRenderer({ trackTimestamp });
-
-    const backend = renderer.backend as { readonly device?: GPUDevice };
-    const device = backend.device;
+    const renderer = await createParticleRenderer({ trackTimestamp: !options.forceFallback });
+    const device = (renderer.backend as { readonly device?: GPUDevice }).device;
     if (!device) {
       renderer.dispose();
-      throw new Error(
-        'PerfRenderer.create: renderer.backend.device unavailable after init (U-43 surface check failed)',
-      );
+      throw new Error('PerfRenderer.create: the renderer has no GPUDevice after init');
     }
-
-    const hasTimestampQuery = !options.forceFallback && device.features.has('timestamp-query');
-    const timingMethod: PerfTimingMethod = hasTimestampQuery ? 'per-kernel-pass' : 'gross-only';
-
-    return new PerfRenderer(renderer, device, timingMethod);
+    const timestamps = !options.forceFallback && device.features.has('timestamp-query');
+    return new PerfRenderer(renderer, device, timestamps ? 'timestamp' : 'wall-clock');
   }
 
   private constructor(renderer: WebGPURenderer, device: GPUDevice, timingMethod: PerfTimingMethod) {
@@ -46,57 +43,34 @@ export class PerfRenderer {
   }
 
   /**
-   * Dispatch a single kernel and return its measured GPU cost in ms.
-   *
-   * Per-kernel-pass mode: relies on three.js's `WebGPUBackend.beginCompute`
-   * auto-injecting `timestampWrites` into the compute-pass descriptor when
-   * `trackTimestamp: true`. Each `computeAsync(kernel)` runs ONE compute
-   * pass; `resolveTimestampsAsync(TimestampQuery.COMPUTE)` reads back the
-   * per-pass duration in ms. State carries forward — when the same kernel
-   * is dispatched repeatedly (per the plan's `dispatchesPerFrame` design)
-   * each timing reflects realistic per-frame state.
-   *
-   * Gross-only mode: brackets `computeAsync` with `performance.now()` and
-   * waits for GPU completion via `device.queue.onSubmittedWorkDone()`.
-   * Returns wall-clock ms which includes JS dispatch overhead — coarser
-   * but works on any platform, including those without `timestamp-query`.
+   * GPU milliseconds of the compute pass submitted since the previous read.
+   * `SimLoop.step` submits a whole frame as one pass, so this is the frame's
+   * GPU time. Read after every submission: three.js files every array
+   * submission's queries under the same key, so of two array submissions
+   * between reads only the last would be counted.
    */
-  async runKernelInIsolation(kernel: ComputeNode): Promise<number> {
-    if (this.timingMethod === 'per-kernel-pass') {
-      await this.renderer.computeAsync(kernel);
-      const ms = await this.renderer.resolveTimestampsAsync(TimestampQuery.COMPUTE);
-      if (ms === undefined || !Number.isFinite(ms)) {
-        throw new Error(
-          `PerfRenderer.runKernelInIsolation: timestamp resolve returned ${ms}; expected a finite ms value`,
-        );
-      }
-      return ms;
-    } else {
-      const t0 = performance.now();
-      await this.renderer.computeAsync(kernel);
-      await this.device.queue.onSubmittedWorkDone();
-      return performance.now() - t0;
+  async readGpuMs(): Promise<number> {
+    this.assertTimestamps();
+    const ms = await this.renderer.resolveTimestampsAsync(TimestampQuery.COMPUTE);
+    if (ms === undefined || !Number.isFinite(ms)) {
+      throw new Error(`PerfRenderer.readGpuMs: timestamp resolve returned ${ms}`);
     }
+    return ms;
   }
 
-  /**
-   * Run a chain of kernels (e.g. `simLoop.computeNodes`) in one
-   * `computeAsync` call. Used by the runner to advance simulation state
-   * each frame between per-kernel isolation measurements. Per-kernel-pass
-   * mode also resolves the timestamp pool here so the per-kernel
-   * measurements that follow start from a clean slate.
-   */
-  async stepChain(kernels: readonly ComputeNode[]): Promise<void> {
-    if (kernels.length === 0) return;
-    await this.renderer.computeAsync(kernels as ComputeNode[]);
-    if (this.timingMethod === 'per-kernel-pass') {
-      // Drain the pool so the next per-kernel-pass measurement is not
-      // contaminated by the chain's accumulated timestamps.
-      await this.renderer.resolveTimestampsAsync(TimestampQuery.COMPUTE);
-    }
+  /** Drop pending GPU timings, e.g. from warmup frames. Fine to call when none are pending. */
+  async discardGpuTimings(): Promise<void> {
+    this.assertTimestamps();
+    await this.renderer.resolveTimestampsAsync(TimestampQuery.COMPUTE);
   }
 
   dispose(): void {
     this.renderer.dispose();
+  }
+
+  private assertTimestamps(): void {
+    if (this.timingMethod !== 'timestamp') {
+      throw new Error('PerfRenderer: GPU timestamps are unavailable in wall-clock mode');
+    }
   }
 }

@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { colorConstraints } from '../../../src/core/index.js';
+import { colorConstraints } from '../../../src/index.js';
 
-// Phase 04 G3 — graph coloring correctness. CPU-only; no GPU required.
+// Graph coloring correctness. CPU-only; no GPU required.
 //
-// Plan §"Automatic (G3)" two properties:
+// Two properties:
 //   1. No particle appears twice in any group.
-//   2. Number of groups ≤ max constraint-degree of any particle.
+//   2. The number of groups stays bounded by the max constraint degree of
+//      any particle.
 
 function maxDegree(
   arity: number,
@@ -44,7 +45,7 @@ function assertNoIntraGroupConflict(
   }
 }
 
-describe('Phase 04 — colorConstraints: correctness', () => {
+describe('colorConstraints: graph coloring', () => {
   it('handles the empty graph', () => {
     const r = colorConstraints({
       arity: 2,

@@ -12,16 +12,14 @@ import {
 } from 'three';
 import { Fn, If, instanceIndex, instancedArray, int, uniform, vec3, vec4 } from 'three/tsl';
 import {
-  HashGrid,
+  FluidSystem,
   ParticleSystem,
   SDFCollider,
   SimLoop,
-  createXpbdUniforms,
-  type ParticleInit,
+  ViscositySolver,
+  decodeSdfBinary,
   type SDFData,
-} from '../../src/core/index.js';
-import { decodeSdfBinary } from '../../src/sdf/index.js';
-import { FluidSystem, ViscositySolver } from '../../src/fluids/index.js';
+} from '../../src/index.js';
 import { basin, material } from '../runtime/stage.js';
 import type { BuildContext, Experiment, Values } from '../types.js';
 import { liquidVisual } from './liquids.js';
@@ -84,64 +82,42 @@ export async function buildHoney(ctx: BuildContext, values: Values): Promise<Exp
   const count = ctx.particles;
   const spacing = Math.cbrt(0.0343 / count);
   const radius = spacing / 2;
-  // Every particle starts pinned (inverse mass 0) in a sparse grid far below the
-  // floor, then the nozzle releases them layer by layer.
-  const initial: ParticleInit[] = Array.from({ length: count }, (_, k) => ({
-    position: [(k % 150) * 0.25 - 18.75, -30, Math.floor(k / 150) * 0.25 - 12.5] as const,
-    velocity: [0, 0, 0] as const,
-    invMass: 0,
-    phase: 0,
-  }));
+  // Every particle waits pinned in a sparse grid far below the floor until the
+  // nozzle releases it.
   const particles = new ParticleSystem(ctx.renderer, count, radius);
-  particles.uploadParticles(initial);
-  const hashGrid = new HashGrid(particles, { cellSize: radius * 4 });
-  const xpbd = createXpbdUniforms(1 / 60);
-  const fluid = new FluidSystem({
-    particles,
-    hashGrid,
-    xpbd,
-    restDensity: 1000,
-    h: radius * 4,
-    particleSpacing: spacing,
-    compliance: 1e-4,
-    fluidParticles: { start: 0, count },
-    xsph: { c: 0.03 },
-    surfaceTension: Math.max(0.001, values['tension']!),
-    vorticity: { strength: 0 },
+  particles.uploadParticles(
+    Array.from({ length: count }, (_, k) => ({
+      position: [(k % 150) * 0.25 - 18.75, -30, Math.floor(k / 150) * 0.25 - 12.5] as const,
+    })),
+  );
+  const fluid = new FluidSystem(particles, {
+    viscosity: 0.03,
+    surfaceTension: values['tension']!,
   });
-  const fluidInvMass = 1 / fluid.mass;
-  // FluidSystem gives every fluid slot a mass; re-pin the waiting ones.
-  const invMass = (particles.invMass.value as Any).array as Float32Array;
-  invMass.fill(0);
-  (particles.invMass.value as Any).needsUpdate = true;
+  particles.setInvMass(fluid.range, 0);
+  const viscosity = new ViscositySolver(fluid, {
+    viscosity: values['viscosity']!,
+    // Finer particles need more sweeps to diffuse across the same distance.
+    iterations: Math.round(16 * Math.cbrt(count / 10000)),
+  });
 
   // Honey sticks to what it touches: high friction everywhere.
-  const colliders = tank(particles, 0.8, 0.55, 12, { muS: 1.2, muK: 1 });
-  colliders.upload();
+  const walls = tank(particles, 0.8, 0.55, { muS: 1.2, muK: 1 });
   const bunny = await loadBunny();
   const bunnyCollider = new SDFCollider(particles, bunny.sdf, {
     rotation: new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), BUNNY_YAW),
     muS: values['friction']!,
     muK: values['friction']! * 0.85,
   });
-  const viscosity = new ViscositySolver({
-    fluid,
-    viscosity: values['viscosity']!,
-    // Finer particles need more sweeps to diffuse across the same distance.
-    iterations: Math.round(16 * Math.cbrt(count / 10000)),
-  });
   const substeps = scaledSubsteps(3, ctx.particles),
     iterations = 2;
   const loop = new SimLoop(particles, {
     substeps,
     iterations,
-    xpbd,
-    hashGrid,
-    colliders: { colliders, sdfColliders: [bunnyCollider] },
+    gravity: new Vector3(0, -values['gravity']!, 0),
+    colliders: [walls, bunnyCollider],
     materials: [fluid, viscosity],
   });
-  loop.kernels.floorY.value = -1e9;
-  loop.gravity.set(0, -values['gravity']!, 0);
 
   const nozzle = new Mesh(
     new CylinderGeometry(0.03, 0.03, 0.14, 48, 1, true),
@@ -154,32 +130,28 @@ export async function buildHoney(ctx: BuildContext, values: Values): Promise<Exp
 
   const visual = liquidVisual(ctx, fluid, {
     bounds: new Box3(new Vector3(-0.83, -0.02, -0.58), new Vector3(0.83, 1.15, 0.58)),
-    colliders,
-    sdfColliders: [bunnyCollider],
+    colliders: [walls, bunnyCollider],
     motionStretch: 0.025,
-    color: 0xf07a0c,
     appearance: {
+      color: 0xf07a0c,
       attenuationDistance: 0.06,
       scattering: 0.4,
       ior: 1.49,
-      roughness: values['roughness'],
+      roughness: values['roughness']!,
     },
   });
 
-  // Emit whole layers of a square lattice clipped to the nozzle disc, one
+  // Release whole layers of a square lattice clipped to the nozzle disc, one
   // particle spacing apart, so new particles never overlap the stream.
-  const disc: Vector3[] = [];
+  const disc: number[] = [];
   const reach = Math.floor(0.02 / spacing);
   for (let i = -reach; i <= reach; i++)
     for (let j = -reach; j <= reach; j++)
       if ((i * i + j * j) * spacing * spacing <= 0.02 ** 2)
-        disc.push(new Vector3(i * spacing, 0, j * spacing));
-  const discOffsets = instancedArray(
-    new Float32Array(disc.flatMap((p) => [p.x, 0, p.z, 0])),
-    'vec4',
-  );
-  const perLayer = disc.length;
-  const source = uniform(new Vector3(0, values['height']!, 0));
+        disc.push(i * spacing, 0, j * spacing, 0);
+  const discOffsets = instancedArray(new Float32Array(disc), 'vec4');
+  const perLayer = disc.length / 4;
+  const source = uniform(new Vector3());
   const sweep = uniform(new Vector3());
   const emitStart = uniform(0, 'float');
   const emitLayers = uniform(0, 'float');
@@ -191,25 +163,24 @@ export async function buildHoney(ctx: BuildContext, values: Values): Promise<Exp
     const layers: Any = emitLayers.toInt();
     If(slot.greaterThanEqual(0).and(slot.lessThan(layers.mul(perLayer))), () => {
       const layer: Any = slot.div(perLayer);
-      const offset: Any = (discOffsets as Any).element(slot.mod(perLayer)).xyz;
+      const offset: Any = discOffsets.element(slot.mod(perLayer)).xyz;
       const drop: Any = newestDrop.add(layers.sub(1).sub(layer).toFloat().mul(spacing));
-      const position: Any = vec4(source.add(offset).sub(vec3(0, drop, 0)), 1);
+      const position: Any = vec4(source.add(offset).sub(vec3(0, drop, 0)), 0);
       particles.positions.element(i).assign(position);
       particles.predictedPositions.element(i).assign(position);
       particles.velocities.element(i).assign(vec4(sweep.x, speed.negate(), sweep.z, 0));
-      particles.invMass.element(i).assign(fluidInvMass);
-      // Pinned particles carry zero density; surface tension divides by it.
-      fluid.density.element(i).assign(1000);
+      particles.invMass.element(i).assign(1 / fluid.mass);
+      // Waiting particles have no neighbors, so their density is stale.
+      fluid.density.element(i).assign(fluid.restDensity);
     });
   })().compute(count);
   let released = 0,
     travelled = 0;
 
-  const objects = [basin(1.6, 1.1), bunny.mesh, nozzle, visual.surface.mesh, visual.dots];
   return {
     particles,
     loop,
-    objects,
+    objects: [basin(1.6, 1.1), bunny.mesh, nozzle, visual.surface.mesh, visual.dots],
     particleCount: count,
     substeps,
     iterations,
@@ -217,9 +188,9 @@ export async function buildHoney(ctx: BuildContext, values: Values): Promise<Exp
       // The nozzle circles over the bunny's back and head; the stream leaves
       // with the nozzle's sideways velocity.
       const angle = time * 0.9;
-      // Emit 11 cm up inside the 14 cm nozzle so the start of the flow is hidden.
       const x = bunny.aim.x + Math.cos(angle) * 0.07,
         z = bunny.aim.z + Math.sin(angle) * 0.07;
+      // Release 11 cm up inside the 14 cm nozzle so the start of the flow is hidden.
       source.value.set(x, values['height']! + 0.11, z);
       sweep.value.set(-Math.sin(angle) * 0.063, 0, Math.cos(angle) * 0.063);
       nozzle.position.set(x, values['height']! + 0.07, z);
@@ -237,26 +208,25 @@ export async function buildHoney(ctx: BuildContext, values: Values): Promise<Exp
       released += layers * perLayer;
       await ctx.renderer.computeAsync(emit);
     },
-    setReflections: (enabled) => visual.setReflections(enabled),
-    prepareRender: () => visual.prepareRender(),
+    prepareRender: () => visual.update(),
+    setReflections: (enabled) => (visual.surface.reflections = enabled),
     setParticleView: (enabled) => visual.setParticleView(enabled),
     setParameter(key, value) {
       values[key] = value;
       if (key === 'gravity') loop.gravity.y = -value;
-      if (key === 'viscosity') viscosity.viscosity.value = value;
-      if (key === 'tension') fluid.cohesion?.setGamma(value);
-      if (key === 'roughness') visual.surface.appearance.roughness.value = value;
+      if (key === 'viscosity') viscosity.viscosity = value;
+      if (key === 'tension') fluid.surfaceTension = value;
+      if (key === 'roughness') visual.surface.setAppearance({ roughness: value });
       if (key === 'friction') {
-        bunnyCollider.muSUniform.value = value;
-        bunnyCollider.muKUniform.value = value * 0.85;
+        bunnyCollider.muS = value;
+        bunnyCollider.muK = value * 0.85;
       }
     },
     dispose() {
-      visual.dispose();
-      particles.destroy();
-      hashGrid.destroy();
-      colliders.destroy();
-      bunnyCollider.destroy();
+      visual.surface.dispose();
+      bunnyCollider.dispose();
+      particles.dispose();
+      loop.dispose();
     },
   };
 }

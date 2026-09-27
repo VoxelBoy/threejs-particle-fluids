@@ -1,29 +1,5 @@
-import { uniform } from 'three/tsl';
-import type UniformNode from 'three/src/nodes/core/UniformNode.js';
-
-// TSL's @types surface many nodes as bare `Node`, stripping the proxy-provided
-// `.div()/.mul()/.add()/...` methods. Same loose-alias pattern already used in
-// `integrate.ts`, `hashGrid/*.ts`, and the Phase 01 probes.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
-
-/**
- * Shared per-substep uniforms consumed by every XPBD constraint kernel.
- *
- * `dt` is the **substep** timestep (not the outer frame dt). The scheduler
- * updates it to `frameDt / substeps` before dispatching each substep's
- * kernels; constraint kernels read it through `alphaTilde` only — they do
- * not integrate positions themselves.
- *
- */
-export interface XpbdUniforms {
-  /** Substep timestep in seconds. */
-  readonly dt: UniformNode<'float', number>;
-}
-
-export function createXpbdUniforms(initialDt: number): XpbdUniforms {
-  return { dt: uniform(initialDt, 'float') };
-}
 
 /**
  * Compute the XPBD Gauss-Seidel Lagrange-multiplier update for a single

@@ -1,57 +1,37 @@
+import { Fn, instanceIndex, instancedArray } from 'three/tsl';
 import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import type StorageBufferNode from 'three/src/nodes/accessors/StorageBufferNode.js';
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Any = any;
+
 /**
- * One color-class of a constraint graph partitioned by {@link colorConstraints}.
- *
- * Within a group no two constraints share a participating particle, so the
- * group's {@link solveKernel} can be dispatched in parallel over all
- * `capacity` particles with no write conflict on `predictedPositions` and no
- * atomics — a particle thread is ever only a participant in at most one
- * constraint of the group.
- *
- * `particleToConstraint` is the "inverted index" required by plan §Solve
- * mode: for particle `p`, `particleToConstraint[p]` is either (a) the
- * constraint index (into the owning {@link ConstraintType}'s per-constraint
- * storage) that `p` participates in for this group, or (b) `NO_CONSTRAINT`
- * (= 0xFFFFFFFF) if `p` participates in no constraint of this group.
+ * One color class of a constraint set: constraints that share no particle,
+ * so one thread per constraint can solve them all at once and write every
+ * particle it touches without racing another thread.
  */
 export interface ConstraintGroup {
-  readonly particleToConstraint: StorageBufferNode<'uint'>;
+  /** Indices of the group's constraints. */
+  readonly constraints: StorageBufferNode<'uint'>;
+  readonly count: number;
+  /** Solves every constraint in the group, one thread each. */
   readonly solveKernel: ComputeNode;
 }
 
 /**
- * Sentinel for "this particle participates in no constraint of this group."
- * Stored in {@link ConstraintGroup.particleToConstraint}; solve kernels
- * compare against this before indexing into the constraint-data buffers.
- */
-export const NO_CONSTRAINT = 0xffffffff;
-
-/**
- * A registered constraint family (distance, bending, contact, density, …).
- *
- * Storage layout (SoA, per §Constraint interface of plan):
- *   `particleIndices[arity·nConstraints]` — flat `uint` array; participant
- *     `k` of constraint `c` lives at index `c·arity + k`.
- *   `compliance[nConstraints]`  — `α`, inverse stiffness, in s²/kg for
- *     distance (units match the particular constraint family).
- *   `restValue[nConstraints]`   — rest length / rest angle / offset — the
- *     constant term of `C(x)`. Family-specific interpretation.
- *   `lambda[nConstraints]`      — Macklin 2016 "total Lagrange multiplier";
- *     reset to 0 each substep (Algorithm 1 line 4), accumulated across
- *     solver iterations via `λ_{i+1} = λ_i + Δλ` (eq. 13).
- *
- * `resetLambdaKernel` is dispatched once per substep over `nConstraints`
- * slots before the first iteration. The scheduler owns when to call it.
+ * A set of XPBD constraints of one kind (distance, bending, tether, …),
+ * ready to schedule with {@link constraintKernels}.
  */
 export interface ConstraintType {
-  readonly arity: number;
-  readonly nConstraints: number;
-  readonly particleIndices: StorageBufferNode<'uint'>;
+  readonly count: number;
+  /** Compliance `α` per constraint (inverse stiffness; units depend on the kind). */
   readonly compliance: StorageBufferNode<'float'>;
-  readonly restValue: StorageBufferNode<'float'>;
+  /**
+   * Accumulated Lagrange multiplier per constraint (Macklin et al. 2016,
+   * eq. 13), zeroed each substep by `resetLambdaKernel`.
+   */
   readonly lambda: StorageBufferNode<'float'>;
+  /** Color groups, solved in order every iteration. */
   readonly groups: readonly ConstraintGroup[];
   readonly resetLambdaKernel: ComputeNode;
 }
@@ -68,13 +48,11 @@ export interface ConstraintType {
  *
  * The greedy algorithm is O(nConstraints · arity · maxDegree) worst-case; for
  * structured topologies (cloth lattice, chains) it produces an optimal or
- * near-optimal coloring. Contact (Phase 05) rebuilds the coloring every
- * substep — ok because contact count is O(n) and the greedy pass is single-
- * digit microseconds for our target scene sizes.
+ * near-optimal coloring.
  *
  * Guarantee: `numGroups ≤ 1 + maxDegree` where `maxDegree` is the largest
  * number of constraints any single particle participates in. Tested by
- * `tests/analytical/xpbd-group-partition.test.ts`.
+ * `tests/analytical/xpbd/xpbd-group-partition.test.ts`.
  */
 export function colorConstraints(args: {
   readonly arity: number;
@@ -85,9 +63,7 @@ export function colorConstraints(args: {
   if (nConstraints === 0) return { groupOf: new Uint32Array(0), numGroups: 0 };
 
   const groupOf = new Uint32Array(nConstraints);
-  // `particleLastGroupTouched[p]` is a per-color sparse map kept as
-  // a flat `Map<particle, Set<group>>`. For the MVP scene sizes this is fine;
-  // a bit-packed array can replace it if Phase 18 (cloth, post-MVP) measurement demands it.
+  // Colors already used by each particle.
   const particleGroups: Map<number, Set<number>> = new Map();
 
   let numGroups = 0;
@@ -122,4 +98,39 @@ export function colorConstraints(args: {
   }
 
   return { groupOf, numGroups };
+}
+
+/**
+ * Schedule constraint types as material kernels: every multiplier is reset
+ * once per substep, then each type's color groups are solved in order every
+ * iteration (Macklin et al. 2016, Algorithm 1).
+ */
+export function constraintKernels(types: readonly ConstraintType[]): {
+  readonly preSolve: ComputeNode[];
+  readonly solve: ComputeNode[];
+} {
+  return {
+    preSolve: types.map((type) => type.resetLambdaKernel),
+    solve: types.flatMap((type) => type.groups.map((group) => group.solveKernel)),
+  };
+}
+
+/**
+ * Build one solve kernel per color of `coloring`. `solve(constraint)` emits
+ * TSL that projects one constraint and writes all of its particles; it may
+ * `Return()` early.
+ */
+export function buildConstraintGroups(
+  coloring: { readonly groupOf: Uint32Array; readonly numGroups: number },
+  solve: (constraint: Any) => void,
+): ConstraintGroup[] {
+  const members: number[][] = Array.from({ length: coloring.numGroups }, () => []);
+  coloring.groupOf.forEach((group, constraint) => members[group]!.push(constraint));
+  return members.map((list) => {
+    const constraints = instancedArray(Uint32Array.from(list), 'uint');
+    const solveKernel = Fn(() => {
+      solve(constraints.element(instanceIndex).toVar());
+    })().compute(list.length);
+    return { constraints, count: list.length, solveKernel };
+  });
 }

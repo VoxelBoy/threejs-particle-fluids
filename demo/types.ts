@@ -1,6 +1,6 @@
 import type { Object3D, PerspectiveCamera, Scene, Vector2 } from 'three';
 import type { WebGPURenderer } from 'three/webgpu';
-import type { ParticleSystem, SimLoop } from '../src/core/index.js';
+import type { ParticleSystem, SimLoop } from '../src/index.js';
 
 export type Values = Record<string, number>;
 export interface Control {

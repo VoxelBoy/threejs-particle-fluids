@@ -1,31 +1,27 @@
 import { describe, expect, it } from 'vitest';
+import { Vector3 } from 'three';
 import {
-  HashGrid,
+  FluidSystem,
   ParticleSystem,
   SimLoop,
   createParticleRenderer,
-  createXpbdUniforms,
   type ParticleInit,
-} from '../../../src/core/index.js';
-import { FluidSystem } from '../../../src/fluids/index.js';
+} from '../../../src/index.js';
 
 /*
- * Phase 11 — Newton-3 momentum-conservation check on the fluid → solid
- * reaction scatter (`src/fluids/solidReaction.ts`).
+ * Newton's 3rd law check on the fluid → solid reaction: the position
+ * correction the fluid's pressure solve applies to a dynamic boundary
+ * particle must balance the corrections on its fluid neighbours.
  *
- * **Why this scene chooses `m_fluid = 1`:** the existing positionDelta
- * kernel uses Macklin 2013 eq. 12's equal-mass form (no explicit `w_i`
- * — absorbed into the equal-mass simplification). Strict Newton-3
- * conservation under the new mass-weighted scatter requires either
- * adding `w_i` to positionDelta (out of phase scope) or running the
- * test with `m_fluid = 1` so the simplification's residual collapses to
- * FP noise. We pick the latter.
+ * **Why this scene chooses `m_fluid = 1`:** with equal fluid and boundary
+ * masses, any mass-weighting mismatch between the fluid's correction and
+ * the boundary's reaction collapses to FP noise, so the check isolates
+ * the per-pair pairing itself.
  *
  * Tuning: `m_fluid = ρ_0 · spacing³`. Choosing spacing = 0.1 m and
  * ρ_0 = 1000 kg/m³ gives `m_fluid = 1 kg`. Boundary `invMass` is set
  * to 1 explicitly via `uploadParticles` (FluidSystem only overwrites
- * the fluid range). With both masses = 1 kg, the per-pair residual
- * `(m_i − 1) · (λ_i · ψ_j / ρ_0) · ∇W` evaluates to FP-only.
+ * the fluid range).
  *
  * **Scene:**
  *   - 4³ fluid cube at rest density (64 fluid particles, spacing 0.1,
@@ -35,32 +31,31 @@ import { FluidSystem } from '../../../src/fluids/index.js';
  *     symmetry so the reaction is non-trivial in all axes (a centred
  *     boundary would by symmetry produce zero net Δp).
  *   - Both invMass = 1 (m = 1).
- *   - Gravity off, zero initial velocity, NO contact pipeline.
+ *   - Gravity off, zero initial velocity, NO particle contacts.
  *
  * **What the kernel does:**
  *   The boundary inside the fluid spikes the density of its fluid
  *   neighbours (boundary contributes `ψ_j = ρ_0 · V_j` to fluid density,
  *   in addition to the fluid neighbours). At those fluid particles
  *   `C_i = ρ_i / ρ_0 − 1 > 0`, so `λ_i < 0` (lambda kernel: λ = −C/denom).
- *   `positionDelta` pushes those fluid particles AWAY from the boundary
- *   (Δp_i ∝ λ_i · ψ_j · ∇W; for λ_i < 0 and ∇W oriented toward the boundary,
- *   the result points away). The new `solidReaction` scatter pushes the
- *   boundary away from the fluid in equal-and-opposite per-pair Δp.
+ *   The position-delta kernel pushes those fluid particles AWAY from the
+ *   boundary (Δp_i ∝ λ_i · ψ_j · ∇W; for λ_i < 0 and ∇W oriented toward
+ *   the boundary, the result points away), and scatters the equal-and-
+ *   opposite per-pair reaction onto the boundary.
  *
  * **What we measure:**
  *   After one substep with no other forces, `advect` computes
  *   `v = (x* − x) / dt`, so each particle's velocity is its accumulated
  *   net Δx / dt. Total system momentum `Σ m_i v_i` should be 0 within
  *   FP noise. We also assert the boundary actually moved — otherwise a
- *   silently-disabled scatter would trivially satisfy Σ = 0 at zero.
+ *   silently-disabled reaction would trivially satisfy Σ = 0 at zero.
  *
- * **G4 tier-2** — i32 atomicAdd in the accumulator is exact, but the f32
- * intermediates (positionDelta's gather sum + solidReaction's scatter
- * coefficient) are order-dependent. Tolerance set per the plan
- * `1e-5 · max(|v_i|)` per axis.
+ * The reaction accumulator's i32 atomicAdd is exact, but the f32
+ * intermediates (the fluid's gather sum and the reaction coefficient)
+ * are order-dependent, so the tolerance is `2e-5 · max(|v_i|)` per axis.
  */
 
-describe('Phase 11 — fluid → solid Newton-3 conservation', () => {
+describe('fluid → solid Newton-3 conservation', () => {
   it('Σ m·v ≈ 0 after one substep with one boundary inside a fluid cube', async () => {
     const renderer = await createParticleRenderer();
     try {
@@ -92,9 +87,7 @@ describe('Phase 11 — fluid → solid Newton-3 conservation', () => {
                 -((ny * spacing) / 2) + spacing * 0.5 + j * spacing,
                 -((nz * spacing) / 2) + spacing * 0.5 + k * spacing,
               ],
-              velocity: [0, 0, 0],
-              invMass: 1, // overwritten by FluidSystem to 1/m_fluid = 1
-              phase: 0,
+              // invMass is overwritten by FluidSystem to 1/m_fluid = 1.
             });
           }
         }
@@ -103,52 +96,37 @@ describe('Phase 11 — fluid → solid Newton-3 conservation', () => {
       // symmetry by construction.
       initial.push({
         position: [0.07, 0.04, 0.02],
-        velocity: [0, 0, 0],
         invMass: 1, // m_boundary = 1 (matches m_fluid for strict Newton-3)
-        phase: 1,
       });
 
       const particles = new ParticleSystem(renderer, total, r);
       particles.uploadParticles(initial);
 
-      const hashGrid = new HashGrid(particles, { cellSize: h });
-      const xpbd = createXpbdUniforms(1 / 60);
-      const fluid = new FluidSystem({
-        particles,
-        hashGrid,
-        xpbd,
+      const fluid = new FluidSystem(particles, {
+        range: { start: 0, count: fluidCount },
         restDensity,
-        h,
+        smoothingRadius: h,
         particleSpacing: spacing,
         // Higher compliance (softer constraint) keeps λ in a sane
         // range under the boundary's density spike. With α̃ → 0 the
         // boundary's `ψ_j W(0)` term dominates the denominator and
         // λ blows up; α = 1 keeps the test deterministic.
         compliance: 1.0,
-        fluidParticles: { start: 0, count: fluidCount },
-        vorticity: { strength: 0 },
-        xsph: { c: 0 },
       });
 
-      // Boundary registration must precede SimLoop construction
-      // (lazy-allocates the solid-reaction accumulator + wires kernels).
-      await fluid.registerBoundaryParticles({
-        start: fluidCount,
-        count: boundaryCount,
-      });
+      // The boundary moves, so its volume is recomputed every substep.
+      // Boundaries must be added before the SimLoop is built.
+      fluid.addBoundary({ start: fluidCount, count: boundaryCount }, { dynamic: true });
 
-      // No contact pipeline — we want to observe ONLY the density-Δp
-      // reaction. With contact present, the contact scatter would
-      // also act on the fluid-boundary pairs.
+      // No particle contacts — we want to observe ONLY the density-Δp
+      // reaction. With contacts on, the contact solve would also act on
+      // the fluid-boundary pairs.
       const loop = new SimLoop(particles, {
         substeps: 1,
         iterations: 1,
-        xpbd,
-        hashGrid,
+        gravity: new Vector3(0, 0, 0),
         materials: [fluid],
       });
-      loop.kernels.floorY.value = -1e9;
-      loop.gravity.set(0, 0, 0);
 
       await loop.step(1 / 60);
 
@@ -178,11 +156,9 @@ describe('Phase 11 — fluid → solid Newton-3 conservation', () => {
       const vbz = snap.velocities[4 * fluidCount + 2]!;
       const vbMag = Math.hypot(vbx, vby, vbz);
 
-      // eslint-disable-next-line no-console
       console.info(
         `[fluid-solid-newton3] Σm·v = (${pxSum.toExponential(3)}, ${pySum.toExponential(3)}, ${pzSum.toExponential(3)}); max|v| = ${maxAbsV.toExponential(3)}; movedCount = ${movedCount}/${total}`,
       );
-      // eslint-disable-next-line no-console
       console.info(
         `[fluid-solid-newton3] boundary v = (${vbx.toExponential(3)}, ${vby.toExponential(3)}, ${vbz.toExponential(3)}); |v| = ${vbMag.toExponential(3)}`,
       );
@@ -209,28 +185,26 @@ describe('Phase 11 — fluid → solid Newton-3 conservation', () => {
         boundaryPos[2] - nearestFluid[2],
       ];
       const awayDot = vbx * awayDir[0] + vby * awayDir[1] + vbz * awayDir[2];
-      // eslint-disable-next-line no-console
       console.info(
         `[fluid-solid-newton3] v · (boundary − nearest fluid) = ${awayDot.toExponential(3)} (should be > 0)`,
       );
       expect(awayDot).toBeGreaterThan(0);
 
       // Newton-3: total system momentum within `2e-5 · max |v|` per
-      // axis. With m_fluid = m_boundary = 1 the equal-mass-
-      // simplification residual collapses to FP noise; the residual
-      // ceiling is set by the i32 quantization of the
-      // ContactAccumulator (one scatter contributes a 9.3e-9 m
-      // tick rounded to nearest int; ~30 scatters per substep gives
-      // ~5e-7 m/s residual at dt = 1/60). The 2e-5 ratio is plan-
-      // exit-criterion #2's `1e-5 · max|v|` rounded up to absorb
-      // the quantization noise and a small FP-summation envelope.
+      // axis. With m_fluid = m_boundary = 1 the mass-weighting residual
+      // collapses to FP noise; the residual ceiling is set by the i32
+      // quantization of the reaction accumulator (one scatter
+      // contributes a 9.3e-9 m tick rounded toward zero; ~30 scatters
+      // per substep gives ~5e-7 m/s residual at dt = 1/60). A
+      // `1e-5 · max|v|` target, rounded up to 2e-5 to absorb the
+      // quantization noise and a small FP-summation envelope.
       const tol = Math.max(2e-5 * maxAbsV, 1e-9);
       expect(Math.abs(pxSum)).toBeLessThan(tol);
       expect(Math.abs(pySum)).toBeLessThan(tol);
       expect(Math.abs(pzSum)).toBeLessThan(tol);
 
-      particles.destroy();
-      hashGrid.destroy();
+      loop.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

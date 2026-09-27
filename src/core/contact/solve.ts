@@ -1,140 +1,190 @@
-import { Fn, If, Return, atomicLoad, bool, float, instanceIndex, uint, vec3 } from 'three/tsl';
+import { Fn, If, Return, atomicAdd, atomicLoad, float, instanceIndex, uint } from 'three/tsl';
 import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
+import type UniformNode from 'three/src/nodes/core/UniformNode.js';
 
+import type { Accumulator } from '../accumulator.js';
 import type { ParticleSystem } from '../particles.js';
-import type { ContactBuffer } from './ContactBuffer.js';
-import type { ContactAccumulator } from './accumulator.js';
-import { emitContactSolveCorrection } from './correction.js';
-import { emitGeometrySelection, type ContactGeometryExtension } from './extension.js';
+import { LAMBDA_SCALE, type ContactBuffer } from './ContactBuffer.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
-/**
- * Build the scatter-mode contact solve kernel.
- *
- * The kernel performs two Macklin-paper operations per contact per iter:
- *
- *   1. Normal projection (Macklin 2014 §6.1 eq. 22). Unchanged from Phase 5.
- *      Computes Δλ_n = d / (w_i + w_j) for the non-penetration constraint
- *      and scatters the positional correction. Additionally, Phase 5a
- *      accumulates Δλ_n into the per-contact λ_n buffer on ContactBuffer
- *      so that the Macklin 2020 §3.5 static gate below and the §3.6
- *      velocity-friction pass can read the final accumulated multiplier.
- *
- *   2. Static friction (Macklin 2020 §3.5 eqs. 26–28, replacing the
- *      Macklin 2014 §6.1 eqs. 23–25 that Phase 5 shipped). Computes the
- *      tangential component of the contact-point displacement since
- *      substep start and, gated by the accumulated-λ static cone
- *      `λ_t < μ_s · λ_n`, scatters a position correction that removes the
- *      tangential slip. If the gate fails, no static correction is applied
- *      at this iter; the velocity-level dynamic friction pass (§3.6, in
- *      `frictionVelocity.ts`) handles the slip case after the position
- *      solve completes.
- *
- *
+/** Emit TSL that returns early for contact slots past the emitted count. */
+function emitSkipUnusedSlot(contacts: ContactBuffer, c: Any): void {
+  const emitted: Any = atomicLoad(contacts.counter.element(uint(0)));
+  If(c.greaterThanEqual(emitted).or(c.greaterThanEqual(uint(contacts.maxContacts))), () => {
+    Return();
+  });
+}
 
+/**
+ * Solve every contact once, one thread per contact, scattering corrections
+ * into `accumulator`:
  *
- * Dispatch shape: one thread per contact, over maxContacts threads. Each
- * thread processes its `(i, j)` pair and scatters via atomicAdd into the
- * per-particle fixed-point accumulator (see `accumulator.ts`) and into
- * the per-contact λ_n / λ_t buffers (see `ContactBuffer.ts`).
- *
- * Determinism: i32 atomicAdd is associative, commutative, and exact. The
- * scatter is G4 tier-1 bit-exact across repeat runs — same guarantee as
- * hash-grid `cellStart` / `cellEnd` per the U-18 archive.
- *
- * Invariance note: the tangential Δp_t is invariant under the normal
- * correction because the normal correction is parallel to n, so both are
- * computed in a single pass using pre-correction x*, no intermediate
- * dispatch needed.
+ * 1. Non-penetration (Macklin et al. 2014, eq. 22): push the pair apart along
+ *    the contact normal, split by inverse mass.
+ * 2. Static friction (Macklin et al. 2020, §3.5): cancel the pair's
+ *    tangential slip this substep, but only while the tangential multiplier
+ *    stays inside the friction cone `λ_t ≤ μ_s · λ_n`. The check is made
+ *    against the correction about to be applied, because a parallel scatter
+ *    cannot see other threads' same-iteration updates. Slip outside the cone
+ *    is left to the kinetic friction pass.
  */
 export function buildContactSolveKernel(args: {
   readonly particles: ParticleSystem;
   readonly contacts: ContactBuffer;
-  readonly accumulator: ContactAccumulator;
-  /**
-   * Phase 15a — geometry-mode extensions (e.g. softbody's rigid-rigid
-   * SDF mode, paper §5.1 eqs. 17–20) tried per pair before the spherical
-   * default. Empty list keeps Phase 5/15 spherical behavior unchanged.
-   *
-   * See `core/contact/extension.ts` for the protocol.
-   */
-  readonly geometryExtensions?: readonly ContactGeometryExtension[];
+  readonly accumulator: Accumulator;
+  readonly muS: UniformNode<'float', number>;
 }): ComputeNode {
-  const { particles, contacts, accumulator } = args;
-  const geometryExtensions = args.geometryExtensions ?? [];
-  const twoR = 2 * particles.particleRadius;
-  const maxContacts = contacts.maxContacts;
+  const { particles, contacts, accumulator, muS } = args;
+  const contactDistance = 2 * particles.particleRadius;
 
   return Fn(() => {
     const c: Any = instanceIndex;
-    // Early-exit threads past the emitted-contact count.
-    const nRaw: Any = atomicLoad(contacts.counter.element(uint(0)));
-    If(c.greaterThanEqual(nRaw).or(c.greaterThanEqual(uint(maxContacts))), () => {
-      Return();
-    });
+    emitSkipUnusedSlot(contacts, c);
+    const record: Any = contacts.records.element(c);
+    const i: Any = record.get('i').toVar();
+    const j: Any = record.get('j').toVar();
 
-    const rec: Any = contacts.records.element(c);
-    const i: Any = rec.get('i').toVar();
-    const j: Any = rec.get('j').toVar();
-
-    // Geometry selection: per-pair `(n, d)` chosen by the first claiming
-    // extension; spherical default fires if none claim. The spherical
-    // default leaves `outHandled = false` when its guards reject the pair
-    // (degenerate, non-penetrating, kinematic) so the post-composer gate
-    // skips. Extensions follow the same convention.
-    const outN: Any = vec3(0, 0, 0).toVar();
-    const outD: Any = float(0).toVar();
-    const outHandled: Any = bool(false).toVar();
-
-    emitGeometrySelection(
-      {
-        i,
-        j,
-        c,
-        particles,
-        outN,
-        outD,
-        outHandled,
-      },
-      geometryExtensions,
+    const xiStar: Any = particles.predictedPositions.element(i).xyz.toVar();
+    const xjStar: Any = particles.predictedPositions.element(j).xyz.toVar();
+    const offset: Any = xiStar.sub(xjStar).toVar();
+    const distance: Any = offset.length().toVar();
+    const wi: Any = particles.invMass.element(i).toVar();
+    const wj: Any = particles.invMass.element(j).toVar();
+    const wSum: Any = wi.add(wj).toVar();
+    If(
+      distance
+        .lessThanEqual(1e-8)
+        .or(distance.greaterThanEqual(contactDistance))
+        .or(wSum.lessThanEqual(0)),
       () => {
-        // Spherical default — Macklin 2014 §6.1 eq. 22 unilateral.
-        const xiStar: Any = particles.predictedPositions.element(i).xyz.toVar();
-        const xjStar: Any = particles.predictedPositions.element(j).xyz.toVar();
-        const diff: Any = xiStar.sub(xjStar).toVar();
-        const len: Any = diff.length().toVar();
-        const C: Any = len.sub(float(twoR)).toVar();
-        const wSum: Any = particles.contactInvMass
-          .element(i)
-          .add(particles.contactInvMass.element(j))
-          .toVar();
-        const valid: Any = len
-          .greaterThan(float(1e-8))
-          .and(C.lessThan(float(0.0)))
-          .and(wSum.greaterThan(float(0.0)));
-        If(valid, () => {
-          outN.assign(diff.div(len));
-          outD.assign(C.negate());
-          outHandled.assign(bool(true));
-        });
+        Return();
       },
     );
+    const n: Any = offset.div(distance).toVar();
+    const depth: Any = float(contactDistance).sub(distance);
 
-    If(outHandled.not(), () => {
+    // Normal correction, and the normal multiplier accumulated for friction.
+    const dLambdaN: Any = depth.div(wSum).toVar();
+    atomicAdd(record.get('lambdaN'), dLambdaN.mul(LAMBDA_SCALE).toInt());
+    record.get('normal').assign(n);
+
+    // Tangential slip since the start of the substep: Δp_t.
+    const slip: Any = xiStar
+      .sub(particles.positions.element(i).xyz)
+      .sub(xjStar.sub(particles.positions.element(j).xyz))
+      .toVar();
+    const tangential: Any = slip.sub(n.mul(slip.dot(n))).toVar();
+    const tangentialLength: Any = tangential.length().toVar();
+
+    // λ_n here already includes this iteration's contribution.
+    const lambdaN: Any = (atomicLoad(record.get('lambdaN')) as Any).toFloat().div(LAMBDA_SCALE);
+    const lambdaT: Any = (atomicLoad(record.get('lambdaT')) as Any).toFloat().div(LAMBDA_SCALE);
+    const dLambdaT: Any = tangentialLength.div(wSum).toVar();
+    const sticks: Any = tangentialLength
+      .greaterThan(1e-10)
+      .and(dLambdaT.lessThanEqual(muS.mul(lambdaN).sub(lambdaT)));
+
+    const normalI: Any = n.mul(wi.mul(dLambdaN));
+    const normalJ: Any = n.mul(wj.mul(dLambdaN)).negate();
+    const frictionI: Any = tangential.mul(wi.div(wSum)).negate();
+    const frictionJ: Any = tangential.mul(wj.div(wSum));
+    accumulator.add(i, sticks.select(normalI.add(frictionI), normalI));
+    accumulator.add(j, sticks.select(normalJ.add(frictionJ), normalJ));
+    atomicAdd(record.get('lambdaT'), sticks.select(dLambdaT, float(0)).mul(LAMBDA_SCALE).toInt());
+  })().compute(contacts.maxContacts);
+}
+
+/**
+ * Separate pairs that already overlap at the start of the substep, moving
+ * both the current and predicted positions (Macklin et al. 2014, §4.4). This
+ * keeps initial overlaps from turning into velocity. Uses the same
+ * accumulator; the caller applies it to both position buffers.
+ */
+export function buildContactStabilizeKernel(args: {
+  readonly particles: ParticleSystem;
+  readonly contacts: ContactBuffer;
+  readonly accumulator: Accumulator;
+}): ComputeNode {
+  const { particles, contacts, accumulator } = args;
+  const contactDistance = 2 * particles.particleRadius;
+
+  return Fn(() => {
+    const c: Any = instanceIndex;
+    emitSkipUnusedSlot(contacts, c);
+    const record: Any = contacts.records.element(c);
+    const i: Any = record.get('i').toVar();
+    const j: Any = record.get('j').toVar();
+
+    const offset: Any = particles.positions
+      .element(i)
+      .xyz.sub(particles.positions.element(j).xyz)
+      .toVar();
+    const distance: Any = offset.length().toVar();
+    const wi: Any = particles.invMass.element(i).toVar();
+    const wj: Any = particles.invMass.element(j).toVar();
+    const wSum: Any = wi.add(wj).toVar();
+    If(
+      distance
+        .lessThanEqual(1e-8)
+        .or(distance.greaterThanEqual(contactDistance))
+        .or(wSum.lessThanEqual(0)),
+      () => {
+        Return();
+      },
+    );
+    const n: Any = offset.div(distance);
+    const dLambda: Any = float(contactDistance).sub(distance).div(wSum).toVar();
+    accumulator.add(i, n.mul(wi.mul(dLambda)));
+    accumulator.add(j, n.mul(wj.mul(dLambda)).negate());
+  })().compute(contacts.maxContacts);
+}
+
+/**
+ * Kinetic friction as a velocity change after the position solve (Macklin et
+ * al. 2020, §3.6, eq. 30): reduce each pair's tangential relative velocity by
+ * at most `μ_k · λ_n / dt`, split by inverse mass.
+ */
+export function buildContactFrictionKernel(args: {
+  readonly particles: ParticleSystem;
+  readonly contacts: ContactBuffer;
+  readonly accumulator: Accumulator;
+  readonly muK: UniformNode<'float', number>;
+  readonly dt: UniformNode<'float', number>;
+}): ComputeNode {
+  const { particles, contacts, accumulator, muK, dt } = args;
+
+  return Fn(() => {
+    const c: Any = instanceIndex;
+    emitSkipUnusedSlot(contacts, c);
+    const record: Any = contacts.records.element(c);
+    const i: Any = record.get('i').toVar();
+    const j: Any = record.get('j').toVar();
+    const wi: Any = particles.invMass.element(i).toVar();
+    const wj: Any = particles.invMass.element(j).toVar();
+    const wSum: Any = wi.add(wj).toVar();
+    const lambdaN: Any = (atomicLoad(record.get('lambdaN')) as Any)
+      .toFloat()
+      .div(LAMBDA_SCALE)
+      .toVar();
+    If(wSum.lessThanEqual(0).or(lambdaN.lessThanEqual(0)), () => {
       Return();
     });
 
-    emitContactSolveCorrection({
-      i,
-      j,
-      c,
-      n: outN,
-      d: outD,
-      particles,
-      contacts,
-      accumulator,
+    const n: Any = record.get('normal').toVar();
+    const v: Any = particles.velocities
+      .element(i)
+      .xyz.sub(particles.velocities.element(j).xyz)
+      .toVar();
+    const vT: Any = v.sub(n.mul(n.dot(v))).toVar();
+    const vTLength: Any = vT.length().toVar();
+    If(vTLength.lessThan(1e-6), () => {
+      Return();
     });
-  })().compute(maxContacts);
+    const change: Any = muK.mul(lambdaN).mul(wSum).div(dt).min(vTLength);
+    const impulse: Any = vT.div(vTLength).mul(change).negate().div(wSum).toVar();
+    accumulator.add(i, impulse.mul(wi));
+    accumulator.add(j, impulse.mul(wj).negate());
+  })().compute(contacts.maxContacts);
 }

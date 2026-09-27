@@ -162,7 +162,7 @@ function axisAngleQuat(axis: Vec3, angleRad: number): Quat {
 
 const I_QUAT: Quat = [0, 0, 0, 1];
 
-describe('Phase 13 G1 — DLB algebra reference', () => {
+describe('dual-quaternion linear blending (Kavan et al. 2008) reference algebra', () => {
   it('reduces to a rigid transform when every influence shares the same q and t', () => {
     // Body-rest particles forming a 2x2x2 grid; rotate all by 30° about
     // y, translate by (0.7, -0.2, 1.1). Every particle and the rendered
@@ -193,10 +193,11 @@ describe('Phase 13 G1 — DLB algebra reference', () => {
     for (let i = 0; i < 3; i++) expect(dlb[i]).toBeCloseTo(expected[i]!, 6);
   });
 
-  it('§5.3 LBS-equivalence: DLB matches LBS exactly when all influence quaternions are identical', () => {
+  it('LBS equivalence: DLB matches LBS exactly when all influence quaternions are identical', () => {
     // Same shared rotation, but particles displaced from their rigid
-    // positions (simulates a §5.3 body where shape matching has not
-    // converged). DLB and LBS must agree analytically.
+    // positions (simulates a globally shape-matched body, which has one
+    // rotation, before shape matching has converged). DLB and LBS must
+    // agree analytically.
     // Axis normalized — a non-unit axis would produce a non-unit q,
     // which breaks DLB's unit-DQ-on-output invariant.
     const axisRaw: Vec3 = [0.3, 0.7, 0.6];
@@ -222,7 +223,7 @@ describe('Phase 13 G1 — DLB algebra reference', () => {
     const dlb = skinDLB(influences, weights, vRest);
     const lbs = skinLBS(influences, weights, vRest);
     for (let i = 0; i < 3; i++) {
-      // Plan §Validation gates DLB ≈ LBS at 1e-5 m on §5.3 bodies; the
+      // DLB ≈ LBS must hold on globally shape-matched bodies; the
       // analytic identity is exact (DLB(q,t) reduces to R·v + t when
       // every q_k is shared and q is a unit quaternion).
       expect(Math.abs(dlb[i]! - lbs[i]!)).toBeLessThan(1e-7);

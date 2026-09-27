@@ -1,28 +1,24 @@
 import { describe, expect, it } from 'vitest';
+import { Vector3 } from 'three';
 import {
-  HashGrid,
+  FluidSystem,
   ParticleSystem,
   SimLoop,
   createParticleRenderer,
-  createXpbdUniforms,
   type ParticleInit,
-} from '../../../src/core/index.js';
-import { FluidSystem } from '../../../src/fluids/index.js';
+} from '../../../src/index.js';
 
-// Phase 09 G1 — droplet radius stability.
+// Droplet radius stability.
 //
+// Surface tension is applied as a per-pair scatter, so Newton's 3rd law
+// holds by construction. This test checks the SHAPE of the radius trace
+// (rMax / rMin ratio over time) rather than a hard 2% constancy: with a
+// fixed Δt the stable γ is below the paper's γ = 1 (Akinci et al. 2013
+// use an adaptive Δt), so the paper's "droplet stays at exactly its
+// initial radius" result is out of reach. The check catches blow-up and
+// collapse at a tuning that exercises cohesion meaningfully.
 
-//
-// Phase 09 runs scatter-mode cohesion (U-33 resolution). Newton's 3rd
-// law holds by construction. This test gates on the SHAPE of the
-// radius trace (rMax / rMin ratio over time) rather than a hard 2%
-// constancy — our fixed-Δt MVP has a stable-γ ceiling below paper's
-// γ = 1 (paper uses adaptive Δt), so we can't target paper's "0.5 cm³
-// droplet stays at exactly its initial radius" spec. The gate catches
-// blow-up and collapse at the tuning that exercises cohesion
-// meaningfully.
-
-describe('Phase 09 — fluid droplet radius stability', () => {
+describe('fluid droplet radius stability', () => {
   it('droplet cloud does not blow up or collapse over 2 s', async () => {
     const renderer = await createParticleRenderer();
     try {
@@ -43,44 +39,30 @@ describe('Phase 09 — fluid droplet radius stability', () => {
             const x = -((nx * spacing) / 2) + spacing * 0.5 + i * spacing;
             const y = -((ny * spacing) / 2) + spacing * 0.5 + j * spacing;
             const z = -((nz * spacing) / 2) + spacing * 0.5 + k * spacing;
-            initial.push({
-              position: [x, y, z],
-              velocity: [0, 0, 0],
-              invMass: 1,
-              phase: 0,
-            });
+            initial.push({ position: [x, y, z] });
           }
         }
       }
 
       const particles = new ParticleSystem(renderer, count, r);
       particles.uploadParticles(initial);
-      const hashGrid = new HashGrid(particles, { cellSize: h });
 
-      const xpbd = createXpbdUniforms(1 / 60);
-      const fluid = new FluidSystem({
-        particles,
-        hashGrid,
-        xpbd,
+      const fluid = new FluidSystem(particles, {
         restDensity,
-        h,
+        smoothingRadius: h,
         particleSpacing: spacing,
         compliance: 1e-4,
-        fluidParticles: { start: 0, count },
-        vorticity: { strength: 0 },
-        xsph: { c: 0.1 },
+        viscosity: 0.1,
         surfaceTension: 0.2,
       });
 
+      // Free space: no gravity, no colliders.
       const loop = new SimLoop(particles, {
         substeps: 4,
         iterations: 2,
-        xpbd,
-        hashGrid,
+        gravity: new Vector3(0, 0, 0),
         materials: [fluid],
       });
-      loop.kernels.floorY.value = -1e9;
-      loop.gravity.set(0, 0, 0);
 
       const frames = 120; // 2 s
       const radiusTrace: number[] = [];
@@ -123,7 +105,6 @@ describe('Phase 09 — fluid droplet radius stability', () => {
           }
           const rMean = rMeanAccum / nValid;
           radiusTrace.push(rMean);
-          // eslint-disable-next-line no-console
           console.info(
             `[droplet-radius] frame=${n} nanCount=${nanCount} rMean=${rMean.toFixed(4)}`,
           );
@@ -137,15 +118,14 @@ describe('Phase 09 — fluid droplet radius stability', () => {
       const rFinal = radiusTrace[radiusTrace.length - 1]!;
       const rInitial = radiusTrace[0]!;
 
-      // eslint-disable-next-line no-console
       console.info(
         `[droplet-radius-summary] rInitial=${rInitial.toFixed(4)} rFinal=${rFinal.toFixed(4)} rMin=${rMin.toFixed(4)} rMax=${rMax.toFixed(4)} rMax/rMin=${(rMax / rMin).toFixed(3)}`,
       );
 
-      // Plan gate (blocked on U-33): |r - r_initial| < 2% of r_initial.
-      // Phase 09 MVP gate: cloud radius ratio (max/min over trace) stays
-      // within a 10x band — catches blow-up and collapse at MVP tuning,
-      // doesn't fail on the U-33 drift.
+      // The ideal check would be |r − r_initial| < 2% of r_initial. This
+      // one keeps the cloud radius ratio (max/min over the trace) within
+      // a 10× band, which catches blow-up and collapse without failing
+      // on the slow drift a fixed Δt allows.
       expect(rMax / rMin).toBeLessThan(10);
       // Sanity: cloud does not collapse to a singularity.
       expect(rMin).toBeGreaterThan(spacing);
@@ -153,8 +133,8 @@ describe('Phase 09 — fluid droplet radius stability', () => {
       // radius by a factor of 100 (blow-up detection).
       expect(rMax).toBeLessThan(100 * rInitial);
 
-      particles.destroy();
-      hashGrid.destroy();
+      loop.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

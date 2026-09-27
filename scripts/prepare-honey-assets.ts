@@ -187,12 +187,10 @@ const coarse = cluster(bunny, CLUSTER);
 console.log(
   `bunny: ${bunny.indices.length / 3} display triangles, ${coarse.indices.length / 3} collision triangles`,
 );
-const sdf = bakeMeshToSdf({
-  positions: coarse.positions,
-  indices: coarse.indices,
-  resolution: SDF_RESOLUTION,
-  padding: 0.04,
-});
+const sdf = bakeMeshToSdf(
+  { vertices: coarse.positions, indices: coarse.indices },
+  { resolution: SDF_RESOLUTION, padding: 0.04 },
+);
 const out = new URL('public/models/honey/', root);
 await mkdir(out, { recursive: true });
 await writeFile(new URL('bunny.mesh.bin', out), Buffer.from(encodeMesh(bunny)));

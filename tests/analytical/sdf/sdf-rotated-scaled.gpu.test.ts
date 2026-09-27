@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { Quaternion, Vector3 } from 'three';
-import { bakeMeshToSdf } from '../../../src/sdf/index.js';
 import {
   ParticleSystem,
   SDFCollider,
   SimLoop,
+  bakeMeshToSdf,
   createParticleRenderer,
   type ParticleInit,
-} from '../../../src/core/index.js';
+} from '../../../src/index.js';
 import { makeUvSphere } from '../../_helpers/sdf-test-meshes.js';
 
-// Phase 07 U-23 resolution — rotation + uniform scale on SDFCollider.
+// Rotation + uniform scale on SDFCollider.
 //
 // Bakes a UV sphere of radius 0.5 and stages a tight projection check on
 // an SDFCollider configured with:
@@ -32,24 +32,17 @@ import { makeUvSphere } from '../../_helpers/sdf-test-meshes.js';
 // center) instead of radially, leaving residual interior particles or
 // producing trajectories that miss the `|x − position|` floor.
 //
-// A separate test (the rotated-box one) checks rotation on a shape
-// where rotation actually changes φ values — this test checks that
-// adding rotation to a rotation-invariant shape does not break scale.
+// `tests/analytical/collider/collider-rotated-box-non-penetration.gpu.test.ts`
+// checks rotation on a shape where rotation actually changes φ values —
+// this test checks that adding rotation to a rotation-invariant shape
+// does not break scale.
 
-// Disabled in the default suite because the uncached 64³ mesh bake is expensive.
-// Enable explicitly when validating changes to SDF baking or projection.
-describe.skip('Phase 07 — U-23: rotated + scaled SDF projection', () => {
+describe('SDFCollider: rotated and scaled projection', () => {
   it('100 particles inside a 2× scaled, rotated, translated sphere all project out', async () => {
     const meshRadius = 0.5;
     const resolution = 64;
     const padding = 0.1;
-    const mesh = makeUvSphere(meshRadius, 32, 32);
-    const sdf = bakeMeshToSdf({
-      positions: mesh.positions,
-      indices: mesh.indices,
-      resolution,
-      padding,
-    });
+    const sdf = bakeMeshToSdf(makeUvSphere(meshRadius, 32, 32), { resolution, padding });
 
     const renderer = await createParticleRenderer();
     try {
@@ -88,7 +81,6 @@ describe.skip('Phase 07 — U-23: rotated + scaled SDF projection', () => {
           position: [worldPos.x + ux * innerR, worldPos.y + uy * innerR, worldPos.z + uz * innerR],
           velocity: [0, 0, 0],
           invMass: 1,
-          phase: 0,
         });
         placed += 1;
       }
@@ -107,11 +99,10 @@ describe.skip('Phase 07 — U-23: rotated + scaled SDF projection', () => {
       const loop = new SimLoop(particles, {
         substeps: 1,
         iterations: 4,
-        colliders: { sdfColliders: [collider] },
+        colliders: [collider],
       });
-      // Isolate projection from integration: no gravity, no floor.
+      // Isolate projection from integration: no gravity.
       loop.gravity.set(0, 0, 0);
-      loop.kernels.floorY.value = -1e9;
 
       await loop.step(1 / 60);
 
@@ -131,7 +122,6 @@ describe.skip('Phase 07 — U-23: rotated + scaled SDF projection', () => {
         if (d < effectiveRadius - 5e-3) insideCount++;
       }
 
-      // eslint-disable-next-line no-console
       console.info(
         `[sdf-rotated-scaled] N=${N} effectiveRadius=${effectiveRadius} ` +
           `minDistFromCenter=${minDist.toFixed(4)} maxDist=${maxDist.toFixed(4)} ` +
@@ -142,11 +132,12 @@ describe.skip('Phase 07 — U-23: rotated + scaled SDF projection', () => {
       expect(insideCount).toBe(0);
       // Particles should sit near the `effectiveRadius + r` shell (one
       // particle radius above the surface, the projection target).
-      // Upper bound: + 5e-3 tolerance. Lower bound: effectiveRadius - ε.
+      // Lower bound: effectiveRadius - ε.
       expect(minDist).toBeGreaterThan(effectiveRadius - 5e-3);
 
-      particles.destroy();
-      collider.destroy();
+      loop.dispose();
+      collider.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

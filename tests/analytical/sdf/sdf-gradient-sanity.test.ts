@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { bakeMeshToSdf, sampleSdfGradientCpu } from '../../../src/sdf/index.js';
+import { bakeMeshToSdf, sampleSdfGradient } from '../../../src/index.js';
 import { makeLcg, makeUvSphere } from '../../_helpers/sdf-test-meshes.js';
 
-// Phase 07 G1 — "Gradient sanity" (plan §Validation > Automatic (G1)):
-// "Across 1000 random points outside a 1-voxel boundary layer,
-// `|∇φ| ∈ [0.8, 1.2]` (should be ≈ 1 everywhere for a signed-distance
-// function; deviation is the sampling artifact floor)."
+// Gradient sanity: across 1000 random points outside a 1-voxel boundary
+// layer, `|∇φ| ∈ [0.8, 1.2]` (≈ 1 everywhere for a signed-distance
+// function; the deviation is the sampling-artifact floor).
 //
 // Central-difference `∇φ` samples the SDF at `x ± voxelSize` along each
 // axis; the gradient magnitude tells us how well the field satisfies the
@@ -15,22 +14,14 @@ import { makeLcg, makeUvSphere } from '../../_helpers/sdf-test-meshes.js';
 //     constant, and at a voxel boundary the gradient can jump.
 //   - The stencil halves a sliver of voxels near the medial axis where
 //     multiple face contributions cancel.
-// The plan's [0.8, 1.2] window absorbs all three comfortably.
+// The [0.8, 1.2] window absorbs all three comfortably.
 
-// Disabled in the default suite because the uncached 64³ mesh bake is expensive.
-// Enable explicitly when validating changes to SDF baking or projection.
-describe.skip('Phase 07 — SDF: gradient sanity (G1)', () => {
+describe('SDF: gradient magnitude', () => {
   it('|∇φ| ∈ [0.8, 1.2] at 1000 random points outside the 1-voxel boundary layer', () => {
     const radius = 0.5;
     const resolution = 64;
     const padding = 0.1;
-    const mesh = makeUvSphere(radius, 32, 32);
-    const sdf = bakeMeshToSdf({
-      positions: mesh.positions,
-      indices: mesh.indices,
-      resolution,
-      padding,
-    });
+    const sdf = bakeMeshToSdf(makeUvSphere(radius, 32, 32), { resolution, padding });
 
     const [vx, vy, vz] = sdf.voxelSize;
     const [resX, resY, resZ] = sdf.resolution;
@@ -54,7 +45,7 @@ describe.skip('Phase 07 — SDF: gradient sanity (G1)', () => {
       const x = minX + (maxX - minX) * rand();
       const y = minY + (maxY - minY) * rand();
       const z = minZ + (maxZ - minZ) * rand();
-      const g = sampleSdfGradientCpu(sdf, x, y, z);
+      const g = sampleSdfGradient(sdf, x, y, z);
       const mag = Math.hypot(g[0], g[1], g[2]);
       if (mag < minMag) minMag = mag;
       if (mag > maxMag) maxMag = mag;
@@ -62,7 +53,6 @@ describe.skip('Phase 07 — SDF: gradient sanity (G1)', () => {
     }
     mean /= sampleCount;
 
-    // eslint-disable-next-line no-console
     console.info(
       `[sdf-gradient-sanity] voxelSize=${vx.toFixed(5)} |∇φ| min=${minMag.toFixed(
         4,
@@ -71,5 +61,5 @@ describe.skip('Phase 07 — SDF: gradient sanity (G1)', () => {
 
     expect(minMag).toBeGreaterThan(0.8);
     expect(maxMag).toBeLessThan(1.2);
-  });
+  }, 60_000);
 });

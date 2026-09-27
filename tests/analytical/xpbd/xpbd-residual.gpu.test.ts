@@ -1,18 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { Fn, instanceIndex } from 'three/tsl';
+import { Fn, instanceIndex, uniform } from 'three/tsl';
 import {
-  ConstraintScheduler,
   ParticleSystem,
-  createParticleRenderer,
+  constraintKernels,
   createDistanceConstraints,
-  createXpbdUniforms,
+  createParticleRenderer,
   type ParticleInit,
-} from '../../../src/core/index.js';
+} from '../../../src/index.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
-// Phase 04 G3 — residual monotone decrease.
+// Residual decreases monotonically across solver iterations.
 //
 // For a random network of distance constraints, XPBD's Gauss-Seidel solve
 // must produce a non-increasing sequence of `L2 residual = Σ C(x)²`
@@ -21,10 +20,6 @@ type Any = any;
 // causes are sign errors in ∇C, missing the `α̃·λ` regularization term, or
 // a non-coloring-compliant group partition letting two constraints write
 // the same particle.
-//
-// Plan §"Automatic (G3)": "for a randomly generated network of distance
-// constraints, the L2 residual Σ C(x)² should non-increase across iterations
-// within a single substep."
 //
 // We allow a small ULP tolerance (1e-6 relative) — a strictly-decreasing
 // assertion would be defeated by f32 round-off once the residual has
@@ -115,25 +110,26 @@ async function measureIterationResiduals(graph: RandomGraph): Promise<{
       position: p,
       velocity: [0, 0, 0],
       invMass: 1,
-      phase: 0,
     }));
     particles.uploadParticles(data);
 
-    const xpbd = createXpbdUniforms(1 / 60);
+    // Substep length; only enters the solve through α̃ = α / dt².
+    const dt = uniform(1 / 60, 'float');
     const dist = createDistanceConstraints({
       particles,
       pairs: graph.pairs,
       compliance: 1e-6, // very stiff — exercises the solver, not the compliance regularization
       restLength: [...graph.restLengths],
-      xpbd,
+      dt,
     });
-    const scheduler = new ConstraintScheduler();
-    scheduler.register(dist);
+    // One solver iteration = one pass over every color group. The λ reset
+    // runs once below, NOT between iterations: re-zeroing the multipliers
+    // would violate XPBD's accumulate-across-iterations invariant (eq. 13).
+    const { solve: oneIteration } = constraintKernels([dist]);
 
-    // Seed `predictedPositions` = `positions` via a trivial GPU copy. This
-    // also forces three.js to allocate the `predictedPositions` GPUBuffer
-    // (lazy-allocated on first kernel touch — a CPU-only upload via
-    // `uploadParticles` is not sufficient on its own).
+    // `uploadParticles` already wrote predicted = positions on the CPU, but
+    // the GPU buffer only exists once a kernel touches it; a trivial copy
+    // creates it (and re-seeds it) before the first readback.
     const initPredicted = Fn(() => {
       const i: Any = instanceIndex;
       particles.predictedPositions.element(i).assign(particles.positions.element(i));
@@ -149,40 +145,27 @@ async function measureIterationResiduals(graph: RandomGraph): Promise<{
     const predicted0 = await readPredicted();
     residuals.push(computeL2Residual(graph.pairs, graph.restLengths, predicted0));
 
-    // One-iteration pipeline (one pass over all groups of all types).
-    const iterPipeline = scheduler.buildSubstepPipeline(1);
-    // Drop the reset-lambda prefix — we already called it above, and calling
-    // it again between iterations would re-zero the accumulated multipliers
-    // and violate XPBD's accumulate-across-iterations invariant (eq. 13).
-    const onlySolveKernels = iterPipeline.slice(dist.groups.length > 0 ? 1 : 0);
-    // Actually: buildSubstepPipeline prefixes `resetLambda` per type, then
-    // `iterations` copies of every group's solve. Removing the reset
-    // prefix:
-    const resetCount = scheduler.registeredTypes.length;
-    const solveOnly = iterPipeline.slice(resetCount);
-
     const maxIter = 10;
     for (let it = 0; it < maxIter; it++) {
-      await renderer.computeAsync(solveOnly);
+      await renderer.computeAsync(oneIteration);
       const pred = await readPredicted();
       residuals.push(computeL2Residual(graph.pairs, graph.restLengths, pred));
     }
 
-    particles.destroy();
+    particles.dispose();
     return { residuals, numGroups: dist.groups.length };
   } finally {
     renderer.dispose();
   }
 }
 
-describe('Phase 04 — XPBD: residual monotone decrease', () => {
+describe('XPBD: residual decreases monotonically', () => {
   it('L2 residual non-increasing across iterations on 10 random graphs', async () => {
     const tolerance = 1e-6;
     for (let t = 0; t < 10; t++) {
       const graph = buildRandomGraph(0x51de0000 + t);
       const { residuals, numGroups } = await measureIterationResiduals(graph);
 
-      // eslint-disable-next-line no-console
       console.info(
         `[xpbd-residual] trial ${t}: groups=${numGroups} edges=${graph.pairs.length} ` +
           `residuals=[${residuals.map((r) => r.toExponential(2)).join(', ')}]`,

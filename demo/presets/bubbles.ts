@@ -12,9 +12,13 @@ import {
   vec3,
   vec4,
 } from 'three/tsl';
-import { HashGrid, ParticleSystem, SimLoop, createXpbdUniforms } from '../../src/core/index.js';
-import { FluidSystem } from '../../src/fluids/index.js';
-import { VolumetricGasRenderer, type SmokeTracers } from '../../src/gas/index.js';
+import {
+  FluidSystem,
+  GasVolumeRenderer,
+  ParticleSystem,
+  SimLoop,
+  type SmokeTracers,
+} from '../../src/index.js';
 import { basin, material } from '../runtime/stage.js';
 import type { BuildContext, Experiment, Values } from '../types.js';
 import { liquidVisual } from './liquids.js';
@@ -131,30 +135,18 @@ function smokePuffs(count: number) {
 export async function buildBubbles(ctx: BuildContext, values: Values): Promise<Experiment> {
   const fill = (r: number) => lattice([-HALF_X, r, -HALF_Z], [HALF_X, LEVEL, HALF_Z], r * 2);
   const radius = fitRadius(fill, ctx.particles, 0.017);
-  const spacing = radius * 2;
   const initial = fill(radius);
   const detailed = ctx.particles >= 25000;
   const particles = new ParticleSystem(ctx.renderer, initial.length, radius);
   particles.uploadParticles(initial);
-  const hashGrid = new HashGrid(particles, { cellSize: radius * 4 });
-  const xpbd = createXpbdUniforms(1 / 60);
-  const fluid = new FluidSystem({
-    particles,
-    hashGrid,
-    xpbd,
-    restDensity: 1000,
-    h: radius * 4,
-    particleSpacing: spacing,
-    compliance: 1e-4,
-    fluidParticles: { start: 0, count: initial.length },
-    xsph: { c: 0.04 },
+  const water = new FluidSystem(particles, {
+    viscosity: 0.04,
     surfaceTension: 0.06,
-    vorticity: { strength: 0.03 },
+    vorticity: 0.03,
   });
-  const colliders = tank(particles, HALF_X, HALF_Z, 12);
-  // Walls wet by the water; bubbles are left out so their pockets stay round.
-  const walls = tank(particles, HALF_X, HALF_Z, 5);
-  walls.upload();
+  // Each bubble is a sphere collider that pushes the water aside; parked
+  // below the floor while waiting to form.
+  const colliders = tank(particles, HALF_X, HALF_Z);
   const bubbles: Bubble[] = VENTS.map((vent, i) => ({
     vent,
     position: new Vector3(vent[0], -1, vent[1]),
@@ -166,35 +158,30 @@ export async function buildBubbles(ctx: BuildContext, values: Values): Promise<E
     size: 0,
     phase: i * 1.7,
   }));
-  colliders.upload();
   const substeps = scaledSubsteps(3, ctx.particles),
     iterations = 2;
   const loop = new SimLoop(particles, {
     substeps,
     iterations,
-    xpbd,
-    hashGrid,
-    colliders: { colliders },
-    materials: [fluid],
+    colliders: [colliders],
+    materials: [water],
   });
-  loop.kernels.floorY.value = -1e9;
-  loop.gravity.set(0, -9.81, 0);
 
-  const visual = liquidVisual(ctx, fluid, {
+  const visual = liquidVisual(ctx, water, {
     bounds: new Box3(
       new Vector3(-HALF_X - 0.03, -0.02, -HALF_Z - 0.03),
       new Vector3(HALF_X + 0.03, 0.72, HALF_Z + 0.03),
     ),
-    colliders: walls,
+    // The walls are wetted; the bubbles are carved out so their pockets stay round.
+    colliders: [tank(particles, HALF_X, HALF_Z)],
     carve: colliders,
-    color: 0x5fb3c9,
-    appearance: { attenuationDistance: 0.55, scattering: 0.05, roughness: 0.03 },
+    appearance: { color: 0x5fb3c9, attenuationDistance: 0.55, scattering: 0.05, roughness: 0.03 },
     cavities: { smokeColor: 0xa9adb3, smokeDensity: values['density']! * 45 },
   });
 
   const puffs = smokePuffs(bubbles.length);
-  const smoke = new VolumetricGasRenderer({
-    gas: puffs.tracers,
+  const smoke = new GasVolumeRenderer(puffs.tracers, {
+    renderer: ctx.renderer,
     // Start the grid below the waterline so its edge fade is hidden underwater.
     min: new Vector3(-HALF_X - 0.1, LEVEL - 0.12, -HALF_Z - 0.1),
     max: new Vector3(HALF_X + 0.1, 1.75, HALF_Z + 0.1),
@@ -276,30 +263,30 @@ export async function buildBubbles(ctx: BuildContext, values: Values): Promise<E
         b.velocity.copy(b.position).sub(previous).divideScalar(Math.max(dt, 1e-4));
         colliders.setSphere(b.slot, b.position, b.radius, b.velocity);
       }
-      colliders.upload();
       puffs.dt.value = dt;
       puffs.time.value = time;
       puffs.rise.value = 0.05 + values['rise']! * 0.15;
-      smoke.time.value = time;
+      smoke.time = time;
       await ctx.renderer.computeAsync(puffs.advect);
     },
-    setReflections: (enabled) => visual.setReflections(enabled),
+    setReflections: (enabled) => (visual.surface.reflections = enabled),
     async prepareRender() {
-      visual.prepareRender();
-      await smoke.update(ctx.renderer);
+      await visual.update();
+      await smoke.update();
     },
     setParticleView: (enabled) => visual.setParticleView(enabled),
     setParameter(key, value) {
       values[key] = value;
-      if (key === 'density') smoke.density.value = value * 0.6;
+      if (key === 'density') {
+        smoke.density = value * 0.6;
+        visual.surface.smokeDensity = value * 45;
+      }
     },
     dispose() {
-      visual.dispose();
+      visual.surface.dispose();
       smoke.dispose();
-      particles.destroy();
-      hashGrid.destroy();
-      colliders.destroy();
-      walls.destroy();
+      particles.dispose();
+      loop.dispose();
     },
   };
 }

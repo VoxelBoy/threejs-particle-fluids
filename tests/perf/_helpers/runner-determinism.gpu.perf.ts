@@ -1,85 +1,35 @@
-// Phase Perf — Runner same-process determinism smoke (Guardrail 1).
-//
+// Runs the same synthetic scene twice in one process and checks that the
+// frame times agree within a factor of ten. It's a gate for broken timing
+// (stale reads, samples from the wrong frame), not for measurement noise:
+// small workloads swing by tens of percent between runs as GPU clocks ramp
+// up and down.
 
-//
-// `frameTotalMs` is wall-clock, susceptible to host-side scheduling and
-// thermal jitter. On a 128k-element saxpy where GPU compute is ~30 µs
-// per dispatch, a single slow fence dominates the median, producing
-// ~50–70% run-to-run swings even when the harness is behaving correctly
-// (see the warmup-sweep diagnosis in scripts/perf-warmup-sweep.ts).
-// Threshold is 90% — catastrophic-regression gate, not a tightness gate.
-// Per-kernel timings are GPU-timestamp-based and the right place to
-// gate on tighter bounds; this test exists only to catch order-of-
-// magnitude harness breakage.
-
-import { Fn, float, instanceIndex, instancedArray } from 'three/tsl';
 import { describe, expect, it } from 'vitest';
 
 import { PerfRenderer } from './PerfRenderer.js';
-import { PerfRunner, type PerfSceneSpec } from './PerfRunner.js';
+import { PerfRunner, type PerfSceneResult } from './PerfRunner.js';
+import { saxpyScene } from './synthetic.js';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Any = any;
+const WINDOW = { warmup: 5, measure: 30 };
 
-function buildScene(perf: PerfRenderer): PerfSceneSpec {
-  const N = 1 << 17; // 128k elements — small to keep the test fast
-
-  const xNode = instancedArray(N, 'float');
-  const yNode = instancedArray(N, 'float');
-  const xArr = xNode.value.array as Float32Array;
-  const yArr = yNode.value.array as Float32Array;
-  for (let i = 0; i < N; i++) {
-    xArr[i] = Math.sin(i * 1e-3);
-    yArr[i] = Math.cos(i * 1e-3);
-  }
-
-  const saxpy = Fn(() => {
-    const i = instanceIndex;
-    const x = (xNode as Any).element(i);
-    const y = (yNode as Any).element(i);
-    y.assign(x.mul(float(2.5)).add(y));
-  })().compute(N);
-
-  return {
-    id: 'determinism-synthetic',
-    particleCount: N,
-    substeps: 1,
-    iterations: 1,
-    stepFrame: async () => {
-      await perf.stepChain([saxpy]);
-    },
-    kernels: [{ name: 'self-test.saxpy', kernel: saxpy, dispatchesPerFrame: 1 }],
-  };
+/** GPU time when the device has timestamps, wall-clock otherwise. */
+function frameP50(result: PerfSceneResult): number {
+  return (result.gpuFrameMs ?? result.stepFrameMs).p50;
 }
 
-describe('Phase Perf — runner determinism smoke', () => {
-  it('reports frame-total p50 within 90% across two same-process runs', async () => {
+describe('PerfRunner determinism', () => {
+  it('reports frame p50s within a factor of ten across two runs', async () => {
     const perf = await PerfRenderer.create();
     try {
       const runner = new PerfRunner(perf);
-
-      const r1 = await runner.runScene(buildScene(perf), {
-        warmup: 5,
-        measure: 30,
-      });
-      const r2 = await runner.runScene(buildScene(perf), {
-        warmup: 5,
-        measure: 30,
-      });
-
-      const p1 = r1.frameTotalMs.p50;
-      const p2 = r2.frameTotalMs.p50;
+      const scene = () => saxpyScene(perf, { id: 'determinism', count: 1 << 20, dispatches: 4 });
+      const p1 = frameP50(await runner.runScene(scene(), WINDOW));
+      const p2 = frameP50(await runner.runScene(scene(), WINDOW));
       const ratio = Math.abs(p1 - p2) / Math.max(p1, p2);
 
-      // eslint-disable-next-line no-console
       console.log(
-        '[determinism] r1.p50=' +
-          p1.toFixed(3) +
-          'ms r2.p50=' +
-          p2.toFixed(3) +
-          'ms ratio=' +
-          (ratio * 100).toFixed(1) +
-          '%',
+        `[determinism] timing=${perf.timingMethod} run 1 p50=${p1.toFixed(3)} ms, ` +
+          `run 2 p50=${p2.toFixed(3)} ms, difference ${(ratio * 100).toFixed(1)}%`,
       );
 
       expect(p1).toBeGreaterThan(0);

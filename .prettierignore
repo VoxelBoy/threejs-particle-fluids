@@ -1,0 +1,9 @@
+dist/
+dist-demo/
+public/
+test-results/
+playwright-report/
+tests/perf/results/
+tests/perf/_helpers/report-template.html
+demo/assets/
+package-lock.json

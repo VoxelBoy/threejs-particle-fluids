@@ -1,29 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { BufferGeometry, Float32BufferAttribute, Uint32BufferAttribute } from 'three';
+import { BufferGeometry, Float32BufferAttribute, Uint32BufferAttribute, Vector3 } from 'three';
 
 import {
+  ClothSystem,
   ParticleSystem,
   SimLoop,
+  createClothGraph,
   createParticleRenderer,
-  createXpbdUniforms,
   type ParticleInit,
-} from '../../../src/core/index.js';
-import { ClothSystem, buildTethers, fromBufferGeometry } from '../../../src/cloth/index.js';
+} from '../../../src/index.js';
 
-// Phase 19 G1 #3 — tether unilateral semantics (Kim 2012 §3.1).
+// Tethers are unilateral (Kim et al. 2012 §3.1).
 //
-// Plan §"Validation/Automatic G1": "Cloth in zero-gravity
-// contraction scenario: tethers do not pull particles inward; only
-// distance constraints act in compression."
-//
-// Refined gate at phase entry: tethers must not pull particles
-// OUTWARD when they're already inside the constraint sphere
-// (`|x_i − a| ≤ r_i`). The plan's "do not pull inward" wording
-// describes the symmetric case (tethers shouldn't compress the
-// cloth either) but the operative paper-faithful test is the
-// unilateral check on the OUTWARD side: an LRA constraint with
-// `C ≤ 0` must produce zero force, regardless of how far inside
-// the sphere the particle is.
+// In a contracted cloth in zero gravity, tethers must not act: only
+// distance constraints act in compression. Tethers must not pull
+// particles OUTWARD when they're already inside the constraint sphere
+// (`|x_i − a| ≤ r_i`): a tether constraint with `C ≤ 0` must produce
+// zero force, regardless of how far inside the sphere the particle is.
 //
 // Setup: cloth pinned along its top row. Free particles are
 // initialised at half their natural y-depth — i.e. bunched up
@@ -31,13 +24,13 @@ import { ClothSystem, buildTethers, fromBufferGeometry } from '../../../src/clot
 // zero and BOTH distance and bending compliance are large
 // (effectively disabled) so no other force can drive the cloth
 // outward. If tethers were bilateral, they would pull the
-// particles outward to their rest radii on the LRA spheres
+// particles outward to their rest radii on the tether spheres
 // (re-deploying the cloth). The unilateral kernel must NOT do
 // that — particles should stay inside the spheres throughout.
 //
-// Validation: for every LRA constraint, `(|x_final − a| − r_i) ≤ ε`,
-// where ε accounts for FP noise. Equivalently, no `C > 0` is ever
-// produced under the contracted initial condition.
+// Validation: for every tether, `(|x_final − a| − r_i) ≤ ε`, where ε
+// accounts for FP noise. Equivalently, no `C > 0` is ever produced
+// under the contracted initial condition.
 
 interface SheetData {
   readonly geometry: BufferGeometry;
@@ -72,47 +65,19 @@ function buildSheet(M: number): SheetData {
   return { geometry: geom, pinnedIndices };
 }
 
-describe('Phase 19 G1 #3 — tether is unilateral (Kim 2012 §3.1)', () => {
+describe('cloth tethers are unilateral (Kim et al. 2012 §3.1)', () => {
   it('contracted cloth in zero-gravity: tethers do not pull free particles outward', async () => {
     const M = 12;
     const renderer = await createParticleRenderer();
     try {
       const { geometry, pinnedIndices } = buildSheet(M);
-      const graph = fromBufferGeometry(geometry, {
+      const graph = createClothGraph(geometry, {
         surfaceDensity: 0.2,
         pinnedIndices,
       });
-      const tethers = buildTethers({ graph });
-      // Top row is pinned → 1 island; every free particle gets
-      // exactly 1 LRA. Sanity check that we have something to test.
-      expect(tethers.length).toBe(M * (M - 1));
-
-      // Set initial positions: pinned vertices stay; free
-      // vertices have their y-coord halved (brings them closer
-      // to the top row). All particles end up well inside every
-      // LRA sphere.
-      const initial: ParticleInit[] = [];
-      for (let i = 0; i < graph.positions.length; i++) {
-        const p = graph.positions[i]!;
-        const px = p[0];
-        const py = graph.invMass[i] === 0 ? p[1] : p[1] * 0.5;
-        const pz = p[2];
-        initial.push({
-          position: [px, py, pz],
-          velocity: [0, 0, 0],
-          invMass: graph.invMass[i]!,
-          phase: 1,
-        });
-      }
       const particles = new ParticleSystem(renderer, graph.positions.length, 0.05);
-      particles.uploadParticles(initial);
-
-      const xpbd = createXpbdUniforms(1 / 60);
-      const cloth = new ClothSystem({
-        particles,
-        xpbd,
+      const cloth = new ClothSystem(particles, {
         graph,
-        particleOffset: 0,
         // Disable distance + bending so they don't drive
         // re-expansion. Tethers are the only constraint that
         // could move particles outward.
@@ -120,15 +85,31 @@ describe('Phase 19 G1 #3 — tether is unilateral (Kim 2012 §3.1)', () => {
         bendCompliance: 1e10,
         tetherCompliance: 0,
       });
+      const tethers = cloth.tethers;
+      // Top row is pinned → 1 island; every free particle gets
+      // exactly 1 tether. Sanity check that we have something to test.
+      expect(tethers.length).toBe(M * (M - 1));
+
+      // Contract the cloth. The cloth uploaded its rest positions, so
+      // overwrite them: pinned vertices stay; free vertices have their
+      // y-coord halved (brings them closer to the top row). All
+      // particles end up well inside every tether sphere.
+      const initial: ParticleInit[] = [];
+      for (let i = 0; i < graph.positions.length; i++) {
+        const p = graph.positions[i]!;
+        const px = p[0];
+        const py = graph.invMass[i] === 0 ? p[1] : p[1] * 0.5;
+        const pz = p[2];
+        initial.push({ position: [px, py, pz], invMass: graph.invMass[i]! });
+      }
+      particles.uploadParticles(initial);
 
       const loop = new SimLoop(particles, {
         substeps: 4,
         iterations: 2,
-        xpbd,
+        gravity: new Vector3(0, 0, 0),
         materials: [cloth],
       });
-      loop.kernels.floorY.value = -1e9;
-      loop.gravity.set(0, 0, 0);
 
       const frameDt = 1 / 60;
       const damp = 0.95;
@@ -169,19 +150,20 @@ describe('Phase 19 G1 #3 — tether is unilateral (Kim 2012 §3.1)', () => {
       for (const t of tethers) {
         if (t.restRadius > maxR) maxR = t.restRadius;
       }
-      // eslint-disable-next-line no-console
       console.info(
         `[tether-unilateral] M=${M} nTethers=${tethers.length} maxRestRadius=${maxR.toFixed(4)} maxFinalDist=${maxAxialDist.toFixed(4)} maxOvershoot=${maxOvershoot.toFixed(6)} (negative = inside sphere)`,
       );
       expect(nanFree).toBe(true);
       // Tolerance: 1e-3 m absorbs FP noise + numerical drift
-      // over 60 frames, but is well below the LRA rest radius
+      // over 60 frames, but is well below the tether rest radius
       // (~unit-fraction). A bilateral tether would have
       // overshoot near zero (pulled to the sphere boundary) or
       // even negative converging to it; a misimplemented
       // unilateral that still pushes outward in some direction
       // would show overshoot > 0 by an order of magnitude more.
       expect(maxOvershoot).toBeLessThan(1e-3);
+      loop.dispose();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }

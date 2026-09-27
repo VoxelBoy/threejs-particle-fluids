@@ -1,11 +1,15 @@
-// Phase Perf — JSON output schema. The harness writes one of these per
-// run; the HTML report consumes it via inline `__PARTICLE_FLUIDS_PERF_DATA__`
-// substitution.
+// JSON written by the benchmark run. `run.ts` saves one report per run and
+// inlines it into the HTML report template.
 
 export interface PerfQuantileBlock {
   readonly p10: number;
   readonly p50: number;
   readonly p90: number;
+}
+
+export interface PerfStatsJson extends PerfQuantileBlock {
+  readonly min: number;
+  readonly max: number;
 }
 
 export interface PerfPlatformInfo {
@@ -14,45 +18,39 @@ export interface PerfPlatformInfo {
   readonly os: string;
 }
 
-export type PerfTimingMethodJson = 'per-kernel-pass' | 'per-kernel-stage-boundary' | 'gross-only';
-
-export interface PerfKernelJson {
-  readonly name: string;
-  readonly dispatches_per_frame: number;
-  readonly min_ms: number;
-  readonly p10_ms: number;
-  readonly p50_ms: number;
-  readonly p90_ms: number;
-  readonly max_ms: number;
-  readonly samples: number;
-}
+/**
+ * - `timestamp`: the GPU reports each frame's compute time through
+ *   timestamp queries, so scenes carry `frame_gpu_ms`.
+ * - `wall-clock`: the device has no `timestamp-query` feature; only
+ *   `frame_step_ms` is measured.
+ */
+export type PerfTimingMethodJson = 'timestamp' | 'wall-clock';
 
 export interface PerfSceneJson {
   readonly id: string;
+  /** Every particle in the simulation, including pinned boundary particles. */
   readonly particle_count: number;
   readonly substeps: number;
   readonly iterations: number;
   readonly frames_warmup: number;
   readonly frames_measure: number;
-  /** stepFrame + per-kernel-isolation overhead. */
-  readonly frame_total_ms: PerfQuantileBlock;
-  /** Production-equivalent frame cost (stepFrame only). */
-  readonly frame_step_ms: PerfQuantileBlock;
-  /** Per-frame isolation-loop dispatch count. */
-  readonly dispatch_count: number;
   /**
-   * Phase Perf-11 H3: contact-pair count per frame, sampled once per
-   * measure frame from `ContactBuffer.readbackCount()`. Optional —
-   * present only for scenes that opt in via `contactPairCountReadback`
-   * on `PerfSceneSpec`. Pure-fluid scenes that never construct a
-   * contact pipeline omit this field.
+   * GPU time of one `SimLoop.step` (the whole frame runs as one compute
+   * pass), from timestamp queries. Present when `timing_method` is
+   * `timestamp`.
    */
-  readonly contact_pair_count?: PerfQuantileBlock;
-  readonly kernels: readonly PerfKernelJson[];
+  readonly frame_gpu_ms?: PerfStatsJson;
+  /**
+   * Wall-clock time from calling `SimLoop.step` until the GPU reports the
+   * frame done. Includes CPU-side encoding and scheduling noise.
+   */
+  readonly frame_step_ms: PerfStatsJson;
+  /** Contact pairs found per substep, sampled once per measured frame. Scenes with contacts only. */
+  readonly contact_count?: PerfQuantileBlock;
 }
 
 export interface PerfReportJson {
-  readonly version: 1;
+  readonly version: 2;
   readonly commit: string;
   readonly date: string;
   readonly platform: PerfPlatformInfo;

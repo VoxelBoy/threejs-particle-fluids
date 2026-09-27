@@ -6,13 +6,13 @@ import {
   createParticleRenderer,
   emitForEachNeighbor,
   type ParticleInit,
-} from '../../../src/core/index.js';
+} from '../../../src/index.js';
 
-// HashGrid collision-rate sweep (G1).
+// HashGrid bucket-collision-rate sweep.
 //
 // The hash-table-size knob trades memory for narrow-phase false-positive
-// rate. This test pins the curve numerically for the chosen default
-// (`hashTableSize = 2·capacity`) under the current Morton bucket function.
+// rate. This test pins the curve numerically for the default
+// (`hashTableSize = 2·capacity`) under the Morton bucket function.
 //
 // Scene: 16³ = 4096 particles, one per cell, on a uniform lattice of cell-
 // size spacing. Each particle sits squarely inside its own cell so the
@@ -20,7 +20,7 @@ import {
 //
 // For each `hashTableSize` in the sweep:
 //   - Build the grid.
-//   - Count the total number of `onCandidate` invocations across all
+//   - Count the total number of neighbor-walk candidates across all
 //     queries (excluding self, since every caller filters self anyway).
 //   - Compare to the CPU-computed ground-truth count (27-cell lattice
 //     neighbors minus self, clipped at boundaries).
@@ -33,22 +33,21 @@ import {
 //   n=1024   rate=370.0%  (table much smaller than capacity, dense aliasing)
 //   n=2048   rate=132.8%
 //   n=4096   rate= 14.2%
-//   n=8192   rate=  9.3%  ← n = 2·capacity, the production default
+//   n=8192   rate=  9.3%  ← n = 2·capacity, the default
 //   n=16384  rate=  4.5%
 //   n=32768  rate=  0.0%  ← n = 8·capacity, flat regime
 //
-// The previous Teschner XOR-mix bucket function pinned ~54% rate at
-// `n = 2·capacity` (Phase 07a Plan deviation 1: birthday-paradox floor).
-// Morton bucketing improves this by ~6× because spatially-clustered cells
-// share lower-bit Morton-code structure, reducing within-walk false-
-// positives. Same lattice scene, same hashTableSize.
+// A Teschner XOR-mix bucket function lands around 54% at `n = 2·capacity`
+// on the same scene (birthday-paradox floor). Morton bucketing does ~6×
+// better because spatially-clustered cells share lower-bit Morton-code
+// structure, reducing within-walk false positives.
 //
 // Assertion thresholds below stay loose so the test is not brittle to
 // minor Morton-distribution variations across platforms:
 //   - At `n = 2·capacity`  (n = 8192):  rate ≤ 0.60. Generous ceiling;
 //     Morton actually lands well below this on the reference platform.
 //   - At `n = 8·capacity`  (n = 32768): rate ≤ 0.10. Flat regime reachable
-//     at this load factor under both Teschner and Morton.
+//     at this load factor.
 //   - At `n = 0.5·capacity` (n = 2048): rate > 0.50. Test-sanity lower
 //     bound — confirms the hash is real, not a unique-bucket stub.
 //
@@ -73,7 +72,6 @@ function buildLattice(): ParticleInit[] {
           position: [ix * CELL + CELL / 2, iy * CELL + CELL / 2, iz * CELL + CELL / 2],
           velocity: [0, 0, 0],
           invMass: 1,
-          phase: 0,
         });
       }
     }
@@ -118,19 +116,10 @@ async function measureCollisionRate(
     const p: Any = instanceIndex;
     const pos: Any = particles.positions.element(p).xyz;
     const count: Any = uint(0).toVar();
-    emitForEachNeighbor({
-      queryPosXyz: pos,
-      hashOrigin: grid.hashOriginUniform,
-      cellSize: grid.cellSizeUniform,
-      hashTableSize: grid.hashTableSize,
-      cellStart: grid.cellStart,
-      cellEnd: grid.cellEnd,
-      sortedIndices: grid.sortedIndices,
-      onCandidate: (n) => {
-        If((n as Any).notEqual(p), () => {
-          count.addAssign(uint(1));
-        });
-      },
+    emitForEachNeighbor(grid, pos, (n) => {
+      If(n.notEqual(p), () => {
+        count.addAssign(uint(1));
+      });
     });
     countsOut.element(p).assign(count);
   })().compute(N);
@@ -142,11 +131,11 @@ async function measureCollisionRate(
   for (let p = 0; p < N; p++) visited += gpu[p]!;
 
   const trueTotal = cpuTrueCandidateTotal();
-  grid.destroy();
+  grid.dispose();
   return (visited - trueTotal) / trueTotal;
 }
 
-describe('HashGrid: collision-rate sweep (G1)', () => {
+describe('HashGrid: bucket collision rate', () => {
   it('false-positive rate decreases monotonically with hashTableSize under Morton bucketing', async () => {
     const renderer = await createParticleRenderer();
     try {
@@ -155,8 +144,8 @@ describe('HashGrid: collision-rate sweep (G1)', () => {
       particles.uploadParticles(data);
 
       // Sweep covers load factors 4×, 2×, 1×, 0.5×, 0.25×, 0.125× the
-      // particle count. `hashTableSize = 2·capacity = 8192` is the plan's
-      // default; the sweep around it grounds the default choice.
+      // particle count. `hashTableSize = 2·capacity = 8192` is the
+      // default; the sweep around it grounds that choice.
       const sizes = [1024, 2048, 4096, 8192, 16384, 32768];
       const results: { n: number; rate: number }[] = [];
       for (const n of sizes) {
@@ -164,7 +153,6 @@ describe('HashGrid: collision-rate sweep (G1)', () => {
         results.push({ n, rate });
       }
 
-      // eslint-disable-next-line no-console
       console.info(
         `[hashgrid-collision-rate] capacity=${N} ` +
           results.map((r) => `n=${r.n}:rate=${(r.rate * 100).toFixed(1)}%`).join(' '),
@@ -178,12 +166,12 @@ describe('HashGrid: collision-rate sweep (G1)', () => {
       expect(byN.get(1024)!).toBeGreaterThan(byN.get(32768)!);
       expect(byN.get(2048)!).toBeGreaterThan(byN.get(16384)!);
 
-      // See the file-level comment for the plan-vs-measurement rationale.
+      // See the file-level comment for how these thresholds were chosen.
       expect(byN.get(8192)!).toBeLessThanOrEqual(0.6);
       expect(byN.get(32768)!).toBeLessThanOrEqual(0.1);
       expect(byN.get(2048)!).toBeGreaterThan(0.5);
 
-      particles.destroy();
+      particles.dispose();
     } finally {
       renderer.dispose();
     }
