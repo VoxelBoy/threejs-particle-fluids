@@ -39,12 +39,12 @@ export function buildPositionDeltaKernel(
   const { lambda, deltaX, reaction } = buffers;
 
   return Fn(() => {
-    const i: Any = emitFluidIndex(context);
+    const { i, row } = neighbors.emitThread();
     const xi: Any = particles.predictedPositions.element(i).xyz.toVar();
     const lambdaI: Any = lambda.element(i).toVar();
     const sum: Any = vec3(0).toVar();
 
-    neighbors.forEach(i, (j: Any) => {
+    neighbors.forEach(row, (j: Any) => {
       const neighbor = emitNeighborMass(context, j);
       const gradient: Any = emitSpikyGrad(
         xi.sub(particles.predictedPositions.element(j).xyz),
@@ -70,7 +70,9 @@ export function buildPositionDeltaKernel(
     });
 
     deltaX.element(i).assign(vec4(sum.div(restDensity).mul(particles.invMass.element(i)), 0));
-  })().compute(context.range.count);
+  })()
+    .compute(neighbors.threadCount)
+    .setName('positionDelta.positionDelta');
 }
 
 /** Add `deltaX` to the predicted positions. A separate pass, so no thread reads a moved neighbor. */
@@ -82,5 +84,7 @@ export function buildApplyDeltaKernel(
     const i: Any = emitFluidIndex(context);
     const position: Any = context.particles.predictedPositions.element(i);
     position.assign(vec4(position.xyz.add(deltaX.element(i).xyz), position.w));
-  })().compute(context.range.count);
+  })()
+    .compute(context.range.count)
+    .setName('positionDelta.applyDelta');
 }

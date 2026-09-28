@@ -242,7 +242,9 @@ export class SDFCollider implements Collider {
 
     const resetLambda = Fn(() => {
       lambda.element(instanceIndex).assign(0);
-    })().compute(2 * particles.capacity);
+    })()
+      .compute(2 * particles.capacity)
+      .setName('SDFCollider.resetLambda');
 
     /** Emit `body(normal, phi)` when the SDF gradient at `x` is usable. */
     const sample = (x: Any, body: (normal: Any, phi: Any) => void): void => {
@@ -274,7 +276,9 @@ export class SDFCollider implements Collider {
           });
         });
       });
-    })().compute(particles.capacity);
+    })()
+      .compute(particles.capacity)
+      .setName('SDFCollider.solve');
 
     const friction = Fn(() => {
       const p: Any = instanceIndex;
@@ -294,7 +298,9 @@ export class SDFCollider implements Collider {
           });
         });
       });
-    })().compute(particles.capacity);
+    })()
+      .compute(particles.capacity)
+      .setName('SDFCollider.friction');
 
     this.kernels.push(resetLambda, solve, friction);
     return { preSolve: [resetLambda], solve: [solve], postSolve: [friction] };

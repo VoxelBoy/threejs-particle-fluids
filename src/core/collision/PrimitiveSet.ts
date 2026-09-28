@@ -327,7 +327,9 @@ export class PrimitiveSet implements Collider {
 
     const resetLambda = Fn(() => {
       lambda.element(instanceIndex).assign(0);
-    })().compute(2 * particles.capacity * gpu.capacity);
+    })()
+      .compute(2 * particles.capacity * gpu.capacity)
+      .setName('PrimitiveSet.resetLambda');
 
     const forEachPrimitive = (body: (slot: Any) => void): void => {
       Loop(
@@ -362,7 +364,9 @@ export class PrimitiveSet implements Collider {
           });
         });
       });
-    })().compute(particles.capacity);
+    })()
+      .compute(particles.capacity)
+      .setName('PrimitiveSet.solve');
 
     const friction = Fn(() => {
       const p: Any = instanceIndex;
@@ -395,14 +399,20 @@ export class PrimitiveSet implements Collider {
           });
         });
       });
-    })().compute(particles.capacity);
+    })()
+      .compute(particles.capacity)
+      .setName('PrimitiveSet.friction');
 
     const frameStart = Fn(() => {
       clock.assign(dt.mul(substeps.sub(1)));
-    })().compute(1);
+    })()
+      .compute(1)
+      .setName('PrimitiveSet.frameStart');
     const tick = Fn(() => {
       clock.assign(clock.sub(dt).max(0));
-    })().compute(1);
+    })()
+      .compute(1)
+      .setName('PrimitiveSet.tick');
     this.kernels.push(resetLambda, solve, friction, frameStart, tick);
     return {
       // The clock starts at the time left after the first substep and ticks

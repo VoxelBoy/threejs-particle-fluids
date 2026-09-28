@@ -216,26 +216,22 @@ export class FluidSystem implements Material {
 
     const init: ComputeNode[] = [];
     const preSolve: ComputeNode[] = [];
-    for (const boundary of this.boundaries) {
-      const kernel = (positions: StorageBufferNode<'vec4'>) =>
-        buildBoundaryVolumeKernel({
-          particles,
-          grid: hashGrid,
-          sph,
-          range: boundary.range,
-          positions,
-        });
-      // Dynamic boundaries are recomputed every substep, before anything reads them.
-      if (boundary.dynamic) preSolve.push(kernel(particles.predictedPositions));
-      else init.push(kernel(particles.positions));
-    }
+    const volumeKernel = (dynamic: boolean, positions: StorageBufferNode<'vec4'>) => {
+      const ranges = this.boundaries.filter((b) => b.dynamic === dynamic).map((b) => b.range);
+      return ranges.length > 0
+        ? [buildBoundaryVolumeKernel({ particles, grid: hashGrid, sph, ranges, positions })]
+        : [];
+    };
+    // Dynamic boundaries are recomputed every substep, before anything reads them.
+    preSolve.push(...volumeKernel(true, particles.predictedPositions));
+    init.push(...volumeKernel(false, particles.positions));
     preSolve.push(...neighbors.buildKernels(hashGrid, sph.hSq));
 
     // Surface tension and adhesion change velocities once per substep, and
     // move predicted positions to match, before the pressure solve.
     const { surfaceTension, adhesion } = this.uniforms;
     if (surfaceTension || adhesion) {
-      const impulses = new Accumulator(particles, 50);
+      const impulses = new Accumulator(particles, 50, 'fluidImpulses');
       if (surfaceTension) {
         const normal = vec4Buffer();
         preSolve.push(
@@ -266,9 +262,8 @@ export class FluidSystem implements Material {
     const boundaryRanges = this.boundaries.map((boundary) => boundary.range);
     const reaction =
       boundaryRanges.length > 0
-        ? { accumulator: new Accumulator(particles, 10), ranges: boundaryRanges }
+        ? { accumulator: new Accumulator(particles, 10, 'fluidReaction'), ranges: boundaryRanges }
         : undefined;
-    if (reaction) preSolve.push(reaction.accumulator.buildResetKernel());
     const solve = [
       buildLambdaKernel(context, {
         compliance: uniform(this.options.compliance ?? 1e-4, 'float'),

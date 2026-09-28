@@ -1,4 +1,4 @@
-import { Fn, If, Return, atomicAdd, atomicLoad, float, instanceIndex, uint } from 'three/tsl';
+import { Fn, If, Return, atomicAdd, atomicLoad, float, instanceIndex } from 'three/tsl';
 import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import type UniformNode from 'three/src/nodes/core/UniformNode.js';
 
@@ -9,16 +9,15 @@ import { LAMBDA_SCALE, type ContactBuffer } from './ContactBuffer.js';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
-/** Emit TSL that returns early for contact slots past the emitted count. */
+/** Emit TSL that returns early for threads past the stored contacts. */
 function emitSkipUnusedSlot(contacts: ContactBuffer, c: Any): void {
-  const emitted: Any = atomicLoad(contacts.counter.element(uint(0)));
-  If(c.greaterThanEqual(emitted).or(c.greaterThanEqual(uint(contacts.maxContacts))), () => {
+  If(c.greaterThanEqual(contacts.emitStoredCount()), () => {
     Return();
   });
 }
 
 /**
- * Solve every contact once, one thread per contact, scattering corrections
+ * Solve every contact once, one thread per stored contact, scattering corrections
  * into `accumulator`:
  *
  * 1. Non-penetration (Macklin et al. 2014, eq. 22): push the pair apart along
@@ -93,7 +92,9 @@ export function buildContactSolveKernel(args: {
     accumulator.add(i, sticks.select(normalI.add(frictionI), normalI));
     accumulator.add(j, sticks.select(normalJ.add(frictionJ), normalJ));
     atomicAdd(record.get('lambdaT'), sticks.select(dLambdaT, float(0)).mul(LAMBDA_SCALE).toInt());
-  })().compute(contacts.maxContacts);
+  })()
+    .compute(contacts.dispatchArgs as Any)
+    .setName('solve.contactSolve');
 }
 
 /**
@@ -138,7 +139,9 @@ export function buildContactStabilizeKernel(args: {
     const dLambda: Any = float(contactDistance).sub(distance).div(wSum).toVar();
     accumulator.add(i, n.mul(wi.mul(dLambda)));
     accumulator.add(j, n.mul(wj.mul(dLambda)).negate());
-  })().compute(contacts.maxContacts);
+  })()
+    .compute(contacts.dispatchArgs as Any)
+    .setName('solve.contactStabilize');
 }
 
 /**
@@ -186,5 +189,7 @@ export function buildContactFrictionKernel(args: {
     const impulse: Any = vT.div(vTLength).mul(change).negate().div(wSum).toVar();
     accumulator.add(i, impulse.mul(wi));
     accumulator.add(j, impulse.mul(wj).negate());
-  })().compute(contacts.maxContacts);
+  })()
+    .compute(contacts.dispatchArgs as Any)
+    .setName('solve.contactFriction');
 }

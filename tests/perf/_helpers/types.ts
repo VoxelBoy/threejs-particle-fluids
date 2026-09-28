@@ -57,3 +57,37 @@ export interface PerfReportJson {
   readonly timing_method: PerfTimingMethodJson;
   readonly scenes: readonly PerfSceneJson[];
 }
+
+/** One kernel's GPU time per frame, from the profile suite. */
+export interface ProfileKernelJson {
+  readonly name: string;
+  /** Mean GPU milliseconds per frame, summed over the kernel's dispatches. */
+  readonly ms: number;
+  /** Dispatches per frame. */
+  readonly calls: number;
+}
+
+export interface ProfileSceneJson {
+  readonly id: string;
+  readonly particle_count: number;
+  readonly substeps: number;
+  readonly iterations: number;
+  /** Median GPU time of one frame's simulation, submitted as the demo submits it. */
+  readonly sim_gpu_ms: number;
+  /** Median GPU time of one frame's render preparation (liquid surface, smoke volume). */
+  readonly render_gpu_ms?: number;
+  /** Simulation kernels, slowest first, each timed in its own pass. */
+  readonly kernels: readonly ProfileKernelJson[];
+  readonly render_kernels?: readonly ProfileKernelJson[];
+}
+
+export interface ProfileReportJson {
+  readonly version: 1;
+  readonly commit: string;
+  readonly date: string;
+  /** Particle level the demo presets were built at. */
+  readonly level: string;
+  /** `warmup` is −1 when each preset warmed up for half its demo duration. */
+  readonly frames: { readonly warmup: number; readonly measure: number; readonly profile: number };
+  readonly scenes: readonly ProfileSceneJson[];
+}

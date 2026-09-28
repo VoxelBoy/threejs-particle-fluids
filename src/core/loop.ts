@@ -182,20 +182,20 @@ export class SimLoop {
 
     // Contacts and colliders scatter corrections into shared accumulators:
     // positions are applied after every iteration, velocities after friction.
+    // Applying a sum clears it, so the sums start every substep at zero.
     let scatter: ComputeNode[] = [];
     let friction: ComputeNode[] = [];
     const substepEnd: ComputeNode[] = [];
     let applyPositions: ComputeNode[] = [];
     if (contact || colliders.length > 0) {
-      const positions = new Accumulator(particles, 10);
-      const velocities = new Accumulator(particles, 50);
+      const positions = new Accumulator(particles, 10, 'positionCorrections');
+      const velocities = new Accumulator(particles, 50, 'velocityCorrections');
       this.accumulators = { positions, velocities };
       // Overflow flags are cleared once per step, so they cover every substep.
       this.frameStart.push(
         positions.buildResetOverflowKernel(),
         velocities.buildResetOverflowKernel(),
       );
-      preSolve.unshift(positions.buildResetKernel(false));
       if (contact && grid) {
         const { buffer, kernels } = buildContacts(particles, contact, grid, this.dt, {
           positions,
@@ -223,11 +223,7 @@ export class SimLoop {
         substepEnd.push(...(kernels.substepEnd ?? []));
       }
       applyPositions = [positions.buildApplyKernel([particles.predictedPositions])];
-      friction = [
-        velocities.buildResetKernel(false),
-        ...friction,
-        velocities.buildApplyKernel([particles.velocities]),
-      ];
+      friction = [...friction, velocities.buildApplyKernel([particles.velocities])];
     }
     for (const kernels of built) {
       preSolve.push(...(kernels.preSolve ?? []));
@@ -367,27 +363,23 @@ function buildContacts(
     particles.renderer,
     options.maxContacts ?? 8 * particles.capacity,
   );
-  const preSolve: ComputeNode[] = [contacts.resetCounterKernel];
+  const preSolve: ComputeNode[] = [];
 
   // Pairs are found from the particles outside the quiet ranges; pairs that
   // include a quiet particle are found from the other side.
   const isEmitter = new Uint32Array(particles.capacity).fill(1);
   for (const range of shared.quiet) isEmitter.fill(0, range.start, range.start + range.count);
-  const indices = [...isEmitter.keys()].filter((i) => isEmitter[i] === 1);
-  if (indices.length === particles.capacity) {
+  const emitterCount = isEmitter.reduce((sum, flag) => sum + flag, 0);
+  if (emitterCount === particles.capacity) {
     preSolve.push(buildContactGenerateKernel({ particles, hashGrid: grid, contacts }));
-  } else if (indices.length > 0) {
-    const emitters: ContactEmitters = {
-      indices: instancedArray(new Uint32Array(indices), 'uint'),
-      count: indices.length,
-      isEmitter: instancedArray(isEmitter, 'uint'),
-    };
-    shared.ownBuffers.push(emitters.indices, emitters.isEmitter);
+  } else if (emitterCount > 0) {
+    const emitters: ContactEmitters = { isEmitter: instancedArray(isEmitter, 'uint') };
+    shared.ownBuffers.push(emitters.isEmitter);
     preSolve.push(buildContactGenerateKernel({ particles, hashGrid: grid, contacts, emitters }));
   }
 
   preSolve.push(
-    contacts.resetLambdaKernel,
+    contacts.prepareKernel,
     buildContactStabilizeKernel({ particles, contacts, accumulator: positions }),
     positions.buildApplyKernel([particles.positions, particles.predictedPositions]),
   );

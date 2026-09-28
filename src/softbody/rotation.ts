@@ -47,7 +47,9 @@ export function buildRotationKernels(
       const newW: Any = spinW.mul(q.w).sub(spinXYZ.dot(qXYZ));
       particles.predictedRotation.element(i).assign(vec4(newXYZ, newW));
     });
-  })().compute(range.count);
+  })()
+    .compute(range.count)
+    .setName('rotation.predict');
 
   const advect = Fn(() => {
     const i: Any = instanceIndex.add(range.start);
@@ -76,7 +78,9 @@ export function buildRotationKernels(
     });
 
     particles.rotation.element(i).assign(qp);
-  })().compute(range.count);
+  })()
+    .compute(range.count)
+    .setName('rotation.advect');
 
   return { predict, advect };
 }

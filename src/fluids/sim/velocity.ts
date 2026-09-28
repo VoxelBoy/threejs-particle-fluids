@@ -41,13 +41,13 @@ export function buildVelocityWalkKernel(
   const { vorticity, viscosity } = passes;
 
   return Fn(() => {
-    const i: Any = emitFluidIndex(context);
+    const { i, row } = neighbors.emitThread();
     const xi: Any = particles.positions.element(i).xyz.toVar();
     const vi: Any = particles.velocities.element(i).xyz.toVar();
     const curl: Any = vec3(0).toVar();
     const smoothing: Any = vec3(0).toVar();
 
-    neighbors.forEach(i, (j: Any) => {
+    neighbors.forEach(row, (j: Any) => {
       const offset: Any = xi.sub(particles.positions.element(j).xyz).toVar();
       const vj: Any = particles.velocities.element(j).xyz;
       const volume: Any = emitNeighborVolume(context, j);
@@ -67,7 +67,9 @@ export function buildVelocityWalkKernel(
       vorticity.omegaLength.element(i).assign(curl.length());
     }
     if (viscosity) viscosity.deltaV.element(i).assign(vec4(smoothing.mul(viscosity.c), 0));
-  })().compute(context.range.count);
+  })()
+    .compute(neighbors.threadCount)
+    .setName('velocity.velocityWalk');
 }
 
 /** The location vector `η = ∇|ω|` for vorticity confinement, from fluid neighbors only. */
@@ -77,11 +79,11 @@ export function buildVorticityGradientKernel(
 ): ComputeNode {
   const { particles, neighbors, sph, particleVolume } = context;
   return Fn(() => {
-    const i: Any = emitFluidIndex(context);
+    const { i, row } = neighbors.emitThread();
     const xi: Any = particles.positions.element(i).xyz.toVar();
     const omegaI: Any = vorticity.omegaLength.element(i).toVar();
     const eta: Any = vec3(0).toVar();
-    neighbors.forEach(i, (j: Any) => {
+    neighbors.forEach(row, (j: Any) => {
       If(particles.boundaryVolume.element(j).greaterThan(0), () => {
         Continue();
       });
@@ -89,7 +91,9 @@ export function buildVorticityGradientKernel(
       eta.addAssign(gradient.mul(vorticity.omegaLength.element(j).sub(omegaI).mul(particleVolume)));
     });
     vorticity.eta.element(i).assign(vec4(eta, 0));
-  })().compute(context.range.count);
+  })()
+    .compute(neighbors.threadCount)
+    .setName('velocity.vorticityGradient');
 }
 
 /**
@@ -116,5 +120,7 @@ export function buildVelocityApplyKernel(
     if (viscosity) change.addAssign(viscosity.deltaV.element(i).xyz);
     const velocity: Any = particles.velocities.element(i);
     velocity.assign(vec4(velocity.xyz.add(change), velocity.w));
-  })().compute(context.range.count);
+  })()
+    .compute(context.range.count)
+    .setName('velocity.velocityApply');
 }

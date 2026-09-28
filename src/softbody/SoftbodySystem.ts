@@ -299,7 +299,7 @@ export class SoftbodySystem implements Material {
     const particleCenters = instancedArray(particles.capacity, 'vec4');
     const particleRotations = instancedArray(3 * particles.capacity, 'vec4');
     const pairLambda = instancedArray(graph.indices.length, 'vec4');
-    const accumulator = new Accumulator(particles, 10);
+    const accumulator = new Accumulator(particles, 10, 'shapeMatchCorrections');
     const shared = {
       particles,
       range: span,
@@ -325,14 +325,13 @@ export class SoftbodySystem implements Material {
     return {
       preSolve: [
         orientation.predict,
-        accumulator.buildResetKernel(),
         buildImplicitResetPairLambdaKernel({ pairLambda, totalDegree: graph.indices.length }),
       ],
       solve: [
         center,
         rotation,
         buildImplicitShapeMatchScatterKernel({ ...neighborhood, pairLambda, accumulator, dt }),
-        accumulator.buildApplyKernel([particles.predictedPositions]),
+        accumulator.buildApplyKernel([particles.predictedPositions], span),
         buildImplicitQpWriteKernel({ particles, range: span, particleRotations, neighborOffsets }),
       ],
       postSolve: [orientation.advect, frame.center, frame.rotation],

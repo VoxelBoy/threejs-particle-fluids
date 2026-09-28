@@ -31,7 +31,9 @@ export function buildIntegrationKernels(
       const x: Any = particles.positions.element(i).xyz;
       particles.predictedPositions.element(i).assign(vec4(x.add(velocity.mul(dt)), 0));
     });
-  })().compute(particles.capacity);
+  })()
+    .compute(particles.capacity)
+    .setName('integrate.predict');
 
   const advect = Fn(() => {
     const i: Any = instanceIndex;
@@ -41,7 +43,9 @@ export function buildIntegrationKernels(
       particles.velocities.element(i).assign(vec4(xStar.xyz.sub(x.xyz).div(dt), 0));
       x.assign(xStar);
     });
-  })().compute(particles.capacity);
+  })()
+    .compute(particles.capacity)
+    .setName('integrate.advect');
 
   return { predict, advect };
 }

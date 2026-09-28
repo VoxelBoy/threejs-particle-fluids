@@ -108,54 +108,60 @@ export function createClothTetherConstraints(args: {
   // Two tethers conflict only when they share a free particle, so a particle
   // with K tethers spreads them over K colors.
   const coloring = colorConstraints({ arity: 1, nConstraints, participantsPerConstraint: indices });
-  const groups = buildConstraintGroups(coloring, (c: Any) => {
-    const idx: Any = particleIndices.element(c).toVar();
-    const x: Any = particles.predictedPositions.element(idx).xyz.toVar();
-    const w: Any = particles.invMass.element(idx).toVar();
-    If(w.lessThanEqual(float(0.0)), () => {
-      Return();
-    });
+  const groups = buildConstraintGroups(
+    coloring,
+    (c: Any) => {
+      const idx: Any = particleIndices.element(c).toVar();
+      const x: Any = particles.predictedPositions.element(idx).xyz.toVar();
+      const w: Any = particles.invMass.element(idx).toVar();
+      If(w.lessThanEqual(float(0.0)), () => {
+        Return();
+      });
 
-    const a: Any = particles.predictedPositions.element(anchorIndices.element(c)).xyz.toVar();
-    const alpha: Any = complianceBuf.element(c).toVar();
-    const rest: Any = restBuf.element(c).toVar();
-    const lamCurrent: Any = lambda.element(c).toVar();
+      const a: Any = particles.predictedPositions.element(anchorIndices.element(c)).xyz.toVar();
+      const alpha: Any = complianceBuf.element(c).toVar();
+      const rest: Any = restBuf.element(c).toVar();
+      const lamCurrent: Any = lambda.element(c).toVar();
 
-    const diff: Any = x.sub(a).toVar();
-    const len: Any = diff.length().toVar();
+      const diff: Any = x.sub(a).toVar();
+      const len: Any = diff.length().toVar();
 
-    // Inside the sphere the tether is slack.
-    If(len.lessThanEqual(rest), () => {
-      lambda.element(c).assign(float(0.0));
-      Return();
-    });
-    // Degenerate (`x ≡ a`) — gradient undefined. Leave λ as-is.
-    If(len.lessThan(float(1e-12)), () => {
-      Return();
-    });
+      // Inside the sphere the tether is slack.
+      If(len.lessThanEqual(rest), () => {
+        lambda.element(c).assign(float(0.0));
+        Return();
+      });
+      // Degenerate (`x ≡ a`) — gradient undefined. Leave λ as-is.
+      If(len.lessThan(float(1e-12)), () => {
+        Return();
+      });
 
-    const C: Any = len.sub(rest);
-    const n: Any = diff.div(len).toVar();
+      const C: Any = len.sub(rest);
+      const n: Any = diff.div(len).toVar();
 
-    const dtVal: Any = dt;
-    const alphaTilde: Any = alpha.div(dtVal.mul(dtVal));
-    const dLambda: Any = xpbdDeltaLambda({
-      C,
-      sumGradSqInvMass: w,
-      alphaTilde,
-      lambdaCurrent: lamCurrent,
-    }).toVar();
+      const dtVal: Any = dt;
+      const alphaTilde: Any = alpha.div(dtVal.mul(dtVal));
+      const dLambda: Any = xpbdDeltaLambda({
+        C,
+        sumGradSqInvMass: w,
+        alphaTilde,
+        lambdaCurrent: lamCurrent,
+      }).toVar();
 
-    // ∇_i C = n  ⇒  Δx_i = w · n · Δλ
-    const dx: Any = n.mul(w.mul(dLambda));
-    const newX: Any = x.add(dx);
-    particles.predictedPositions.element(idx).assign(vec4(newX, float(0.0)));
-    lambda.element(c).assign(lamCurrent.add(dLambda));
-  });
+      // ∇_i C = n  ⇒  Δx_i = w · n · Δλ
+      const dx: Any = n.mul(w.mul(dLambda));
+      const newX: Any = x.add(dx);
+      particles.predictedPositions.element(idx).assign(vec4(newX, float(0.0)));
+      lambda.element(c).assign(lamCurrent.add(dLambda));
+    },
+    'tether',
+  );
 
   const resetLambdaKernel = Fn(() => {
     lambda.element(instanceIndex).assign(0);
-  })().compute(nConstraints);
+  })()
+    .compute(nConstraints)
+    .setName('tether.resetLambda');
 
   return { count: nConstraints, compliance: complianceBuf, lambda, groups, resetLambdaKernel };
 }

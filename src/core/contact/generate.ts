@@ -1,4 +1,14 @@
-import { Continue, Fn, If, atomicAdd, instanceIndex, uint } from 'three/tsl';
+import {
+  Continue,
+  Fn,
+  If,
+  Return,
+  atomicAdd,
+  atomicStore,
+  instanceIndex,
+  int,
+  uint,
+} from 'three/tsl';
 import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import type StorageBufferNode from 'three/src/nodes/accessors/StorageBufferNode.js';
 
@@ -22,15 +32,13 @@ export const CONTACT_RADIUS_EXPANSION = 1.1;
  * particle is an emitter are never generated.
  */
 export interface ContactEmitters {
-  /** Global particle index of each emitter. */
-  readonly indices: StorageBufferNode<'uint'>;
-  readonly count: number;
   /** 1 for emitters, 0 otherwise, per particle. */
   readonly isEmitter: StorageBufferNode<'uint'>;
 }
 
 /**
- * Find overlapping particle pairs and append them to `contacts`. One thread
+ * Find overlapping particle pairs and append them to `contacts`, with their
+ * multipliers zeroed. One thread
  * per emitting particle walks its grid neighborhood. Each pair is emitted
  * once: by the lower index when both ends are emitters, otherwise by the
  * emitter. Pairs in the same non-zero collision group, and pairs of two
@@ -47,13 +55,21 @@ export function buildContactGenerateKernel(args: {
   const candidateRadius = 2 * particles.particleRadius * CONTACT_RADIUS_EXPANSION;
   const maxContacts = contacts.maxContacts;
 
+  // Threads run in the grid's sorted order, so a workgroup handles nearby
+  // particles whose walks share cells and stay in cache.
   return Fn(() => {
-    const i: Any = emitters ? emitters.indices.element(instanceIndex).toVar() : instanceIndex;
-    const xi: Any = particles.predictedPositions.element(i).xyz.toVar();
+    const slot: Any = instanceIndex;
+    const i: Any = hashGrid.sortedIndices.element(slot).toVar();
+    if (emitters) {
+      If(emitters.isEmitter.element(i).equal(uint(0)), () => {
+        Return();
+      });
+    }
+    const xi: Any = hashGrid.sortedPredictedPositions.element(slot).xyz.toVar();
     const groupI: Any = particles.collisionGroup.element(i).toVar();
     const wi: Any = particles.invMass.element(i).toVar();
 
-    emitForEachNeighbor(hashGrid, xi, (j: Any) => {
+    emitForEachNeighbor(hashGrid, xi, (j: Any, candidate: Any) => {
       if (emitters) {
         If(j.equal(i), () => {
           Continue();
@@ -73,7 +89,7 @@ export function buildContactGenerateKernel(args: {
       If(wi.lessThanEqual(0).and(particles.invMass.element(j).lessThanEqual(0)), () => {
         Continue();
       });
-      const offset: Any = xi.sub(particles.predictedPositions.element(j).xyz);
+      const offset: Any = xi.sub(hashGrid.sortedPredictedPositions.element(candidate).xyz);
       If(offset.dot(offset).greaterThanEqual(candidateRadius * candidateRadius), () => {
         Continue();
       });
@@ -83,7 +99,11 @@ export function buildContactGenerateKernel(args: {
         const record: Any = contacts.records.element(slot);
         record.get('i').assign(i);
         record.get('j').assign(j);
+        atomicStore(record.get('lambdaN'), int(0));
+        atomicStore(record.get('lambdaT'), int(0));
       });
     });
-  })().compute(emitters ? emitters.count : particles.capacity);
+  })()
+    .compute(particles.capacity)
+    .setName('generate.contactGenerate');
 }

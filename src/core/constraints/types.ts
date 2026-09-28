@@ -131,11 +131,12 @@ export function constraintKernels(types: readonly ConstraintType[]): {
 /**
  * Build one solve kernel per color of `coloring`. `solve(constraint)` emits
  * TSL that projects one constraint and writes all of its particles; it may
- * `Return()` early.
+ * `Return()` early. `name` labels the kernels in GPU profiles.
  */
 export function buildConstraintGroups(
   coloring: { readonly groupOf: Uint32Array; readonly numGroups: number },
   solve: (constraint: Any) => void,
+  name = 'constraints',
 ): ConstraintGroup[] {
   const members: number[][] = Array.from({ length: coloring.numGroups }, () => []);
   coloring.groupOf.forEach((group, constraint) => members[group]!.push(constraint));
@@ -143,7 +144,9 @@ export function buildConstraintGroups(
     const constraints = instancedArray(Uint32Array.from(list), 'uint');
     const solveKernel = Fn(() => {
       solve(constraints.element(instanceIndex).toVar());
-    })().compute(list.length);
+    })()
+      .compute(list.length)
+      .setName(`${name}.solve`);
     return { constraints, count: list.length, solveKernel };
   });
 }

@@ -47,8 +47,15 @@ export class Accumulator {
   /** Atomic flag set to 1 when any sum reached the headroom limit. */
   readonly overflowFlag: StorageBufferNode<'uint'>;
 
-  /** @param maxMagnitude Largest per-axis sum expected per apply; sets the fixed-point scale. */
-  constructor(particles: ParticleSystem, maxMagnitude: number) {
+  /**
+   * @param maxMagnitude Largest per-axis sum expected per apply; sets the fixed-point scale.
+   * @param label Prefix for the names of this accumulator's kernels, as seen in GPU profiles.
+   */
+  constructor(
+    particles: ParticleSystem,
+    maxMagnitude: number,
+    readonly label = 'accumulator',
+  ) {
     if (!Number.isFinite(maxMagnitude) || maxMagnitude <= 0) {
       throw new Error(`Accumulator: maxMagnitude must be positive, got ${maxMagnitude}`);
     }
@@ -81,14 +88,18 @@ export class Accumulator {
           atomicStore(this.overflowFlag.element(uint(0)), uint(0));
         });
       }
-    })().compute(3 * this.particles.capacity);
+    })()
+      .compute(3 * this.particles.capacity)
+      .setName(`${this.label}.reset`);
   }
 
   /** Zero only the overflow flag. */
   buildResetOverflowKernel(): ComputeNode {
     return Fn(() => {
       atomicStore(this.overflowFlag.element(uint(0)), uint(0));
-    })().compute(1);
+    })()
+      .compute(1)
+      .setName(`${this.label}.resetOverflow`);
   }
 
   /**
@@ -127,7 +138,9 @@ export class Accumulator {
       atomicStore(this.delta.element(base), int(0));
       atomicStore(this.delta.element(base.add(uint(1))), int(0));
       atomicStore(this.delta.element(base.add(uint(2))), int(0));
-    })().compute(range.count);
+    })()
+      .compute(range.count)
+      .setName(`${this.label}.apply`);
   }
 
   /** True if a sum saturated since the overflow flag was last reset. Stalls on the GPU. */

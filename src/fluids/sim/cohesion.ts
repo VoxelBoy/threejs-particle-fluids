@@ -4,7 +4,7 @@ import type StorageBufferNode from 'three/src/nodes/accessors/StorageBufferNode.
 import type UniformNode from 'three/src/nodes/core/UniformNode.js';
 
 import { emitSpikyGrad, type Accumulator } from '../../core/index.js';
-import { emitFluidIndex, emitNeighborVolume, type FluidKernelContext } from './shared.js';
+import { emitNeighborVolume, type FluidKernelContext } from './shared.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -28,15 +28,17 @@ export function buildColorFieldNormalKernel(
 ): ComputeNode {
   const { particles, neighbors, sph } = context;
   return Fn(() => {
-    const i: Any = emitFluidIndex(context);
+    const { i, row } = neighbors.emitThread();
     const xi: Any = particles.predictedPositions.element(i).xyz.toVar();
     const sum: Any = vec3(0).toVar();
-    neighbors.forEach(i, (j: Any) => {
+    neighbors.forEach(row, (j: Any) => {
       const gradient: Any = emitSpikyGrad(xi.sub(particles.predictedPositions.element(j).xyz), sph);
       sum.addAssign(gradient.mul(emitNeighborVolume(context, j)));
     });
     normal.element(i).assign(vec4(sum.mul(sph.h), 0));
-  })().compute(context.range.count);
+  })()
+    .compute(neighbors.threadCount)
+    .setName('cohesion.colorFieldNormal');
 }
 
 /**
@@ -75,12 +77,12 @@ export function buildSurfaceTensionKernel(
   const end = context.range.start + context.range.count;
 
   return Fn(() => {
-    const i: Any = emitFluidIndex(context);
+    const { i, row } = neighbors.emitThread();
     const xi: Any = particles.predictedPositions.element(i).xyz.toVar();
     const ni: Any = normal.element(i).xyz.toVar();
     const rhoI: Any = density.element(i).toVar();
 
-    neighbors.forEach(i, (j: Any) => {
+    neighbors.forEach(row, (j: Any) => {
       // Visit each pair once, and only fluid–fluid pairs. `j > i` already
       // puts j past the range's start.
       If(j.lessThanEqual(i).or(j.greaterThanEqual(uint(end))), () => {
@@ -100,5 +102,7 @@ export function buildSurfaceTensionKernel(
       accumulator.add(i, dv);
       accumulator.add(j, dv.negate());
     });
-  })().compute(context.range.count);
+  })()
+    .compute(neighbors.threadCount)
+    .setName('cohesion.surfaceTension');
 }

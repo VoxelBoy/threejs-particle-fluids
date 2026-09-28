@@ -208,10 +208,11 @@ All read-only.
 | `hashTableSize`            | `number`                                     | Bucket count, a power of two.                                                                                                                                                                       |
 | `hashTableSizePadded`      | `number`                                     | `hashTableSize` rounded up to a multiple of 1024.                                                                                                                                                   |
 | `cellIndex`                | `StorageBufferNode<'uint'>`                  | Bucket index per particle.                                                                                                                                                                          |
-| `counts`                   | `StorageBufferNode<'uint'>`                  | Atomic particle count per bucket.                                                                                                                                                                   |
+| `counts`                   | `StorageBufferNode<'uint'>`                  | Atomic particle count per bucket. Used during a rebuild and zero outside one; derive a bucket's count as `cellEnd − cellStart`.                                                                     |
 | `cellStart`                | `StorageBufferNode<'uint'>`                  | First slot in `sortedIndices` per bucket.                                                                                                                                                           |
 | `cellEnd`                  | `StorageBufferNode<'uint'>`                  | One past the last slot per bucket.                                                                                                                                                                  |
 | `sortedIndices`            | `StorageBufferNode<'uint'>`                  | Particle indices in bucket order.                                                                                                                                                                   |
+| `slotOf`                   | `StorageBufferNode<'uint'>`                  | Each particle's slot in `sortedIndices`, the inverse of `sortedIndices`.                                                                                                                            |
 | `sortedPredictedPositions` | `StorageBufferNode<'vec4'>`                  | `predictedPositions` in bucket order, refreshed each rebuild.                                                                                                                                       |
 | `overflowFlag`             | `StorageBufferNode<'uint'>`                  | Atomic. Set to 1 when a particle was more than 512 cells from `hashOrigin` on some axis at the last rebuild. Those particles still find their neighbors, through buckets shared with distant cells. |
 | `hashOriginUniform`        | `UniformNode<'vec3', Vector3>`               | Origin used by the kernels.                                                                                                                                                                         |
@@ -236,14 +237,14 @@ readback(): Promise<HashGridSnapshot>
 
 Copy the grid buffers to the CPU. This waits for the GPU. `HashGridSnapshot` isn't exported by name. Its fields are:
 
-| Field                            | Type          | Description                                                                  |
-| -------------------------------- | ------------- | ---------------------------------------------------------------------------- |
-| `capacity`                       | `number`      | `particles.capacity`.                                                        |
-| `hashTableSize`                  | `number`      | Bucket count.                                                                |
-| `hashTableSizePadded`            | `number`      | Padded bucket count.                                                         |
-| `cellIndex`                      | `Uint32Array` | Bucket per particle.                                                         |
-| `counts`, `cellStart`, `cellEnd` | `Uint32Array` | One value per bucket, and zero past `hashTableSize`.                         |
-| `sortedIndices`                  | `Uint32Array` | Particle indices in bucket order. Order within a bucket varies between runs. |
+| Field                            | Type          | Description                                                                             |
+| -------------------------------- | ------------- | --------------------------------------------------------------------------------------- |
+| `capacity`                       | `number`      | `particles.capacity`.                                                                   |
+| `hashTableSize`                  | `number`      | Bucket count.                                                                           |
+| `hashTableSizePadded`            | `number`      | Padded bucket count.                                                                    |
+| `cellIndex`                      | `Uint32Array` | Bucket per particle.                                                                    |
+| `counts`, `cellStart`, `cellEnd` | `Uint32Array` | One value per bucket, and zero past `hashTableSize`. `counts` is `cellEnd − cellStart`. |
+| `sortedIndices`                  | `Uint32Array` | Particle indices in bucket order. Order within a bucket varies between runs.            |
 
 #### `readbackOverflow()`
 
@@ -267,7 +268,9 @@ Free the grid's GPU buffers. Kernels that query the grid can't run afterwards. C
 
 ## NeighborList
 
-Stores the neighbors within a radius of each particle in one range. It's gathered once per substep, so kernels that visit neighbors several times don't each walk the grid. Neighbor `k` of the range's `i`th particle is at index `k × range.count + i`.
+Stores the neighbors within a radius of each particle in one range. It's gathered once per substep, so kernels that visit neighbors several times don't each walk the grid.
+
+Lists are stored by grid slot rather than by particle: the particle in slot `s` of the grid's sorted order keeps its list in row `s`, and its neighbor `k` is at index `k × capacity + s`. Kernels that read the list run one thread per slot, starting with `emitThread()`, so each workgroup handles particles that are close together and reads neighbors that are already in cache.
 
 ```ts
 const sph = createSphKernelUniforms(h);
@@ -278,7 +281,12 @@ const material: Material = {
     return {
       preSolve: list.buildKernels(hashGrid, sph.hSq),
       solve: [
-        /* kernels that call list.forEach */
+        Fn(() => {
+          const { i, row } = list.emitThread();
+          list.forEach(row, (j) => {
+            /* particle i's neighbor j */
+          });
+        })().compute(list.threadCount),
       ],
     };
   },
@@ -299,6 +307,7 @@ new NeighborList(particles: ParticleSystem, range: ParticleRange)
 | Throws                                                              | When                                                          |
 | ------------------------------------------------------------------- | ------------------------------------------------------------- |
 | `NeighborList: invalid particle range start=… count=… (capacity …)` | `range` is empty, isn't whole slots, or runs past `capacity`. |
+| `NeighborList: call buildKernels first`                             | You read `grid` or called `emitThread` before `buildKernels`. |
 
 ### Properties
 
@@ -308,9 +317,11 @@ All read-only.
 | -------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | `particles`    | [`ParticleSystem`](./core.md#particlesystem) | Particle storage.                                                                              |
 | `range`        | [`ParticleRange`](./core.md#particlerange)   | Covered particles.                                                                             |
-| `indices`      | `StorageBufferNode<'uint'>`                  | `range.count × MAX_NEIGHBORS` neighbor indices, laid out as above.                             |
-| `counts`       | `StorageBufferNode<'uint'>`                  | Number of stored neighbors for each particle in the range.                                     |
+| `indices`      | `StorageBufferNode<'uint'>`                  | `capacity × MAX_NEIGHBORS` neighbor indices, laid out as above.                                |
+| `counts`       | `StorageBufferNode<'uint'>`                  | Number of stored neighbors per row. Rows of particles outside the range aren't written.        |
 | `overflowFlag` | `StorageBufferNode<'uint'>`                  | Atomic. Set to 1 when some particle had more than `MAX_NEIGHBORS` neighbors in the last build. |
+| `threadCount`  | `number`                                     | Threads to dispatch for a kernel that starts with `emitThread()`: `particles.capacity`.        |
+| `grid`         | [`HashGrid`](#hashgrid)                      | The grid the list was built from. Reading it before `buildKernels` throws.                     |
 
 ### Methods
 
@@ -322,13 +333,21 @@ buildKernels(grid: HashGrid, radiusSq: UniformNode<'float', number>): ComputeNod
 
 Return two kernels that rebuild the list from `grid`. The first clears `overflowFlag`. The second stores every particle closer than `sqrt(radiusSq)` (m²) to each particle's predicted position, including the particle itself. Dispatch them after the grid rebuild, for example in `preSolve`.
 
-#### `forEach(i, onNeighbor)`
+#### `emitThread()`
 
 ```ts
-forEach(i: any, onNeighbor: (j: any) => void): void
+emitThread(): { i: any; row: any }
 ```
 
-Emit TSL that calls `onNeighbor(j)` for each stored neighbor of particle `i`. `i` is a global particle index (a `uint` node) inside `range`. `j` is a global index too.
+Emit the start of a kernel dispatched with `threadCount` threads. `row` is the thread's grid slot, and `i` is the global index of the particle in that slot. Threads whose particle is outside `range` return. Call it inside an `Fn` body, after `buildKernels`.
+
+#### `forEach(row, onNeighbor)`
+
+```ts
+forEach(row: any, onNeighbor: (j: any) => void): void
+```
+
+Emit TSL that calls `onNeighbor(j)` for each stored neighbor in `row`, the row `emitThread()` returned. `j` is a global particle index (a `uint` node).
 
 #### `readbackOverflow()`
 
@@ -491,10 +510,11 @@ Sort constraints into groups on the CPU so that no two in a group share a partic
 buildConstraintGroups(
   coloring: { readonly groupOf: Uint32Array; readonly numGroups: number },
   solve: (constraint: any) => void,
+  name?: string,
 ): ConstraintGroup[]
 ```
 
-Build one [`ConstraintGroup`](#constraintgroup) for each group in a coloring. `solve(constraint)` runs at shader-build time with the constraint index (a `uint` node). It must emit TSL that solves the constraint and writes its particles, and it may call `Return()` early.
+Build one [`ConstraintGroup`](#constraintgroup) for each group in a coloring. `solve(constraint)` runs at shader-build time with the constraint index (a `uint` node). It must emit TSL that solves the constraint and writes its particles, and it may call `Return()` early. `name` labels the group kernels in GPU profiles and captures as `<name>.solve`. It defaults to `'constraints'`.
 
 ## constraintKernels
 
@@ -538,13 +558,14 @@ Lets many GPU threads add to the same particle at once, as kernels that run one 
 ### Constructor
 
 ```ts
-new Accumulator(particles: ParticleSystem, maxMagnitude: number)
+new Accumulator(particles: ParticleSystem, maxMagnitude: number, label?: string)
 ```
 
-| Parameter      | Type                                         | Description                                                                        |
-| -------------- | -------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `particles`    | [`ParticleSystem`](./core.md#particlesystem) | One sum per particle slot.                                                         |
-| `maxMagnitude` | `number`                                     | Largest per-axis sum you expect between applies, in the sum's units. Sets `scale`. |
+| Parameter      | Type                                         | Description                                                                          |
+| -------------- | -------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `particles`    | [`ParticleSystem`](./core.md#particlesystem) | One sum per particle slot.                                                           |
+| `maxMagnitude` | `number`                                     | Largest per-axis sum you expect between applies, in the sum's units. Sets `scale`.   |
+| `label`        | `string`                                     | Prefix for the kernels' names in GPU profiles and captures. Default `'accumulator'`. |
 
 | Throws                                       | When                                                  |
 | -------------------------------------------- | ----------------------------------------------------- |
@@ -559,6 +580,7 @@ All read-only.
 | `particles`    | [`ParticleSystem`](./core.md#particlesystem) | Particle storage.                                                                                |
 | `scale`        | `number`                                     | Fixed-point ticks per unit, `floor(2³⁰ / maxMagnitude)`.                                         |
 | `delta`        | `StorageBufferNode<'int'>`                   | `3 × capacity` atomic sums, xyz for each particle.                                               |
+| `label`        | `string`                                     | Prefix for the kernels' names.                                                                   |
 | `overflowFlag` | `StorageBufferNode<'uint'>`                  | Atomic. Set to 1 when an applied per-axis sum reached `2³⁰` ticks since the flag was last reset. |
 
 ### Methods

@@ -67,7 +67,9 @@ export function buildImplicitNeighborhoodCenterKernel(
     const cy: Any = isEmpty.select(float(0.0), c.y);
     const cz: Any = isEmpty.select(float(0.0), c.z);
     particleCenters.element(i).assign(vec4(cx, cy, cz, float(0.0)));
-  })().compute(range.count);
+  })()
+    .compute(range.count)
+    .setName('shapeMatchImplicit.implicitNeighborhoodCenter');
 }
 
 export interface BuildImplicitMomentPolarKernelArgs {
@@ -213,7 +215,9 @@ export function buildImplicitMomentPolarKernel(
     particleRotations.element(baseSlot).assign(vec4(r00, r01, r02, float(0.0)));
     particleRotations.element(baseSlot.add(uint(1))).assign(vec4(r10, r11, r12, float(0.0)));
     particleRotations.element(baseSlot.add(uint(2))).assign(vec4(r20, r21, r22, float(0.0)));
-  })().compute(range.count);
+  })()
+    .compute(range.count)
+    .setName('shapeMatchImplicit.implicitMomentPolar');
 }
 
 export interface BuildImplicitShapeMatchScatterKernelArgs {
@@ -304,7 +308,9 @@ export function buildImplicitShapeMatchScatterKernel(
         .sqrt();
       accumulator.add(j, deltaXraw.mul(dxScale));
     });
-  })().compute(range.count);
+  })()
+    .compute(range.count)
+    .setName('shapeMatchImplicit.implicitShapeMatchScatter');
 }
 
 export interface BuildImplicitQpWriteKernelArgs {
@@ -398,7 +404,9 @@ export function buildImplicitQpWriteKernel(args: BuildImplicitQpWriteKernelArgs)
         .element(i)
         .assign(vec4(qx.mul(flip), qy.mul(flip), qz.mul(flip), qw.mul(flip)));
     });
-  })().compute(range.count);
+  })()
+    .compute(range.count)
+    .setName('shapeMatchImplicit.implicitQpWrite');
 }
 
 export interface BuildImplicitResetPairLambdaKernelArgs {
@@ -425,10 +433,14 @@ export function buildImplicitResetPairLambdaKernel(
       // Intentional no-op; one-thread dispatch is cheap and keeps the
       // pipeline shape regular.
       void int(0);
-    })().compute(1);
+    })()
+      .compute(1)
+      .setName('shapeMatchImplicit.implicitResetPairLambda');
   }
   return Fn(() => {
     const k: Any = instanceIndex;
     pairLambda.element(k).assign(vec4(0.0, 0.0, 0.0, 0.0));
-  })().compute(totalDegree);
+  })()
+    .compute(totalDegree)
+    .setName('shapeMatchImplicit.implicitResetPairLambda');
 }

@@ -125,7 +125,9 @@ export class GasVolumeRenderer {
       vec3(i.mod(nx).toFloat(), i.div(nx).mod(ny).toFloat(), i.div(nx * ny).toFloat());
     const clear = Fn(() => {
       atomicStore(ticks.element(instanceIndex), uint(0));
-    })().compute(count);
+    })()
+      .compute(count)
+      .setName('GasVolumeRenderer.clear');
     const splat = Fn(() => {
       const i: Any = instanceIndex;
       If(gas.smokeAlive.element(i).greaterThan(uint(0)), () => {
@@ -169,7 +171,9 @@ export class GasVolumeRenderer {
           },
         );
       });
-    })().compute(gas.capacity);
+    })()
+      .compute(gas.capacity)
+      .setName('GasVolumeRenderer.splat');
     const blur = (axis: number, source: Any, target: Any, atomic = false): ComputeNode =>
       Fn(() => {
         const cell: Any = cellOf(instanceIndex).toVar();
@@ -187,7 +191,9 @@ export class GasVolumeRenderer {
           sum.addAssign(value.mul(weights[k + 3]!));
         }
         target.element(instanceIndex).assign(sum);
-      })().compute(count);
+      })()
+        .compute(count)
+        .setName('GasVolumeRenderer.blur');
     const extinction = 0.00015 / ((size.x * size.y * size.z) / count);
     // 0 → 1 over `width` from a wall; smoothstep with equal edges is undefined, so skip it.
     const ramp = (distance: Any, width: number): Any =>
@@ -230,7 +236,9 @@ export class GasVolumeRenderer {
       );
       const density: Any = sampleParticles(p);
       textureStore(densityTexture, ivec3(cell), vec4(density, 0, 0, 1)).toWriteOnly();
-    })().compute(count);
+    })()
+      .compute(count)
+      .setName('GasVolumeRenderer.resolve');
     const sun = vec3((options.lightDirection ?? new Vector3(-0.35, 0.8, 0.4)).clone().normalize());
     const lighting = Fn(() => {
       const cell: Any = cellOf(instanceIndex);
@@ -250,7 +258,9 @@ export class GasVolumeRenderer {
       // so shadowed smoke darkens gradually instead of going flat.
       const light: Any = shadow.mul(-2.5).exp().mul(0.7).add(shadow.mul(-0.35).exp().mul(0.3));
       textureStore(volumeTexture, ivec3(cell), vec4(densityAt(p), light, 0, 1)).toWriteOnly();
-    })().compute(count);
+    })()
+      .compute(count)
+      .setName('GasVolumeRenderer.lighting');
     this.kernels = [
       clear,
       splat,

@@ -59,11 +59,13 @@ const CELL_COORD_MAX = 1 << 30;
  * assert the flag stays zero on supported scenes.
  */
 export interface CellIndexKernels {
-  /** Must be dispatched over `hashTableSizePadded` instances. */
-  readonly resetCounts: ComputeNode;
   /** One-thread dispatch; zeroes the overflow flag. */
   readonly resetOverflowFlag: ComputeNode;
-  /** Must be dispatched over `capacity` instances. Must follow `resetCounts`. */
+  /**
+   * Dispatched over `capacity`. Needs `counts` zeroed, as the previous
+   * rebuild's finalize pass leaves it. Also records each particle's rank
+   * within its bucket, which places it in the sorted order without atomics.
+   */
   readonly cellIndexAndHistogram: ComputeNode;
   /** Mutable scene-centering offset subtracted before cell-coord quantization. */
   readonly hashOrigin: UniformNode<'vec3', Vector3>;
@@ -80,11 +82,11 @@ export interface CellIndexKernels {
 export function buildCellIndexKernels(
   positions: StorageBufferNode<'vec4'>,
   cellIndex: StorageBufferNode<'uint'>,
+  rank: StorageBufferNode<'uint'>,
   counts: StorageBufferNode<'uint'>,
   overflowFlag: StorageBufferNode<'uint'>,
   capacity: number,
   hashTableSize: number,
-  hashTableSizePadded: number,
   initialHashOrigin: Vector3,
   initialCellSize: number,
 ): CellIndexKernels {
@@ -98,17 +100,11 @@ export function buildCellIndexKernels(
 
   const bucketMask = hashTableSize - 1;
 
-  const resetCounts = Fn(() => {
-    const i: Any = instanceIndex;
-    // `counts` is declared atomic via `.toAtomic()` so plain `.assign()` on
-    // an element would emit invalid WGSL (atomic<u32> requires atomic ops
-    // for every access). `atomicStore` is the clear-to-zero equivalent.
-    atomicStore(counts.element(i), uint(0));
-  })().compute(hashTableSizePadded);
-
   const resetOverflowFlag = Fn(() => {
     atomicStore(overflowFlag.element(uint(0)), uint(0));
-  })().compute(1);
+  })()
+    .compute(1)
+    .setName('cellIndex.resetOverflowFlag');
 
   const cellIndexAndHistogram = Fn(() => {
     const i: Any = instanceIndex;
@@ -141,7 +137,7 @@ export function buildCellIndexKernels(
     const mortonCode: Any = mortonBucketUnmasked(cx, cy, cz);
     const bucket: Any = mortonCode.bitAnd(uint(bucketMask));
     cellIndex.element(i).assign(bucket);
-    atomicAdd(counts.element(bucket), uint(1));
+    rank.element(i).assign(atomicAdd(counts.element(bucket), uint(1)));
     // Overflow check 1: f32→i32 saturation (CELL_COORD_MAX clamp fired).
     // Overflow check 2: cell coord outside the Morton range. The Morton
     // encoding wrap-aliases for out-of-range cells; the flag makes this
@@ -167,10 +163,11 @@ export function buildCellIndexKernels(
       .or(overMortonZ);
     const flagVal: Any = anyOver.select(uint(1), uint(0));
     atomicMax(overflowFlag.element(uint(0)), flagVal);
-  })().compute(capacity);
+  })()
+    .compute(capacity)
+    .setName('cellIndex.cellIndexAndHistogram');
 
   return {
-    resetCounts,
     resetOverflowFlag,
     cellIndexAndHistogram,
     hashOrigin,

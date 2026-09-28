@@ -105,7 +105,9 @@ export function buildCenterOfMassKernel(args: BuildCenterOfMassKernelArgs): Comp
       const total: Any = shared.element(uint(0));
       bodyCenters.element(bi).assign(vec4(total.xyz.div(total.w), 0));
     });
-  })().compute(numBodies * W, [W]);
+  })()
+    .compute(numBodies * W, [W])
+    .setName('shapeMatch.centerOfMass');
 }
 
 export interface BuildMomentAndPolarDecompKernelArgs {
@@ -225,7 +227,9 @@ export function buildMomentAndPolarDecompKernel(
       bodyRotations.element(baseSlot.add(uint(1))).assign(vec4(R.m10, R.m11, R.m12, float(0.0)));
       bodyRotations.element(baseSlot.add(uint(2))).assign(vec4(R.m20, R.m21, R.m22, float(0.0)));
     });
-  })().compute(numBodies * W, [W]);
+  })()
+    .compute(numBodies * W, [W])
+    .setName('shapeMatch.momentAndPolarDecomp');
 }
 
 export interface BuildResetLambdaKernelArgs {
@@ -239,7 +243,9 @@ export function buildResetLambdaKernel(args: BuildResetLambdaKernelArgs): Comput
   return Fn(() => {
     const i: Any = instanceIndex;
     lambda.element(i).assign(vec4(0.0, 0.0, 0.0, 0.0));
-  })().compute(particles.capacity);
+  })()
+    .compute(particles.capacity)
+    .setName('shapeMatch.resetLambda');
 }
 
 export interface BuildShapeMatchDeltaApplyKernelArgs {
@@ -347,5 +353,7 @@ export function buildShapeMatchDeltaApplyKernel(
         });
       },
     );
-  })().compute(numBodies * W, [W]);
+  })()
+    .compute(numBodies * W, [W])
+    .setName('shapeMatch.shapeMatchDeltaApply');
 }

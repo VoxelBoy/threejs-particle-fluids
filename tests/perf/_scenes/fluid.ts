@@ -18,9 +18,11 @@ function buildFluidScene(
   id: string,
   count: number,
   origin: readonly [number, number, number],
+  shuffled = false,
 ): BuiltScene {
   const particles = new ParticleSystem(perf.renderer, count, SPACING / 2);
-  particles.uploadParticles(fluidColumn({ count, spacing: SPACING, origin }));
+  const column = fluidColumn({ count, spacing: SPACING, origin });
+  particles.uploadParticles(shuffled ? shuffle(column) : column);
 
   const floor = new PrimitiveSet(particles);
   floor.addPlane(new Vector3(0, 1, 0), new Vector3());
@@ -59,4 +61,27 @@ export function buildFluid10kScene(perf: PerfRenderer): BuiltScene {
 
 export function buildFluid100kScene(perf: PerfRenderer): BuiltScene {
   return buildFluidScene(perf, 'fluid-100k', 100_000, [-0.6, 0.5, -0.6]);
+}
+
+/**
+ * The 100k scene with its particles uploaded in random order. After a long
+ * run, mixing leaves a fluid's particle order with no spatial pattern; this
+ * starts it that way, so neighbor walks read memory as they would then.
+ */
+export function buildFluid100kShuffledScene(perf: PerfRenderer): BuiltScene {
+  return buildFluidScene(perf, 'fluid-100k-shuffled', 100_000, [-0.6, 0.5, -0.6], true);
+}
+
+/** Fisher–Yates shuffle with a fixed seed, so every run starts the same. */
+function shuffle<T>(items: T[]): T[] {
+  let seed = 1;
+  const random = (): number => {
+    seed = (seed * 16807) % 2147483647;
+    return seed / 2147483647;
+  };
+  for (let i = items.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [items[i], items[j]] = [items[j]!, items[i]!];
+  }
+  return items;
 }

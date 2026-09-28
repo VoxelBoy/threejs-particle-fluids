@@ -3,7 +3,7 @@ import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import type UniformNode from 'three/src/nodes/core/UniformNode.js';
 
 import type { Accumulator } from '../../core/index.js';
-import { emitFluidIndex, type FluidKernelContext } from './shared.js';
+import { type FluidKernelContext } from './shared.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -40,9 +40,9 @@ export function buildAdhesionKernel(
   const h = sph.h.value;
 
   return Fn(() => {
-    const i: Any = emitFluidIndex(context);
+    const { i, row } = neighbors.emitThread();
     const xi: Any = particles.predictedPositions.element(i).xyz.toVar();
-    neighbors.forEach(i, (k: Any) => {
+    neighbors.forEach(row, (k: Any) => {
       const volume: Any = particles.boundaryVolume.element(k).toVar();
       If(volume.lessThanEqual(0), () => {
         Continue();
@@ -57,5 +57,7 @@ export function buildAdhesionKernel(
         .mul(beta.mul(mass).mul(restDensity.mul(volume)).mul(emitAdhesionSpline(r, h)).negate());
       accumulator.add(i, force.div(mass).mul(dt));
     });
-  })().compute(context.range.count);
+  })()
+    .compute(neighbors.threadCount)
+    .setName('adhesion.adhesion');
 }

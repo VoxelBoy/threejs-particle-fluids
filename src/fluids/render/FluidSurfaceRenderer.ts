@@ -581,7 +581,9 @@ export class FluidSurfaceRenderer {
       this.pickResult
         .element(0)
         .assign(vec4(this.pickOrigin.add(this.pickDirection.mul(result.x)), select(hit, 1, 0)));
-    })().compute(1);
+    })()
+      .compute(1)
+      .setName('FluidSurfaceRenderer.pick');
 
     this.findSun();
   }

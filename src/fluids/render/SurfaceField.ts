@@ -30,6 +30,8 @@ type Any = any;
 
 /** Fixed-point scale for atomic splatting. 16 fractional bits keep CIC weights exact to ~1e-5. */
 const FIXED = 65536;
+/** Edge of the bricks empty space is skipped in, in voxels. Must exceed the blur's reach, `taps + 1`. */
+const BRICK = 8;
 /** Field value (voxels) stored where no particle is within the filter footprint. */
 export const FIELD_BAND = 6;
 
@@ -152,24 +154,64 @@ export class SurfaceField {
     const cellOf = (i: Any): Any =>
       ivec3(i.mod(nx).toInt(), i.div(nx).mod(ny).toInt(), i.div(nx * ny).toInt());
 
-    const mass = (instancedArray(count, 'int') as Any).setAtomic(true);
-    const offX = (instancedArray(count, 'int') as Any).setAtomic(true);
-    const offY = (instancedArray(count, 'int') as Any).setAtomic(true);
-    const offZ = (instancedArray(count, 'int') as Any).setAtomic(true);
+    // Splat sums per voxel: mass, then the mass-weighted offset (x, y, z).
+    // Separate buffers measured faster than one interleaved buffer, whose
+    // neighboring atomics contend for the same cache lines.
+    const sumBuffers = [0, 1, 2, 3].map(() =>
+      (instancedArray(count, 'int') as Any).setAtomic(true),
+    );
     const solid = (instancedArray(count, 'int') as Any).setAtomic(true);
     const a = instancedArray(count, 'vec4');
     const b = instancedArray(count, 'vec4');
     const sa = instancedArray(count, 'float');
     const sb = instancedArray(count, 'float');
 
-    const clear = Fn(() => {
-      const i: Any = instanceIndex;
-      atomicStore(mass.element(i), int(0));
-      atomicStore(offX.element(i), int(0));
-      atomicStore(offY.element(i), int(0));
-      atomicStore(offZ.element(i), int(0));
-      atomicStore(solid.element(i), int(0));
-    })().compute(count);
+    // Empty space is skipped in bricks of BRICK³ voxels. The splat marks the
+    // brick of each voxel it writes in `marked`; `expand` then marks every
+    // brick within one brick of those in `active`. The blur spreads values at
+    // most `taps + 1 ≤ BRICK` voxels per pass, so every voxel outside an
+    // active brick reads only zeros in all three passes and skips its taps.
+    const bx = Math.ceil(nx / BRICK),
+      by = Math.ceil(ny / BRICK),
+      bz = Math.ceil(nz / BRICK);
+    const bricks = bx * by * bz;
+    // Plain stores: every writer stores the same 1, so races are harmless.
+    const marked = instancedArray(bricks, 'uint');
+    const active = instancedArray(bricks, 'uint');
+    const brickOf = (c: Any): Any =>
+      c.z
+        .div(BRICK)
+        .mul(bx * by)
+        .add(c.y.div(BRICK).mul(bx))
+        .add(c.x.div(BRICK))
+        .toUint();
+    const expand = Fn(() => {
+      const b: Any = instanceIndex;
+      const c: Any = ivec3(b.mod(bx).toInt(), b.div(bx).mod(by).toInt(), b.div(bx * by).toInt());
+      const any: Any = uint(0).toVar();
+      for (let z = -1; z <= 1; z++)
+        for (let y = -1; y <= 1; y++)
+          for (let x = -1; x <= 1; x++) {
+            const n: Any = c.add(ivec3(x, y, z));
+            If(
+              n
+                .greaterThanEqual(ivec3(0))
+                .all()
+                .and(n.lessThan(ivec3(bx, by, bz)).all()),
+              () => {
+                const flat: Any = n.z
+                  .mul(bx * by)
+                  .add(n.y.mul(bx))
+                  .add(n.x)
+                  .toUint();
+                any.assign(any.max(marked.element(flat)));
+              },
+            );
+          }
+      active.element(b).assign(any);
+    })()
+      .compute(bricks)
+      .setName('SurfaceField.expand');
 
     // Continuous grid coordinate with voxel centres on integers.
     const gridCoord = (world: Any): Any => world.sub(origin).mul(invVoxel).sub(0.5);
@@ -198,6 +240,14 @@ export class SurfaceField {
             () => {
               const base: Any = g.floor().toVar();
               const f: Any = g.sub(base).toVar();
+              // Most particles land in a brick already marked; only reading
+              // it first keeps them from all writing the same few words.
+              const flag: Any = marked.element(
+                brickOf(ivec3(base.x.toInt(), base.y.toInt(), base.z.toInt())),
+              );
+              If(flag.equal(uint(0)), () => {
+                flag.assign(uint(1));
+              });
               for (let z = 0; z < 2; z++)
                 for (let y = 0; y < 2; y++)
                   for (let x = 0; x < 2; x++) {
@@ -208,10 +258,19 @@ export class SurfaceField {
                       .toVar();
                     const cell: Any = indexOf(base.add(vec3(x, y, z)));
                     if (fluid) {
-                      atomicAdd(mass.element(cell), w.mul(FIXED).round().toInt());
-                      atomicAdd(offX.element(cell), w.mul(f.x.sub(x)).mul(FIXED).round().toInt());
-                      atomicAdd(offY.element(cell), w.mul(f.y.sub(y)).mul(FIXED).round().toInt());
-                      atomicAdd(offZ.element(cell), w.mul(f.z.sub(z)).mul(FIXED).round().toInt());
+                      atomicAdd(sumBuffers[0].element(cell), w.mul(FIXED).round().toInt());
+                      atomicAdd(
+                        sumBuffers[1].element(cell),
+                        w.mul(f.x.sub(x)).mul(FIXED).round().toInt(),
+                      );
+                      atomicAdd(
+                        sumBuffers[2].element(cell),
+                        w.mul(f.y.sub(y)).mul(FIXED).round().toInt(),
+                      );
+                      atomicAdd(
+                        sumBuffers[3].element(cell),
+                        w.mul(f.z.sub(z)).mul(FIXED).round().toInt(),
+                      );
                     } else {
                       atomicAdd(solid.element(cell), w.mul(FIXED).round().toInt());
                     }
@@ -219,7 +278,9 @@ export class SurfaceField {
             },
           );
         }
-      })().compute(range.count);
+      })()
+        .compute(range.count)
+        .setName('SurfaceField.splat');
 
     // Gaussian over ±TAPS voxels. σ ≈ 0.75 particle spacings keeps the lattice
     // ripple below 1e-4 while leaving splash detail intact.
@@ -280,7 +341,9 @@ export class SurfaceField {
         proximity.assign(nearest.max(0).div(width).negate().exp());
       }
       walls.element(instanceIndex).assign(vec2(proximity, nearest));
-    })().compute(count);
+    })()
+      .compute(count)
+      .setName('SurfaceField.wall');
     const wallProximity = (solidMass: Any): Any =>
       solidMass
         .mul(volumeScale * 1.5)
@@ -289,37 +352,52 @@ export class SurfaceField {
 
     const blur = (axis: 0 | 1 | 2, final: boolean): ComputeNode =>
       Fn(() => {
-        const cell: Any = cellOf(instanceIndex).toVar();
+        const i: Any = instanceIndex;
+        const cell: Any = cellOf(i).toVar();
         const sum: Any = vec4(0).toVar();
         const solidSum: Any = float(0).toVar();
-        for (let k = -taps; k <= taps; k++) {
-          const step = [0, 0, 0];
-          step[axis] = k;
-          const neighbor: Any = cell.add(ivec3(step[0]!, step[1]!, step[2]!));
-          const n: Any = neighbor[(['x', 'y', 'z'] as const)[axis]];
-          If(n.greaterThanEqual(0).and(n.lessThan([nx, ny, nz][axis]!)), () => {
-            const j: Any = indexOf(neighbor);
-            let sample: Any, solidSample: Any;
-            if (axis === 0) {
-              const load = (buffer: Any): Any => (atomicLoad(buffer.element(j)) as Any).toFloat();
-              sample = vec4(load(mass), load(offX), load(offY), load(offZ)).div(FIXED);
-              solidSample = (atomicLoad(solid.element(j)) as Any).toFloat().div(FIXED);
-            } else {
-              sample = (axis === 1 ? a : b).element(j);
-              solidSample = (axis === 1 ? sa : sb).element(j);
-            }
-            const s: Any = sample.toVar();
-            // Re-base the neighbour's offsets onto this voxel's centre.
-            const shift = [0, 0, 0];
-            shift[axis] = k;
-            const rebased: Any = vec4(
-              s.x,
-              s.yzw.add(vec3(shift[0]!, shift[1]!, shift[2]!).mul(s.x)),
-            );
-            sum.addAssign(rebased.mul(weights[k + taps]!));
-            solidSum.addAssign(solidSample.mul(weights[k + taps]!));
+        if (axis === 0) {
+          // `expand` has read the marks; clear them for the next frame.
+          If(cell.mod(BRICK).equal(ivec3(0)).all(), () => {
+            marked.element(brickOf(cell)).assign(uint(0));
           });
         }
+        if (axis === 1) {
+          // The first pass has read the splat sums; clear them for the next frame.
+          for (let k = 0; k < 4; k++) atomicStore(sumBuffers[k].element(i), int(0));
+          atomicStore(solid.element(i), int(0));
+        }
+        If(active.element(brickOf(cell)).notEqual(uint(0)), () => {
+          for (let k = -taps; k <= taps; k++) {
+            const step = [0, 0, 0];
+            step[axis] = k;
+            const neighbor: Any = cell.add(ivec3(step[0]!, step[1]!, step[2]!));
+            const n: Any = neighbor[(['x', 'y', 'z'] as const)[axis]];
+            If(n.greaterThanEqual(0).and(n.lessThan([nx, ny, nz][axis]!)), () => {
+              const j: Any = indexOf(neighbor);
+              let sample: Any, solidSample: Any;
+              if (axis === 0) {
+                const load = (k: number): Any =>
+                  (atomicLoad(sumBuffers[k].element(j)) as Any).toFloat();
+                sample = vec4(load(0), load(1), load(2), load(3)).div(FIXED);
+                solidSample = (atomicLoad(solid.element(j)) as Any).toFloat().div(FIXED);
+              } else {
+                sample = (axis === 1 ? a : b).element(j);
+                solidSample = (axis === 1 ? sa : sb).element(j);
+              }
+              const s: Any = sample.toVar();
+              // Re-base the neighbour's offsets onto this voxel's centre.
+              const shift = [0, 0, 0];
+              shift[axis] = k;
+              const rebased: Any = vec4(
+                s.x,
+                s.yzw.add(vec3(shift[0]!, shift[1]!, shift[2]!).mul(s.x)),
+              );
+              sum.addAssign(rebased.mul(weights[k + taps]!));
+              solidSum.addAssign(solidSample.mul(weights[k + taps]!));
+            });
+          }
+        });
         if (!final) {
           (axis === 0 ? a : b).element(instanceIndex).assign(sum);
           (axis === 0 ? sa : sb).element(instanceIndex).assign(solidSum);
@@ -351,13 +429,15 @@ export class SurfaceField {
           cell,
           vec4(phi, w.mul(volumeScale).min(4), proximity, 1),
         ).toWriteOnly();
-      })().compute(count);
+      })()
+        .compute(count)
+        .setName('SurfaceField.blur');
 
-    const kernels: ComputeNode[] = [clear, splat(fluidRange, true)];
+    const kernels: ComputeNode[] = [splat(fluidRange, true)];
     if (solids && solids.count > 0) kernels.push(splat(solids, false));
-    kernels.push(blur(0, false), blur(1, false), blur(2, true));
+    kernels.push(expand, blur(0, false), blur(1, false), blur(2, true));
     this.kernels = kernels;
-    this.buffers = [mass, offX, offY, offZ, solid, a, b, sa, sb, walls];
+    this.buffers = [...sumBuffers, solid, marked, active, a, b, sa, sb, walls];
   }
 
   /** Free the texture, the kernels, and the GPU buffers. */

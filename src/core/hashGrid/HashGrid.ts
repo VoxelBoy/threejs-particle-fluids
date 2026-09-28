@@ -7,7 +7,6 @@ import type StorageBufferNode from 'three/src/nodes/accessors/StorageBufferNode.
 
 import { releaseStorageBuffers, type ParticleSystem } from '../particles.js';
 import { buildCellIndexKernels } from './cellIndex.js';
-import { allocateSortedPositionsBuffer, buildSortedPositionsKernel } from './sortedPositions.js';
 import {
   MAX_CELLS_SINGLE_LEVEL_SCAN,
   SCAN_WORKGROUP_SIZE,
@@ -67,10 +66,11 @@ export interface HashGridSnapshot {
  * Spatial hash for neighbor search (Teschner et al. 2003), rebuilt on the GPU
  * with a counting sort:
  *
- * 1. hash each particle's cell (Morton order) and count particles per bucket;
+ * 1. hash each particle's cell (Morton order), count particles per bucket,
+ *    and note each particle's rank within its bucket;
  * 2. prefix-sum the counts (Blelloch scan) into each bucket's start and end;
- * 3. scatter particle indices into bucket order;
- * 4. copy predicted positions into that order too, so neighbor walks read
+ * 3. scatter particle indices into bucket order at start + rank, and copy
+ *    the predicted positions into that order too, so neighbor walks read
  *    memory contiguously.
  *
  * The space is unbounded: distant cells share buckets, and queries filter
@@ -87,10 +87,13 @@ export class HashGrid {
   readonly hashTableSizePadded: number;
 
   readonly cellIndex: StorageBufferNode<'uint'>;
+  /** Per-bucket histogram, used during a rebuild and zero outside one. */
   readonly counts: StorageBufferNode<'uint'>;
   readonly cellStart: StorageBufferNode<'uint'>;
   readonly cellEnd: StorageBufferNode<'uint'>;
   readonly sortedIndices: StorageBufferNode<'uint'>;
+  /** Each particle's slot in the sorted order: the inverse of `sortedIndices`. */
+  readonly slotOf: StorageBufferNode<'uint'>;
   /** `predictedPositions` in bucket order, refreshed by every rebuild. */
   readonly sortedPredictedPositions: StorageBufferNode<'vec4'>;
   /**
@@ -105,7 +108,8 @@ export class HashGrid {
   readonly cellSizeUniform: UniformNode<'float', number>;
 
   private readonly blockSums: StorageBufferNode<'uint'>;
-  private readonly writeCursor: StorageBufferNode<'uint'>;
+  /** Each particle's position within its bucket, from the histogram's atomic add. */
+  private readonly rank: StorageBufferNode<'uint'>;
   private readonly pipeline: ComputeNode[];
 
   private disposed = false;
@@ -154,20 +158,21 @@ export class HashGrid {
     this.cellStart = instancedArray(hashTableSizePadded, 'uint');
     this.cellEnd = instancedArray(hashTableSizePadded, 'uint');
     this.sortedIndices = instancedArray(particles.capacity, 'uint');
-    this.sortedPredictedPositions = allocateSortedPositionsBuffer(particles);
+    this.slotOf = instancedArray(particles.capacity, 'uint');
+    this.sortedPredictedPositions = instancedArray(particles.capacity, 'vec4');
     this.overflowFlag = instancedArray(1, 'uint').toAtomic();
     this.blockSums = instancedArray(SCAN_WORKGROUP_SIZE, 'uint');
-    this.writeCursor = instancedArray(hashTableSizePadded, 'uint').toAtomic();
+    this.rank = instancedArray(particles.capacity, 'uint');
 
     // Bin by predicted positions: every query runs after prediction, at predicted positions.
     const cellIndexKernels = buildCellIndexKernels(
       particles.predictedPositions,
       this.cellIndex,
+      this.rank,
       this.counts,
       this.overflowFlag,
       particles.capacity,
       hashTableSize,
-      hashTableSizePadded,
       hashOrigin,
       cellSize,
     );
@@ -179,28 +184,23 @@ export class HashGrid {
       this.cellStart,
       this.cellEnd,
       this.blockSums,
-      this.writeCursor,
       this.cellIndex,
+      this.rank,
       this.sortedIndices,
+      this.slotOf,
+      particles.predictedPositions,
+      this.sortedPredictedPositions,
       particles.capacity,
       hashTableSizePadded,
     );
 
-    const sortedPositions = buildSortedPositionsKernel({
-      particles,
-      sortedIndices: this.sortedIndices,
-      sortedPredictedPositions: this.sortedPredictedPositions,
-    });
-
     this.pipeline = [
-      cellIndexKernels.resetCounts,
       cellIndexKernels.resetOverflowFlag,
       cellIndexKernels.cellIndexAndHistogram,
       sort.blockScan,
       sort.blockSumScan,
       sort.finalizeCellRanges,
       sort.scatter,
-      sortedPositions,
     ];
   }
 
@@ -229,21 +229,23 @@ export class HashGrid {
 
   async readback(): Promise<HashGridSnapshot> {
     this.assertAlive();
-    const [cellIndex, counts, cellStart, cellEnd, sortedIndices] = await Promise.all([
+    const [cellIndex, cellStart, cellEnd, sortedIndices] = await Promise.all([
       this.renderer.getArrayBufferAsync(this.cellIndex.value),
-      this.renderer.getArrayBufferAsync(this.counts.value),
       this.renderer.getArrayBufferAsync(this.cellStart.value),
       this.renderer.getArrayBufferAsync(this.cellEnd.value),
       this.renderer.getArrayBufferAsync(this.sortedIndices.value),
     ]);
+    const starts = new Uint32Array(cellStart);
+    const ends = new Uint32Array(cellEnd);
     return {
       capacity: this.particles.capacity,
       hashTableSize: this.hashTableSize,
       hashTableSizePadded: this.hashTableSizePadded,
       cellIndex: new Uint32Array(cellIndex),
-      counts: new Uint32Array(counts),
-      cellStart: new Uint32Array(cellStart),
-      cellEnd: new Uint32Array(cellEnd),
+      // The rebuild clears the counts buffer for the next one, so recover them.
+      counts: ends.map((end, b) => end - starts[b]!),
+      cellStart: starts,
+      cellEnd: ends,
       sortedIndices: new Uint32Array(sortedIndices),
     };
   }
@@ -273,10 +275,11 @@ export class HashGrid {
       this.cellStart,
       this.cellEnd,
       this.sortedIndices,
+      this.slotOf,
       this.sortedPredictedPositions,
       this.overflowFlag,
       this.blockSums,
-      this.writeCursor,
+      this.rank,
     ]);
   }
 

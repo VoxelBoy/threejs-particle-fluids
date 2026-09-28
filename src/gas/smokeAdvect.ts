@@ -67,5 +67,7 @@ export function buildSmokeAdvectKernel(args: {
         tracers.smokeAge.element(s).assign(age);
       });
     });
-  })().compute(tracers.capacity);
+  })()
+    .compute(tracers.capacity)
+    .setName('smokeAdvect.smokeAdvect');
 }

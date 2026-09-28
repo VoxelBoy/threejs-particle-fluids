@@ -4,7 +4,7 @@ import type StorageBufferNode from 'three/src/nodes/accessors/StorageBufferNode.
 import type UniformNode from 'three/src/nodes/core/UniformNode.js';
 
 import { emitPoly6FromRSq, emitSpikyGrad } from '../../core/index.js';
-import { emitFluidIndex, emitNeighborMass, type FluidKernelContext } from './shared.js';
+import { emitNeighborMass, type FluidKernelContext } from './shared.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -39,13 +39,13 @@ export function buildLambdaKernel(
   const { compliance, density, lambda } = buffers;
 
   return Fn(() => {
-    const i: Any = emitFluidIndex(context);
+    const { i, row } = neighbors.emitThread();
     const xi: Any = particles.predictedPositions.element(i).xyz.toVar();
     const rho: Any = float(0).toVar();
     const gradSum: Any = vec3(0).toVar();
     const gradSqSum: Any = float(0).toVar();
 
-    neighbors.forEach(i, (j: Any) => {
+    neighbors.forEach(row, (j: Any) => {
       const offset: Any = xi.sub(particles.predictedPositions.element(j).xyz).toVar();
       const neighbor = emitNeighborMass(context, j);
       rho.addAssign(neighbor.mass.mul(emitPoly6FromRSq(offset.dot(offset), sph)));
@@ -68,5 +68,7 @@ export function buildLambdaKernel(
       .mul(invRho0.mul(invRho0));
     const alphaTilde: Any = compliance.div(dt.mul(dt));
     lambda.element(i).assign(constraint.negate().div(gradientNorm.add(alphaTilde).max(1e-20)));
-  })().compute(context.range.count);
+  })()
+    .compute(neighbors.threadCount)
+    .setName('lambda.lambda');
 }

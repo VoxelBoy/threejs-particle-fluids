@@ -76,35 +76,41 @@ export function createDistanceConstraints(args: {
   const lambda = instancedArray(nConstraints, 'float');
 
   const coloring = colorConstraints({ arity: 2, nConstraints, participantsPerConstraint: indices });
-  const groups = buildConstraintGroups(coloring, (c: Any) => {
-    const iIdx: Any = particleIndices.element(c.mul(2)).toVar();
-    const jIdx: Any = particleIndices.element(c.mul(2).add(1)).toVar();
-    const xi: Any = particles.predictedPositions.element(iIdx).xyz.toVar();
-    const xj: Any = particles.predictedPositions.element(jIdx).xyz.toVar();
-    const wi: Any = particles.invMass.element(iIdx).toVar();
-    const wj: Any = particles.invMass.element(jIdx).toVar();
-    const wSum: Any = wi.add(wj).toVar();
-    const offset: Any = xi.sub(xj).toVar();
-    const length: Any = offset.length().toVar();
-    If(wSum.lessThanEqual(0).or(length.lessThan(1e-12)), () => {
-      Return();
-    });
-    const n: Any = offset.div(length).toVar();
-    const lambdaCurrent: Any = lambda.element(c).toVar();
-    const dLambda: Any = xpbdDeltaLambda({
-      C: length.sub(restBuf.element(c)),
-      sumGradSqInvMass: wSum,
-      alphaTilde: complianceBuf.element(c).div(dt.mul(dt)),
-      lambdaCurrent,
-    }).toVar();
-    particles.predictedPositions.element(iIdx).assign(vec4(xi.add(n.mul(wi.mul(dLambda))), 0));
-    particles.predictedPositions.element(jIdx).assign(vec4(xj.sub(n.mul(wj.mul(dLambda))), 0));
-    lambda.element(c).assign(lambdaCurrent.add(dLambda));
-  });
+  const groups = buildConstraintGroups(
+    coloring,
+    (c: Any) => {
+      const iIdx: Any = particleIndices.element(c.mul(2)).toVar();
+      const jIdx: Any = particleIndices.element(c.mul(2).add(1)).toVar();
+      const xi: Any = particles.predictedPositions.element(iIdx).xyz.toVar();
+      const xj: Any = particles.predictedPositions.element(jIdx).xyz.toVar();
+      const wi: Any = particles.invMass.element(iIdx).toVar();
+      const wj: Any = particles.invMass.element(jIdx).toVar();
+      const wSum: Any = wi.add(wj).toVar();
+      const offset: Any = xi.sub(xj).toVar();
+      const length: Any = offset.length().toVar();
+      If(wSum.lessThanEqual(0).or(length.lessThan(1e-12)), () => {
+        Return();
+      });
+      const n: Any = offset.div(length).toVar();
+      const lambdaCurrent: Any = lambda.element(c).toVar();
+      const dLambda: Any = xpbdDeltaLambda({
+        C: length.sub(restBuf.element(c)),
+        sumGradSqInvMass: wSum,
+        alphaTilde: complianceBuf.element(c).div(dt.mul(dt)),
+        lambdaCurrent,
+      }).toVar();
+      particles.predictedPositions.element(iIdx).assign(vec4(xi.add(n.mul(wi.mul(dLambda))), 0));
+      particles.predictedPositions.element(jIdx).assign(vec4(xj.sub(n.mul(wj.mul(dLambda))), 0));
+      lambda.element(c).assign(lambdaCurrent.add(dLambda));
+    },
+    'distance',
+  );
 
   const resetLambdaKernel = Fn(() => {
     lambda.element(instanceIndex).assign(0);
-  })().compute(nConstraints);
+  })()
+    .compute(nConstraints)
+    .setName('distance.resetLambda');
 
   return { count: nConstraints, compliance: complianceBuf, lambda, groups, resetLambdaKernel };
 }

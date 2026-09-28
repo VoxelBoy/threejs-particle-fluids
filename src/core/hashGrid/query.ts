@@ -1,7 +1,7 @@
 import { If, Loop, int, uint } from 'three/tsl';
 
 import type { HashGrid } from './HashGrid.js';
-import { mortonBucketUnmasked } from './mortonHash.js';
+import { MORTON_BIAS, part1by2 } from './mortonHash.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -28,20 +28,24 @@ export function emitForEachNeighbor(
 ): void {
   const bucketMask = grid.hashTableSize - 1;
   const cell: Any = position.sub(grid.hashOriginUniform).div(grid.cellSizeUniform).floor();
-  const qcx: Any = cell.x.toInt().toVar();
-  const qcy: Any = cell.y.toInt().toVar();
-  const qcz: Any = cell.z.toInt().toVar();
+  // Spread each axis's three cell coordinates once; a cell's Morton code is
+  // then three ORs (see `mortonBucketUnmasked`).
+  const spread = (c: Any, shift: number): Any[] =>
+    [-1, 0, 1].map((d) =>
+      part1by2(c.add(int(d + MORTON_BIAS)).toUint())
+        .shiftLeft(uint(shift))
+        .toVar(),
+    );
+  const sx = spread(cell.x.toInt().toVar(), 0);
+  const sy = spread(cell.y.toInt().toVar(), 1);
+  const sz = spread(cell.z.toInt().toVar(), 2);
 
   const visited: Any[] = [];
   // `let` in each header gives every callback its own (dx, dy, dz) binding.
   for (let dz = -1; dz <= 1; dz++) {
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
-        const code: Any = mortonBucketUnmasked(
-          qcx.add(int(dx)),
-          qcy.add(int(dy)),
-          qcz.add(int(dz)),
-        );
+        const code: Any = sx[dx + 1].bitOr(sy[dy + 1]).bitOr(sz[dz + 1]);
         const bucket: Any = code.bitAnd(uint(bucketMask)).toVar();
         const walk = (): void => {
           Loop(

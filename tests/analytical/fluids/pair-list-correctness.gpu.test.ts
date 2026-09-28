@@ -5,8 +5,8 @@
 // CPU brute-force search finds within the radius. The slot order depends
 // on the hash grid's 27-cell walk, Morton bucket order and sort order, so
 // the lists are compared as sets. `counts[i]` must equal the size of that
-// set. Storage is column-major: neighbor k of particle i lives at
-// `indices[k * count + i]`.
+// set. Lists are stored per grid slot: the particle in sorted slot s has
+// its list in row s, and neighbor k of row s lives at `indices[k * N + s]`.
 //
 
 import { describe, expect, it } from 'vitest';
@@ -52,12 +52,15 @@ describe('neighbor list build', () => {
 
       await renderer.computeAsync([...grid.rebuildPipeline, ...buildKernels]);
 
-      const [indicesBuf, countsBuf] = await Promise.all([
+      const [indicesBuf, countsBuf, gridSnapshot] = await Promise.all([
         renderer.getArrayBufferAsync(neighbors.indices.value),
         renderer.getArrayBufferAsync(neighbors.counts.value),
+        grid.readback(),
       ]);
       const indices = new Uint32Array(indicesBuf);
       const counts = new Uint32Array(countsBuf);
+      const rowOf = new Uint32Array(N);
+      gridSnapshot.sortedIndices.forEach((particle, slot) => (rowOf[particle] = slot));
 
       expect(await neighbors.readbackOverflow()).toBe(false);
 
@@ -76,16 +79,17 @@ describe('neighbor list build', () => {
         expected.push(set);
       }
 
-      // Column-major layout: neighbor k of particle i lives at
-      // `indices[k * N + i]`. The buffer holds `N * MAX_NEIGHBORS`
+      // Column-major layout: neighbor k of row s lives at
+      // `indices[k * N + s]`. The buffer holds `N * MAX_NEIGHBORS`
       // entries, so the last valid k is `MAX_NEIGHBORS - 1`.
       for (let i = 0; i < N; i++) {
-        const count = counts[i]!;
+        const row = rowOf[i]!;
+        const count = counts[row]!;
         expect(count).toBe(expected[i]!.size);
 
         const observed = new Set<number>();
         for (let k = 0; k < count; k++) {
-          observed.add(indices[k * N + i]!);
+          observed.add(indices[k * N + row]!);
         }
         expect(observed).toEqual(expected[i]);
       }

@@ -236,7 +236,9 @@ export class GasSystem implements Material, SmokeTracers {
         this.smokeAge.element(slot).assign(0);
         this.smokeAlive.element(slot).assign(uint(1));
       });
-    })().compute(this.capacity);
+    })()
+      .compute(this.capacity)
+      .setName('GasSystem.spawn');
 
     const postSolve = [
       buildSmokeAdvectKernel({

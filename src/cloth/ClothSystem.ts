@@ -278,13 +278,17 @@ export class ClothSystem implements Material {
       });
       const mean: Any = sum.div(to.sub(from).max(uint(1)).toFloat());
       smoothed.element(local).assign(vec4(mix(v.xyz, mean, this.dampingUniform), v.w));
-    })().compute(count);
+    })()
+      .compute(count)
+      .setName('ClothSystem.average');
     const apply = Fn(() => {
       const i: Any = instanceIndex.add(uint(range.start));
       If(particles.invMass.element(i).greaterThan(0), () => {
         particles.velocities.element(i).assign(smoothed.element(instanceIndex));
       });
-    })().compute(count);
+    })()
+      .compute(count)
+      .setName('ClothSystem.apply');
     return [average, apply];
   }
 }

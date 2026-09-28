@@ -64,7 +64,10 @@
     "bench:baseline": "node --import tsx tests/perf/_helpers/run.ts --baseline",
     "assets:elastic": "node --import tsx scripts/prepare-elastic-assets.ts",
     "assets:honey": "node --import tsx scripts/prepare-honey-assets.ts",
-    "prepublishOnly": "npm run build:lib"
+    "prepublishOnly": "npm run build:lib",
+    "perf:profile": "node --import tsx tests/perf/_helpers/profile.ts",
+    "perf:fingerprint": "node --import tsx tests/perf/_helpers/fingerprint.ts",
+    "perf:ab": "node --import tsx tests/perf/_helpers/ab.ts"
   },
   "peerDependencies": {
     "@types/three": ">=0.184.0 <0.185.0",

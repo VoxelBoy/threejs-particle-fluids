@@ -1,7 +1,6 @@
 import {
   Fn,
   If,
-  atomicAdd,
   atomicLoad,
   atomicStore,
   globalId,
@@ -44,11 +43,15 @@ export interface CountSortKernels {
   /** Dispatched as a single W-thread workgroup. Reads/writes `blockSums`. */
   readonly blockSumScan: ComputeNode;
   /**
-   * Adds each block's prefix into `cellStart`, then derives the scatter
-   * cursor and `cellEnd = cellStart + counts` for every bucket.
+   * Adds each block's prefix into `cellStart`, sets
+   * `cellEnd = cellStart + counts`, and zeroes `counts` for the next rebuild.
    */
   readonly finalizeCellRanges: ComputeNode;
-  /** Dispatched over `capacity`. Fills `sortedIndices`. */
+  /**
+   * Dispatched over `capacity`. Places each particle at its bucket's start
+   * plus its rank, filling `sortedIndices`, its inverse `slotOf`, and the
+   * positions in sorted order.
+   */
   readonly scatter: ComputeNode;
 }
 
@@ -57,9 +60,12 @@ export function buildCountSortKernels(
   cellStart: StorageBufferNode<'uint'>,
   cellEnd: StorageBufferNode<'uint'>,
   blockSums: StorageBufferNode<'uint'>,
-  writeCursor: StorageBufferNode<'uint'>,
   cellIndex: StorageBufferNode<'uint'>,
+  rank: StorageBufferNode<'uint'>,
   sortedIndices: StorageBufferNode<'uint'>,
+  slotOf: StorageBufferNode<'uint'>,
+  positions: StorageBufferNode<'vec4'>,
+  sortedPositions: StorageBufferNode<'vec4'>,
   capacity: number,
   nCellsPadded: number,
 ): CountSortKernels {
@@ -113,7 +119,9 @@ export function buildCountSortKernels(
     }
 
     cellStart.element(gi).assign(s.element(tid));
-  })().compute(nCellsPadded, [W]);
+  })()
+    .compute(nCellsPadded, [W])
+    .setName('sort.blockScan');
 
   // Pass 2 — single-workgroup Blelloch scan over `blockSums`. `blockSums`
   // is always sized W entries (unused trailing entries are zero from their
@@ -157,39 +165,37 @@ export function buildCountSortKernels(
     }
 
     blockSums.element(tid).assign(s.element(tid));
-  })().compute(W, [W]);
+  })()
+    .compute(W, [W])
+    .setName('sort.blockSumScan');
 
-  // Pass 3 — per bucket: add the block prefix to cellStart, start the
-  // scatter cursor there, and set cellEnd = cellStart + counts.
+  // Pass 3 — per bucket: add the block prefix to cellStart, set
+  // cellEnd = cellStart + counts, and clear counts for the next rebuild's
+  // histogram (which saves a separate clearing pass).
   const finalizeCellRanges = Fn(() => {
     const i: Any = instanceIndex;
     const wg: Any = i.div(uint(W));
-
-    // (a) addPrefix
     const final: Any = cellStart.element(i).add(blockSums.element(wg)).toVar();
     cellStart.element(i).assign(final);
+    // `counts` is atomic, so reads and writes go through atomic ops.
+    cellEnd.element(i).assign(final.add(atomicLoad(counts.element(i))));
+    atomicStore(counts.element(i), uint(0));
+  })()
+    .compute(nCellsPadded)
+    .setName('sort.finalizeCellRanges');
 
-    // (b) resetWriteCursor — `writeCursor` is atomic (for the `atomicAdd`
-    //     in `scatter`), so initialization goes through `atomicStore`.
-    atomicStore(writeCursor.element(i), final);
-
-    // (c) cellBounds — `counts` is atomic; reads go through `atomicLoad`
-    //     to generate valid WGSL.
-    const cnt: Any = atomicLoad(counts.element(i));
-    cellEnd.element(i).assign(final.add(cnt));
-  })().compute(nCellsPadded);
-
-  // Scatter per particle. Each thread atomically bumps the cell's write
-  // cursor, landing in a unique slot inside that cell's run. Per Green 2010
-  // §"Building the Grid using Atomic Operations" final paragraph: "write
-  // them to contiguous locations in the grid array using the results of the
-  // scan."
+  // Scatter per particle to its bucket's start plus the rank the histogram
+  // gave it, and copy its predicted position into sorted order alongside, so
+  // neighbor walks read positions contiguously.
   const scatter = Fn(() => {
     const p: Any = instanceIndex;
-    const c: Any = cellIndex.element(p);
-    const slot: Any = atomicAdd(writeCursor.element(c), uint(1));
+    const slot: Any = cellStart.element(cellIndex.element(p)).add(rank.element(p)).toVar();
     sortedIndices.element(slot).assign(p);
-  })().compute(capacity);
+    slotOf.element(p).assign(slot);
+    sortedPositions.element(slot).assign(positions.element(p));
+  })()
+    .compute(capacity)
+    .setName('sort.scatter');
 
   return { blockScan, blockSumScan, finalizeCellRanges, scatter };
 }

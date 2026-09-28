@@ -78,7 +78,9 @@ export class AirHeat {
 
     const reset = Fn(() => {
       atomicStore(total.element(0), uint(0));
-    })().compute(1);
+    })()
+      .compute(1)
+      .setName('heat.reset');
     const heat = Fn(() => {
       const k: Any = instanceIndex;
       const p: Any = particles.positions.element(k.add(uint(range.start))).xyz;
@@ -92,14 +94,18 @@ export class AirHeat {
       t.mulAssign(exp(cooling.mul(dt).negate()));
       temperature.element(k).assign(t);
       atomicAdd(total.element(0), t.mul(fixed).toUint());
-    })().compute(range.count);
+    })()
+      .compute(range.count)
+      .setName('heat.heat');
     const lift = Fn(() => {
       const k: Any = instanceIndex;
       const velocity: Any = particles.velocities.element(k.add(uint(range.start)));
       const mean: Any = (atomicLoad(total.element(0)) as Any).toFloat().div(fixed * range.count);
       const dv: Any = buoyancy.mul(temperature.element(k).sub(mean)).mul(dt);
       velocity.assign(vec4(velocity.xyz.add(vec3(0, dv, 0)), velocity.w));
-    })().compute(range.count);
+    })()
+      .compute(range.count)
+      .setName('heat.lift');
     return [reset, heat, lift];
   }
 }

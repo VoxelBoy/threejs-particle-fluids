@@ -87,19 +87,22 @@ Preset sources: [`demo/presets/`](demo/presets), built with the [low-level API](
 
 ## Development
 
-| Command                  | Purpose                                                       |
-| ------------------------ | ------------------------------------------------------------- |
-| `npm run dev`            | Start the demo and examples                                   |
-| `npm run build`          | Build the library into `dist/` and the demo into `dist-demo/` |
-| `npm run typecheck`      | Type-check the library, demo, examples, tests, and scripts    |
-| `npm run lint`           | Lint                                                          |
-| `npm run format:check`   | Check formatting                                              |
-| `npm test`               | Run CPU tests                                                 |
-| `npm run test:gpu`       | Run WebGPU tests in installed Google Chrome                   |
-| `npm run test:demo`      | Run browser checks of the demo                                |
-| `npm run test:perf`      | Run GPU benchmarks and write a local report                   |
-| `npm run assets:elastic` | Rebuild the soft-body meshes and particle templates           |
-| `npm run assets:honey`   | Rebuild the Stanford bunny mesh and distance field            |
+| Command                    | Purpose                                                                 |
+| -------------------------- | ----------------------------------------------------------------------- |
+| `npm run dev`              | Start the demo and examples                                             |
+| `npm run build`            | Build the library into `dist/` and the demo into `dist-demo/`           |
+| `npm run typecheck`        | Type-check the library, demo, examples, tests, and scripts              |
+| `npm run lint`             | Lint                                                                    |
+| `npm run format:check`     | Check formatting                                                        |
+| `npm test`                 | Run CPU tests                                                           |
+| `npm run test:gpu`         | Run WebGPU tests in installed Google Chrome                             |
+| `npm run test:demo`        | Run browser checks of the demo                                          |
+| `npm run test:perf`        | Run GPU benchmarks and write a local report                             |
+| `npm run perf:profile`     | Time every kernel of each demo preset, compared with the last run       |
+| `npm run perf:ab`          | Compare frame times with a git ref (`-- --ref HEAD`), alternating runs  |
+| `npm run perf:fingerprint` | Check the physics against a saved baseline (`-- --save-baseline` first) |
+| `npm run assets:elastic`   | Rebuild the soft-body meshes and particle templates                     |
+| `npm run assets:honey`     | Rebuild the Stanford bunny mesh and distance field                      |
 
 GPU tests and benchmarks need a local GPU; the runner passes Chrome's `--enable-unsafe-webgpu` flag. Benchmark results depend on the browser, adapter, and driver.
 

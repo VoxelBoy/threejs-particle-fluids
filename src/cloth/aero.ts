@@ -280,7 +280,9 @@ export function createClothAeroKernel(args: {
     const dxStar: Any = fSum.mul(dtSq.mul(w)).toVar();
     const xStar: Any = particles.predictedPositions.element(absSlot).xyz.toVar();
     particles.predictedPositions.element(absSlot).assign(vec4(xStar.add(dxStar), float(0.0)));
-  })().compute(nClothParticles);
+  })()
+    .compute(nClothParticles)
+    .setName('aero.wind');
 
   return kernel;
 }

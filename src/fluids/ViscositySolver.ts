@@ -1,8 +1,21 @@
-import { Fn, float, instancedArray, uniform, vec3, vec4 } from 'three/tsl';
+import {
+  Fn,
+  If,
+  Loop,
+  Return,
+  float,
+  instanceIndex,
+  instancedArray,
+  uint,
+  uniform,
+  vec3,
+  vec4,
+} from 'three/tsl';
 import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import type UniformNode from 'three/src/nodes/core/UniformNode.js';
 
 import {
+  MAX_NEIGHBORS,
   emitPoly6FromRSq,
   type Material,
   type MaterialKernels,
@@ -73,36 +86,79 @@ export class ViscositySolver implements Material {
       throw new Error('ViscositySolver: list it after its FluidSystem in `materials`');
     }
     const { particles, range, neighbors, sph, particleVolume, dt } = context;
+    const { grid } = neighbors;
     const h = this.fluid.smoothingRadius;
-    const rhs = instancedArray(particles.capacity, 'vec4');
-    const ping = instancedArray(particles.capacity, 'vec4');
-    const pong = instancedArray(particles.capacity, 'vec4');
+    // Everything here is indexed by grid slot (the neighbor list's rows), so
+    // the sweeps read and write contiguously. `rhs.w` holds a row's weight
+    // sum, or −1 for rows whose particle is not in the fluid. The iterates
+    // have one extra row, never written, that stays zero.
+    const rows = neighbors.threadCount;
+    const zeroRow = rows;
+    const rhs = instancedArray(rows, 'vec4');
+    const ping = instancedArray(rows + 1, 'vec4');
+    const pong = instancedArray(rows + 1, 'vec4');
+    // Per stored neighbor: its weight and its row, laid out like the list.
+    const weights = instancedArray(rows * MAX_NEIGHBORS, 'float');
+    const neighborRows = instancedArray(rows * MAX_NEIGHBORS, 'uint');
+    const { start, count } = range;
 
-    const seed = Fn(() => {
-      const i: Any = emitFluidIndex(context);
-      const v: Any = particles.velocities.element(i);
-      rhs.element(i).assign(v);
-      ping.element(i).assign(v);
-    })().compute(range.count);
+    const inFluid = (index: Any): Any =>
+      index.greaterThanEqual(uint(start)).and(index.lessThan(uint(start + count)));
+    // Neighbors outside the fluid (boundaries) enter the sums at zero
+    // velocity, through the zero row.
+    const prepare = Fn(() => {
+      const row: Any = instanceIndex;
+      const i: Any = grid.sortedIndices.element(row).toVar();
+      If(inFluid(i).not(), () => {
+        rhs.element(row).assign(vec4(0, 0, 0, -1));
+        Return();
+      });
+      const position: Any = particles.positions.element(i).xyz.toVar();
+      const weight: Any = float(0).toVar();
+      Loop(
+        { start: uint(0), end: neighbors.counts.element(row), type: 'uint', condition: '<' },
+        ({ i: k }: { i: Any }) => {
+          const entry: Any = k.mul(uint(rows)).add(row).toVar();
+          const j: Any = neighbors.indices.element(entry).toVar();
+          const offset: Any = position.sub(particles.positions.element(j).xyz);
+          const w: Any = emitPoly6FromRSq(offset.dot(offset), sph).mul(particleVolume).toVar();
+          weights.element(entry).assign(w);
+          neighborRows
+            .element(entry)
+            .assign(inFluid(j).select(grid.slotOf.element(j), uint(zeroRow)));
+          weight.addAssign(w);
+        },
+      );
+      const v: Any = particles.velocities.element(i).xyz;
+      rhs.element(row).assign(vec4(v, weight));
+      ping.element(row).assign(vec4(v, 0));
+    })()
+      .compute(rows)
+      .setName('ViscositySolver.prepare');
 
     // Each sweep reads one iterate and writes the other, so a sweep is one dispatch.
+    const rate: Any = this.viscosityUniform.mul(dt).mul(10 / (h * h));
     const sweep = (source: Any, target: Any): ComputeNode =>
       Fn(() => {
-        const i: Any = emitFluidIndex(context);
-        const position: Any = particles.positions.element(i).xyz;
-        const sum: Any = vec3(0).toVar();
-        const weight: Any = float(0).toVar();
-        neighbors.forEach(i, (j: Any) => {
-          const offset: Any = position.sub(particles.positions.element(j).xyz);
-          const w: Any = emitPoly6FromRSq(offset.dot(offset), sph).mul(particleVolume);
-          sum.addAssign(source.element(j).xyz.mul(w));
-          weight.addAssign(w);
+        const row: Any = instanceIndex;
+        const b: Any = rhs.element(row).toVar();
+        If(b.w.lessThan(0), () => {
+          Return();
         });
-        const rate: Any = this.viscosityUniform.mul(dt).mul(10 / (h * h));
-        target
-          .element(i)
-          .assign(vec4(rhs.element(i).xyz.add(sum.mul(rate)).div(weight.mul(rate).add(1)), 0));
-      })().compute(range.count);
+        const sum: Any = vec3(0).toVar();
+        Loop(
+          { start: uint(0), end: neighbors.counts.element(row), type: 'uint', condition: '<' },
+          ({ i: k }: { i: Any }) => {
+            const entry: Any = k.mul(uint(rows)).add(row);
+            sum.addAssign(
+              source.element(neighborRows.element(entry)).xyz.mul(weights.element(entry)),
+            );
+          },
+        );
+        target.element(row).assign(vec4(b.xyz.add(sum.mul(rate)).div(b.w.mul(rate).add(1)), 0));
+      })()
+        .compute(rows)
+        .setName('ViscositySolver.sweep');
     const forward = sweep(ping, pong);
     const backward = sweep(pong, ping);
     const result = this.iterations % 2 === 1 ? pong : ping;
@@ -110,12 +166,14 @@ export class ViscositySolver implements Material {
     const apply = Fn(() => {
       const i: Any = emitFluidIndex(context);
       const velocity: Any = particles.velocities.element(i);
-      velocity.assign(vec4(result.element(i).xyz, velocity.w));
-    })().compute(range.count);
+      velocity.assign(vec4(result.element(grid.slotOf.element(i)).xyz, velocity.w));
+    })()
+      .compute(range.count)
+      .setName('ViscositySolver.apply');
 
     return {
       postSolve: [
-        seed,
+        prepare,
         ...Array.from({ length: this.iterations }, (_, k) => (k % 2 === 0 ? forward : backward)),
         apply,
       ],

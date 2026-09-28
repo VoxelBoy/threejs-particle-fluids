@@ -36,10 +36,25 @@ export class PerfRenderer {
     return new PerfRenderer(renderer, device, timestamps ? 'timestamp' : 'wall-clock');
   }
 
+  /** WebGPU errors no error scope caught, such as a pipeline that failed to build. */
+  readonly errors: string[] = [];
+
   private constructor(renderer: WebGPURenderer, device: GPUDevice, timingMethod: PerfTimingMethod) {
     this.renderer = renderer;
     this.device = device;
     this.timingMethod = timingMethod;
+    // A failed pipeline makes WebGPU skip its dispatches silently, which
+    // would read as a speedup. Collect the errors so runs can fail on them.
+    device.addEventListener('uncapturederror', (event) => {
+      this.errors.push((event as GPUUncapturedErrorEvent).error.message);
+    });
+  }
+
+  /** Throw if WebGPU reported an error since the last call. */
+  assertNoErrors(context: string): void {
+    if (this.errors.length === 0) return;
+    const messages = this.errors.splice(0);
+    throw new Error(`${context}: WebGPU reported ${messages.length} error(s): ${messages[0]}`);
   }
 
   /**
