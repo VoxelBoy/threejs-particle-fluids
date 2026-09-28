@@ -34,10 +34,11 @@ The air has to fill something, so smoke needs a [container](simulation.md#the-co
 | `source`      | center of the floor | Where smoke is released and the air is heated.                          |
 | `radius`      | 0.15                | Radius of the source in metres.                                         |
 | `rate`        | 4000                | Tracers released per second. More makes denser, finer smoke.            |
+| `maxRate`     | twice `rate`        | The highest `rate` you'll set later. It sizes the pool of tracers.      |
 | `lifetime`    | 6                   | Seconds each tracer lives before it fades out.                          |
 | `heat`        | 3                   | How hard heated air rises, as upward acceleration in m/s². 0 stops it.  |
 | `cooling`     | 0.6                 | How fast the air cools, per second. Higher values make a shorter plume. |
-| `density`     | 0.7                 | How opaque the smoke looks.                                             |
+| `opacity`     | 0.7                 | How opaque the smoke looks.                                             |
 | `color`       | `0xd8dfe6`          | Color of lit smoke.                                                     |
 | `shadowColor` | `0x3b4758`          | Color of smoke in its own shadow.                                       |
 
@@ -49,15 +50,16 @@ Smoke is lit from a fixed direction, from above and to the left, not by your sce
 
 ```ts
 smoke.heat = 5; // a stronger plume
-smoke.density = 1.2; // thicker-looking smoke
+smoke.cooling = 0.3; // a taller plume
+smoke.opacity = 1.2; // thicker-looking smoke
 smoke.rate = 2000; // less smoke
 smoke.source.x += 0.1; // move the source; it's a Vector3 you change in place
 smoke.emit(new Vector3(0.2, 0.5, 0)); // one extra puff anywhere
 ```
 
-- `rate` can go down freely, but it can't go much above its starting value. The pool of tracers is sized from the starting `rate` and `lifetime`, and extra tracers are dropped once it's full. Start with the highest rate you plan to use.
-- `emit` works once the simulation has started. For a burst, call it many times in one frame.
-- `lifetime`, `color`, and `shadowColor` are fixed once added. Cooling can change after the first step through `smoke.gasSystem.cooling`. For other settings, see [The objects underneath](simulation.md#the-objects-underneath).
+- `rate` can go down freely, and up as far as `maxRate`. The pool of tracers is sized from `maxRate` and `lifetime`. A higher `rate` is capped at `maxRate`, with a warning in the console. To turn the smoke up further while it runs, pass a higher `maxRate` to `addSmoke`.
+- `emit` works once the simulation has started. It returns `false` when every tracer is still alive, so nothing was released. For a burst, call it many times in one frame.
+- `radius`, `maxRate`, `lifetime`, `color`, and `shadowColor` are fixed once added. For other settings, see [The objects underneath](simulation.md#the-objects-underneath).
 
 ## Where smoke is drawn
 
@@ -67,8 +69,8 @@ The smoke is hidden behind solid objects in your scene and shows in front of the
 
 ## Limits
 
-- **Gas and liquid can't be simulated together.** Air is about 800 times lighter than water, and particle solvers like this one can't handle that at the interface: in our tests, air either shot through the water as loose particles or got stuck at the bottom, never forming believable bubbles. So smoke can't share a simulation with liquids, soft bodies, or cloth, and the first `step()` throws if you add both. For smoke and water in the same scene, use two simulations, as below.
-- **One smoke source per simulation.** A second `addSmoke` throws on the first step.
+- **Gas and liquid can't be simulated together.** Air is about 800 times lighter than water, and particle solvers like this one can't handle that at the interface: in our tests, air either shot through the water as loose particles or got stuck at the bottom, never forming believable bubbles. So smoke can't share a simulation with liquids, soft bodies, or cloth. Whichever you add second, the `add` call throws. For smoke and water in the same scene, use two simulations, as below.
+- **One smoke source per simulation.** A second `addSmoke` throws.
 - **Obstacles work, with a jolt at the start.** The air flows around them once it's running. But the air first fills the whole container, including the inside of obstacles, and the first step pushes that air out, so there's a short burst of motion. The air inside an obstacle still counts toward the `particles` budget. Keep obstacles in a smoke scene small.
 
 ## Smoke and water in one scene

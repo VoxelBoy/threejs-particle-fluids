@@ -4,24 +4,24 @@
 
 ## Error messages
 
-| Error                                                                                                                   | Fix                                                                                                                                            |
-| ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `createParticleRenderer: WebGPU is unavailable, …`                                                                      | Use a browser with WebGPU and hardware acceleration on, served from `localhost` or HTTPS.                                                      |
-| ``addSmoke: smoke needs a `container` for the air to fill``                                                             | Pass `container` to `new Simulation`. See [Smoke needs a container](smoke.md#smoke-needs-a-container).                                         |
-| `Simulation: addFluid must happen before the first step` (or `addSmoke`, `addSoftbody`, `addCloth`, `adding colliders`) | Everything is added before the first `step()`. See [Add everything before the first step](simulation.md#add-everything-before-the-first-step). |
-| `Simulation: smoke can’t share a simulation with liquids, soft bodies, or cloth`                                        | Put the smoke in its own `Simulation`. See [Smoke limits](smoke.md#limits).                                                                    |
-| `Simulation: only one smoke source is supported`                                                                        | Call `addSmoke` once per simulation.                                                                                                           |
-| `Simulation: add a fluid, smoke, soft body, or cloth before stepping`                                                   | Obstacles alone don't simulate anything. Add something for them to affect.                                                                     |
-| ``addFluid: give either `box` or `mesh` ``                                                                              | Pass exactly one of them.                                                                                                                      |
-| `addFluid: the fluid has no room; check its box and the container`                                                      | The box is outside the container, or filled by obstacles, soft bodies, or cloth. Move or enlarge it.                                           |
-| `addSoftbody: the mesh is too small for the particle size`                                                              | Make the mesh bigger, or raise `particles` so each particle is smaller.                                                                        |
-| ``Fluid.thickness: give `thickness` when adding the fluid to change it later``                                          | Pass `thickness` above 0 in `addFluid`. See [Live settings](fluids.md#live-settings).                                                          |
-| `… is created when the simulation starts (on the first step)`                                                           | Handle properties such as `fluid.surface`, `softbody.mesh`, and `smoke.emit` exist after the first `step()` or `await sim.start()`.            |
-| `Simulation.particles is created on the first step` (or `Simulation.loop`)                                              | The same: read them after the first `step()`.                                                                                                  |
-| `bakeMeshToSdf: mesh appears non-watertight — …`                                                                        | A mesh given to `addMesh` has holes or doubled faces. Fix it, or use a simplified closed copy.                                                 |
-| `SDFCollider.setTransform: scale must be uniform`                                                                       | A mesh given to `addMesh` is scaled unevenly. Use the same scale on every axis.                                                                |
+| Error                                                                                                                                | Fix                                                                                                                                             |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createParticleRenderer: WebGPU is unavailable, …`                                                                                   | Use a browser with WebGPU and hardware acceleration on, served from `localhost` or HTTPS.                                                       |
+| ``addSmoke: smoke needs a `container` for the air to fill``                                                                          | Pass `container` to `new Simulation`. See [Smoke needs a container](smoke.md#smoke-needs-a-container).                                          |
+| `Simulation: addFluid must happen before the first step() or start()` (or `addSmoke`, `addSoftbody`, `addCloth`, `adding obstacles`) | Everything is added before the first `step()`. See [Add everything before the first step](simulation.md#add-everything-before-the-first-step).  |
+| `addSmoke: gas and liquid can’t be simulated together, …` (or `addFluid`, `addSoftbody`, `addCloth`)                                 | Smoke can't share a simulation with liquids, soft bodies, or cloth. Put the smoke in its own `Simulation`. See [Smoke limits](smoke.md#limits). |
+| `addSmoke: a simulation can have one smoke source`                                                                                   | Call `addSmoke` once per simulation.                                                                                                            |
+| `Simulation: add a fluid, smoke, soft body, or cloth before stepping`                                                                | Obstacles alone don't simulate anything. Add something for them to affect.                                                                      |
+| ``addFluid: give either `box` or `mesh` ``                                                                                           | Pass exactly one of them.                                                                                                                       |
+| `addFluid: the fluid has no room; check its box and the container`                                                                   | The box is outside the container, or filled by obstacles, soft bodies, or cloth. Move or enlarge it.                                            |
+| `addSoftbody: the mesh is too small for the particle size`                                                                           | Make the mesh bigger, or raise `particles` so each particle is smaller.                                                                         |
+| ``Fluid.thickness: pass `thickness` to addFluid, even as 0, to be able to change it``                                                | Pass `thickness` in `addFluid`, even as 0. See [Live settings](fluids.md#live-settings).                                                        |
+| `… is created when the simulation starts (on the first step)`                                                                        | Handle properties such as `fluid.surface`, `softbody.mesh`, and `smoke.emit` exist after the first `step()` or `await sim.start()`.             |
+| `Simulation.particleSystem is created on the first step` (or `Simulation.loop`)                                                      | The same: read them after the first `step()`.                                                                                                   |
+| `bakeMeshToSdf: mesh appears non-watertight — …`                                                                                     | A mesh given to `addMesh` has holes or doubled faces. Fix it, or use a simplified closed copy.                                                  |
+| `SDFCollider.setTransform: scale must be uniform`                                                                                    | A mesh given to `addMesh` is scaled unevenly. Use the same scale on every axis.                                                                 |
 
-Errors from the first step reject the promise that `step()` or `start()` returns. After one, that `Simulation` can't be repaired: every later `step()` fails the same way, and every `add` call throws. Call `sim.dispose()`, which shows your meshes again, fix the cause, and build a new one.
+Errors from the first step reject the promise that `step()` or `start()` returns. The simulation isn't left stuck: your meshes are shown again, and you can call `start()` or `step()` again once the cause is fixed. Most causes, such as a mesh too small for the particle size, come from the options or the `add` calls, which can't be changed afterwards, so build a new `Simulation` with the fix.
 
 ## Nothing shows up
 
@@ -29,7 +29,7 @@ Errors from the first step reject the promise that `step()` or `start()` returns
 - **The camera can't see it.** Everything is in metres. A 1 m tank needs the camera a couple of metres away, with a near plane around 0.01.
 - **No lights, or the environment map came too late.** Soft bodies and cloth need lights. Liquid needs `scene.environment`, set before the first `step()`. See [Lighting](getting-started.md#lighting).
 - **It fell out of view.** Without a container or a floor, everything falls forever. Add a `container` or `sim.addFloor()`.
-- **The liquid vanishes as it spreads.** Liquid is drawn only inside the container, or without one, in a box around where it started. Give the simulation a `container` that covers everywhere the liquid can go.
+- **The liquid vanishes as it spreads.** Liquid is drawn only inside the container, or without one, in a box around where it started. The simulation warns about this in the console. Give it a `container` that covers everywhere the liquid can go.
 
 ## Seeing what's simulated
 
@@ -54,7 +54,7 @@ This hides the rendered water, smoke, soft bodies, and cloth, and draws the raw 
 
 - **Particle count** sets the cost of almost everything. Lower `particles`. Between 5,000 and 50,000 is a sensible range, and 20,000 is the default.
 - **Soft bodies and cloth in liquid** are the most expensive combination, because the liquid has to track moving solids every step. Fewer or smaller bodies help.
-- **Thick liquids** (`thickness` above 0) do extra work every step.
+- **Thick liquids** do extra work every step. That includes any fluid given `thickness`, even as 0.
 - **Smoke** costs more with higher `rate` and `lifetime`, and a bigger container means more air.
 - **Big meshes** in `addMesh`, `addSoftbody`, or `addFluid({ mesh })` slow down the first step, not the frames after it. Use simplified meshes, or do the setup behind a loading screen; see **Loading** under [Stepping](simulation.md#stepping).
 - **Screen size.** Liquid and smoke are drawn per pixel. A capped pixel ratio, such as `renderer.setPixelRatio(Math.min(devicePixelRatio, 2))`, keeps high-density screens from doubling the cost.
@@ -71,7 +71,7 @@ This hides the rendered water, smoke, soft bodies, and cloth, and draws the raw 
 
 ## Smoke problems
 
-- **Smoke is thin or grainy.** Raise `rate`, and set it high from the start, since it can't grow much later. Raise `density` to make the same smoke look thicker.
+- **Smoke is thin or grainy.** Raise `rate`. To raise it while the smoke runs, pass a `maxRate` to `addSmoke` that covers it; above `maxRate`, the rate is capped and the console shows a warning. Raise `opacity` to make the same smoke look thicker.
 - **Smoke doesn't rise.** Raise `heat`. At `heat: 0`, heated air doesn't rise.
 - **The plume dies out too low.** Lower `cooling`, or raise `lifetime` so tracers live long enough to reach the top.
 - **Smoke stops short of the top.** Smoke is removed in the top tenth of the container. Make the container taller.

@@ -44,7 +44,7 @@ These pages use the word _material_ for a kind of physics that runs on a group o
 | `sim.addCloth`                                                 | `Cloth`    | [Cloth](cloth.md)                                              |
 | `sim.addSmoke`                                                 | `Smoke`    | [Smoke](smoke.md)                                              |
 | `sim.showParticles`                                            |            | [Troubleshooting](troubleshooting.md#seeing-whats-simulated)   |
-| `sim.particles`, `sim.loop`, `fluid.fluidSystem`, …            |            | [The objects underneath](simulation.md#the-objects-underneath) |
+| `sim.particleSystem`, `sim.loop`, `fluid.fluidSystem`, …       |            | [The objects underneath](simulation.md#the-objects-underneath) |
 
 ### Low-level exports
 

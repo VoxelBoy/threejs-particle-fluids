@@ -23,7 +23,7 @@ sim.addFloor(); // at y = 0
 sim.addFloor({ height: -0.5 });
 ```
 
-An endless flat floor at `height` (default 0). A [container](simulation.md#the-container) already has a floor at its bottom, so you only need this without one.
+An endless flat floor at `height` (default 0). A [container](simulation.md#the-container) already has a floor at its bottom, so you only need this without one. Floors can't move.
 
 ## Sphere
 
@@ -62,7 +62,14 @@ sim.addBox({
 sim.addCapsule({ start: new Vector3(0, 0, 0), end: new Vector3(0, 0.6, 0), radius: 0.03 });
 ```
 
-A rod with rounded ends, from `start` to `end`. Good for posts, handles, and limbs. Capsules can't move.
+A rod with rounded ends, from `start` to `end`. Good for posts, handles, and limbs.
+
+| Option   | Default  | What it does                                                        |
+| -------- | -------- | ------------------------------------------------------------------- |
+| `start`  | required | One end of the rod.                                                 |
+| `end`    | required | The other end.                                                      |
+| `radius` | required | Radius in metres.                                                   |
+| `follow` | none     | An `Object3D` to follow. See [Moving obstacles](#moving-obstacles). |
 
 ## Any mesh
 
@@ -90,7 +97,7 @@ The obstacle follows `proxy`'s world position, rotation, and scale, including th
 
 ## Moving obstacles
 
-`addSphere` and `addBox` take a `follow` object. Move the object as you normally would, and the obstacle moves with it and pushes things out of the way:
+`addSphere`, `addBox`, and `addCapsule` take a `follow` object. Move the object as you normally would, and the obstacle moves with it and pushes things out of the way:
 
 ```ts
 const ball = new Mesh(new SphereGeometry(0.2), new MeshStandardMaterial());
@@ -106,9 +113,9 @@ async function frame(time: number) {
 requestAnimationFrame(frame);
 ```
 
-With `follow`, the obstacle's position comes from the object, so `center` is ignored. A box also takes the object's rotation. The object's scale is ignored, so keep `radius` and `size` matched to what you draw.
+With `follow`, the obstacle's position comes from the object, so `center` is ignored. A box also takes the object's rotation. A capsule keeps the length and direction from `start` to `end`: its middle moves to the object's position, and it doesn't rotate. The object's scale is ignored, so keep `radius` and `size` matched to what you draw.
 
-A moving sphere or box also drags what it touches along with it by friction, like a spoon pulling honey. That drag follows the object's movement from place to place, not its spin. A moving mesh from `addMesh` pushes things but doesn't drag them.
+A moving sphere, box, or capsule also drags what it touches along with it by friction, like a spoon pulling honey. That drag follows the object's movement from place to place, not its spin. A moving mesh from `addMesh` pushes things but doesn't drag them.
 
 ## Friction
 

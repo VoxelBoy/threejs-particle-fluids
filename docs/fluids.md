@@ -23,11 +23,11 @@ The liquid starts at rest wherever you put it, then falls and flows. If the box 
 | `surfaceTension` | 0.1        | Pulls the liquid into round drops and smooth sheets. Above about 0.25, thin streams break up. |
 | `vorticity`      | 0.02       | Keeps swirls and splashes lively. 0.02 to 0.1.                                                |
 | `adhesion`       | 0.1        | How much the liquid clings to soft bodies and cloth.                                          |
-| `thickness`      | 0          | Extra thickness for honey-like liquids that fold and coil. About 20 for honey.                |
+| `thickness`      | none       | Extra thickness for honey-like liquids that fold and coil. About 20 for honey.                |
 | `color`          | `0x3a9fcf` | Tint of the liquid. Shorthand for `appearance.color`.                                         |
 | `appearance`     | —          | Everything about the look. See [Appearance](#appearance).                                     |
 
-`viscosity` and `thickness` both make liquid flow more slowly, in different ways. `viscosity` is cheap and works up to about syrup. For anything thicker, such as honey that folds and coils, raise `thickness`. It turns on a slower calculation that stays stable at high values, and it costs more every step. Honey keeps a low `viscosity` because `thickness` does the work.
+`viscosity` and `thickness` both make liquid flow more slowly, in different ways. `viscosity` is cheap and works up to about syrup. For anything thicker, such as honey that folds and coils, use `thickness`. Passing it, even as 0, turns on a slower calculation that stays stable at high values, and it costs more every step. Honey keeps a low `viscosity` because `thickness` does the work.
 
 ## Live settings
 
@@ -39,9 +39,10 @@ water.surfaceTension = 0.05;
 water.vorticity = 0.06;
 water.adhesion = 0.15;
 water.setAppearance({ color: 0xc8102e, roughness: 0.2 });
+water.mesh; // the liquid surface in the scene, once the simulation has started
 ```
 
-`thickness` is the one exception. After the first step, you can only change it if it was above 0 when the simulation started; otherwise setting it throws. For a liquid you can turn from water into honey while it runs, start it at a small value such as 0.1.
+`thickness` is the one exception. You can only change it if you passed `thickness` to `addFluid`, even as 0; otherwise setting it throws. For a liquid you can turn from water into honey while it runs, pass `thickness: 0` and raise it later.
 
 For a setting not listed here, reach the object underneath. See [The objects underneath](simulation.md#the-objects-underneath).
 
@@ -114,7 +115,7 @@ renderer.domElement.addEventListener('pointerup', async (event) => {
 
 `uv` runs from 0 to 1 across the canvas, with y pointing down.
 
-`Simulation` has no splash method. The demo's click-to-splash runs a small compute shader that pushes the particles near `point`; see `interact` in [`demo/presets/liquids.ts`](../demo/presets/liquids.ts). You can run the same kind of shader on [`sim.particles`](simulation.md#the-objects-underneath) between steps. Without one, `pick` is still good for placing a mesh where the user clicked.
+`Simulation` has no splash method. The demo's click-to-splash runs a small compute shader that pushes the particles near `point`; see `interact` in [`demo/presets/liquids.ts`](../demo/presets/liquids.ts). You can run the same kind of shader on [`sim.particleSystem`](simulation.md#the-objects-underneath) between steps. Without one, `pick` is still good for placing a mesh where the user clicked.
 
 ## More than one liquid
 

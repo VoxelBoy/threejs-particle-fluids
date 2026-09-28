@@ -35,12 +35,12 @@ jelly.mesh; // the deforming mesh in the scene, once the simulation has started
 jelly.source; // the mesh you passed in
 ```
 
-- `density` is fixed once added.
+- `jelly.density` reports the density. It's fixed once added.
 - `jelly.mesh` stays at the origin. Its vertices move, not its transform, so `jelly.mesh.position` won't tell you where the body is. To find the body, read its particles back from the GPU and average them:
 
   ```ts
-  const { positions } = await sim.particles.readback(); // x, y, z, w for every particle
-  const { start, count } = jelly.mesh.softbody.particleRange(jelly.mesh.bodyIndex);
+  const { positions } = await sim.particleSystem.readback(); // x, y, z, w for every particle
+  const { start, count } = jelly.softbodySystem.particleRange(jelly.bodyIndex);
   const center = new Vector3();
   const point = new Vector3();
   for (let i = start; i < start + count; i++) center.add(point.fromArray(positions, 4 * i));
@@ -92,7 +92,7 @@ Soft bodies collide with each other, with [cloth](cloth.md), with [obstacles](ob
 ## The mesh
 
 - **It must be closed**, with no holes, so there's a clear inside to fill.
-- **Its material carries over.** If the mesh's material is a `MeshStandardMaterial` or `MeshPhysicalMaterial` from `three`, the deforming copy uses its color, roughness, metalness, and texture maps. The maps need the geometry to have UVs. Anything else gets a plain orange-brown. That includes the node materials from `three/webgpu`, such as `MeshStandardNodeMaterial`, and meshes with an array of materials.
+- **Its material carries over.** If the mesh's material is a `MeshStandardMaterial` or `MeshPhysicalMaterial` from `three`, or a `MeshStandardNodeMaterial` or `MeshPhysicalNodeMaterial` from `three/webgpu`, the deforming copy uses its color, roughness, metalness, and texture maps. The maps need the geometry to have UVs. Anything else gets a plain orange-brown, and so do meshes with an array of materials.
 - **Loaded models.** A glTF file loads as a group. Pass the mesh inside it. The position, rotation, and scale of its parents count.
 
   ```ts

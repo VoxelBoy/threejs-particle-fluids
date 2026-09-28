@@ -29,7 +29,7 @@ describe('Simulation', () => {
       });
       sim.addFluid({ box: new Box3(new Vector3(-0.3, 0, -0.2), new Vector3(0, 0.3, 0.2)) });
       await sim.step(1 / 60);
-      console.log(`[simulation] ${sim.particleCount} particles, radius ${sim.particleSize}`);
+      console.log(`[simulation] ${sim.particleCount} particles, radius ${sim.particleRadius}`);
       expect(sim.particleCount).toBeGreaterThan(6000 * 0.8);
       expect(sim.particleCount).toBeLessThan(6000 * 1.2);
       sim.dispose();
@@ -59,14 +59,14 @@ describe('Simulation', () => {
       const block = sim.addSoftbody({ mesh: heavy, density: 3000, softness: 0.1 });
       for (let i = 0; i < 150; i++) await sim.step(1 / 60);
 
-      const snapshot = await sim.particles.readback();
+      const snapshot = await sim.particleSystem.readback();
       const meanY = (start: number, count: number) => {
         let sum = 0;
         for (let i = start; i < start + count; i++) sum += snapshot.positions[i * 4 + 1]!;
         return sum / count;
       };
-      const ballRange = ball.mesh.softbody.particleRange(ball.mesh.bodyIndex);
-      const blockRange = block.mesh.softbody.particleRange(block.mesh.bodyIndex);
+      const ballRange = ball.softbodySystem.particleRange(ball.bodyIndex);
+      const blockRange = block.softbodySystem.particleRange(block.bodyIndex);
       const ballY = meanY(ballRange.start, ballRange.count);
       const blockY = meanY(blockRange.start, blockRange.count);
       console.log(
@@ -96,6 +96,47 @@ describe('Simulation', () => {
       expect(() => sim.addFloor()).toThrow(/before the first step/);
       water.viscosity = 0.05;
       expect(water.fluidSystem.viscosity).toBeCloseTo(0.05);
+      sim.dispose();
+    } finally {
+      renderer.dispose();
+    }
+  });
+  it('keeps its settings working before and after the start', async () => {
+    const renderer = await createParticleRenderer();
+    try {
+      const base = { renderer, scene: new Scene(), camera: new PerspectiveCamera() };
+
+      // Mixing smoke with other materials fails at the add call that causes it.
+      const smoky = new Simulation({ ...base, container: tank() });
+      smoky.addSmoke();
+      expect(() => smoky.addFluid({ box: tank() })).toThrow(/gas and liquid/);
+      expect(() => smoky.addSmoke()).toThrow(/one smoke source/);
+      const wet = new Simulation({ ...base, container: tank() });
+      wet.addFluid({ box: tank() });
+      expect(() => wet.addSmoke()).toThrow(/gas and liquid/);
+
+      const sim = new Simulation({ ...base, container: tank(), particles: 2000 });
+      const thick = sim.addFluid({
+        box: new Box3(new Vector3(-0.3, 0, -0.2), new Vector3(0, 0.3, 0.2)),
+        thickness: 0,
+      });
+      const thin = sim.addFluid({
+        box: new Box3(new Vector3(0, 0, -0.2), new Vector3(0.3, 0.3, 0.2)),
+      });
+      const gravity = sim.gravity;
+
+      // Overlapping steps share one run.
+      const first = sim.step(1 / 60);
+      expect(sim.step(1 / 60)).toBe(first);
+      await first;
+
+      expect(sim.gravity).toBe(gravity);
+      gravity.set(0, -2, 0);
+      await sim.step(1 / 60);
+      expect(sim.loop.gravity.y).toBeCloseTo(-2);
+
+      thick.thickness = 20;
+      expect(() => (thin.thickness = 20)).toThrow(/even as 0/);
       sim.dispose();
     } finally {
       renderer.dispose();

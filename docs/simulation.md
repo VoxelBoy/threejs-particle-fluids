@@ -9,7 +9,7 @@ This page covers the `Simulation` class itself: the container, what you can add,
 `container` is a `Box3` that everything stays inside. It has walls on the bottom and all four sides. The top is open unless you pass `closed: true`.
 
 - The container is invisible. Draw your own tank mesh, or an outline with `scene.add(new Box3Helper(container))`.
-- Liquid is drawn only inside the container. Without one, it's drawn in a box around where things start, with some room to spread.
+- Liquid is drawn only inside the container. Without one, it's drawn in a box around where things start, with some room to spread, and the simulation logs a warning to the console.
 - Without a container, nothing stops things falling forever. Add a floor with [`addFloor`](obstacles.md#floor) instead.
 - [Smoke](smoke.md) always needs a container, because the air fills it.
 - Soft bodies and cloth must start fully inside the container, clear of obstacles and of each other. The walls push back anything outside them, which squashes or bunches it. Liquid is the only thing trimmed to fit.
@@ -37,7 +37,7 @@ Everything is in metres, seconds, and kilograms. Densities are in kg/m³ (water 
 
 ## Add everything before the first step
 
-The first `step()` builds the simulation from everything you added, and nothing can be added after it. Adding later throws, for example `Simulation: addFluid must happen before the first step`.
+The first `step()` builds the simulation from everything you added, and nothing can be added after it. Adding later throws, for example `Simulation: addFluid must happen before the first step() or start()`.
 
 You can still change settings such as viscosity, softness, wind, and smoke heat at any time, through the object each `add` method returns. The guide pages list these live settings. Gravity is on the simulation itself, as [`sim.gravity`](#gravity).
 
@@ -86,10 +86,10 @@ The count is approximate. When liquid fills the space around obstacles or soft b
 You can set the size directly instead, as a radius in metres. `particles` is then ignored:
 
 ```ts
-new Simulation({ renderer, scene, camera, container, particleSize: 0.01 });
+new Simulation({ renderer, scene, camera, container, particleRadius: 0.01 });
 ```
 
-Once the simulation has started, `sim.particleCount` and `sim.particleSize` report what it chose. To see the particles themselves, set `sim.showParticles = true`. It hides the rendered water, smoke, cloth, and soft bodies and draws the raw particles instead, which helps when something looks wrong.
+Once the simulation has started, `sim.particleCount` and `sim.particleRadius` report what it chose. To see the particles themselves, set `sim.showParticles = true`. It hides the rendered water, smoke, cloth, and soft bodies and draws the raw particles instead, which helps when something looks wrong.
 
 ## Options
 
@@ -99,7 +99,7 @@ Once the simulation has started, `sim.particleCount` and `sim.particleSize` repo
 | `container`                   | none                    | A `Box3` with walls on the bottom and sides. [Smoke](smoke.md) needs one.                                                                                                                                                                                                                                                   |
 | `closed`                      | `false`                 | Put a lid on the container. Smoke always gets one.                                                                                                                                                                                                                                                                          |
 | `particles`                   | 20,000                  | About how many particles to use in total.                                                                                                                                                                                                                                                                                   |
-| `particleSize`                | fits `particles`        | Radius of every particle in metres. Overrides `particles`.                                                                                                                                                                                                                                                                  |
+| `particleRadius`              | fits `particles`        | Radius of every particle in metres. Overrides `particles`.                                                                                                                                                                                                                                                                  |
 | `gravity`                     | `(0, -9.81, 0)`         | Gravity in m/s². Smoke scenes default to `(0, -1, 0)`; see [Smoke](smoke.md).                                                                                                                                                                                                                                               |
 | `substeps`                    | chosen for you, 2 to 24 | How many smaller pieces each 1/60 s step is cut into. More pieces make collisions and stiff objects (firm soft bodies, taut cloth) more reliable, and cost more. The default depends on the particle size and what's in the scene. See [Things pass through each other](troubleshooting.md#things-pass-through-each-other). |
 
@@ -109,8 +109,8 @@ The simulation moves forward in fixed steps of 1/60 s. Without an argument, `sim
 
 - **Timing.** Without an argument, `step()` keeps real-time speed whatever the display's refresh rate, so it looks the same on a 60 Hz and a 120 Hz screen. On a 120 Hz screen, about every other frame runs no step at all. After a slow frame it catches up by at most four steps and drops the rest, so a stall never snowballs.
 - **Exact steps.** `sim.step(1 / 60)` advances exactly 1/60 s, however long the frame took. Use this for recording video or for tests. Don't pass the frame's elapsed time: steps of changing length make the simulation less stable.
-- **The frame loop.** Use `requestAnimationFrame` as shown, so each frame waits for `step()` to finish before the next one starts. `renderer.setAnimationLoop` doesn't wait for an async callback, so a new step could start before the last one is done.
-- **Pausing.** Stop calling `step()`, and keep rendering if you want the scene to stay on screen. When you resume, the first `step()` catches up by up to four steps (1/15 s), so things jump forward slightly.
+- **The frame loop.** Use `requestAnimationFrame` as shown, so each frame waits for `step()` to finish before the next one starts. A loop that doesn't wait, such as `renderer.setAnimationLoop` with an async callback, is also safe: calling `step()` while one is still running returns the same promise instead of starting another.
+- **Pausing.** Stop calling `step()`, and keep rendering if you want the scene to stay on screen. If `step()` hasn't been called for more than 0.25 s, the next call restarts the clock instead of catching up, so nothing jumps forward when you resume.
 - **Loading.** The first step does the setup: it fills meshes with particles and prepares `addMesh` shapes, which can take a moment for detailed meshes. `await sim.start()` does that part early. It runs on the main thread and blocks the page while it works, so show your loading screen and let the browser draw it before you call `start()`, or the screen never appears. An animated spinner freezes until it finishes.
 
   ```ts
@@ -126,14 +126,14 @@ The simulation moves forward in fixed steps of 1/60 s. Without an argument, `sim
 
 ## Gravity
 
-`sim.gravity` is a live `Vector3`. Change it in place at any time:
+`sim.gravity` is a live `Vector3`. Change it in place at any time, before or after the simulation starts:
 
 ```ts
 sim.gravity.set(0, -3, 0); // moon-ish
 sim.gravity.set(4, -9.81, 0); // tip the world sideways
 ```
 
-- Read `sim.gravity` each time you change it. Don't keep a reference from before the first step: the vector is replaced when the simulation starts, and the old one stops having any effect.
+- It's always the same vector, so you can keep a reference to it. A change takes effect on the next step.
 - In a smoke scene, `addSmoke` sets gravity to `(0, -1, 0)` and overwrites any change you made before calling it. To use a different value, pass `gravity` to `new Simulation`, or change `sim.gravity` after `addSmoke`.
 
 ## Cleaning up
@@ -142,35 +142,26 @@ sim.gravity.set(4, -9.81, 0); // tip the world sideways
 sim.dispose();
 ```
 
-`sim.dispose()` removes everything the simulation added to the scene, and disposes the liquid and smoke renderers and the `addMesh` shapes. Meshes you passed in, such as the source of a soft body, are shown again. After it, the simulation can't be used again.
+`sim.dispose()` removes everything the simulation added to the scene and frees what it drew: the liquid and smoke renderers, the soft body and cloth meshes and their materials, and the `addMesh` shapes. A `material` you passed to `addCloth` is left alone, since you may use it elsewhere; dispose it yourself when you're done with it. Meshes you passed in, such as the source of a soft body, are shown again. After it, the simulation can't be used again.
 
-It doesn't free everything. It doesn't release the GPU buffers that hold the particles. The meshes drawn for soft bodies and cloth are taken out of the scene, but their geometry and materials are not disposed, including the default cloth material the simulation made. To free those, dispose them yourself:
-
-```ts
-import type { Material } from 'three';
-
-jelly.mesh.geometry.dispose();
-jelly.mesh.material.dispose();
-curtain.mesh.geometry.dispose();
-(curtain.mesh.material as Material).dispose();
-sim.dispose();
-```
+It doesn't release the GPU buffers that hold the particles.
 
 ## The objects underneath
 
 `Simulation` is built from the [low-level classes](advanced/low-level-api.md). Often you only need one setting it doesn't expose. The simulation and each handle give you the object underneath, once the simulation has started:
 
-| Property                                            | Gives you                                                                                                                   |
-| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `sim.particles`                                     | The [`ParticleSystem`](advanced/low-level-api.md#particles) holding every particle.                                         |
-| `sim.loop`                                          | The [`SimLoop`](advanced/low-level-api.md#the-solver-loop). Change `loop.substeps` here while running.                      |
-| `fluid.fluidSystem`                                 | The [`FluidSystem`](advanced/fluid-system.md).                                                                              |
-| `fluid.surface`                                     | The [`FluidSurfaceRenderer`](advanced/fluid-system.md#drawing-the-liquid-fluidsurfacerenderer) drawing it.                  |
-| `softbody.mesh`                                     | The [`SoftbodyMesh`](advanced/softbody-system.md#softbodymesh) drawing the body.                                            |
-| `softbody.mesh.softbody`, `softbody.mesh.bodyIndex` | The [`SoftbodySystem`](advanced/softbody-system.md) holding every soft body in the simulation, and this body's index in it. |
-| `cloth.clothSystem`                                 | The [`ClothSystem`](advanced/cloth-system.md).                                                                              |
-| `cloth.mesh`                                        | The cloth surface mesh.                                                                                                     |
-| `smoke.gasSystem`                                   | The [`GasSystem`](advanced/gas-system.md).                                                                                  |
+| Property                                        | Gives you                                                                                                                   |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `sim.particleSystem`                            | The [`ParticleSystem`](advanced/low-level-api.md#particles) holding every particle.                                         |
+| `sim.loop`                                      | The [`SimLoop`](advanced/low-level-api.md#the-solver-loop). Change `loop.substeps` here while running.                      |
+| `fluid.fluidSystem`                             | The [`FluidSystem`](advanced/fluid-system.md).                                                                              |
+| `fluid.surface`                                 | The [`FluidSurfaceRenderer`](advanced/fluid-system.md#drawing-the-liquid-fluidsurfacerenderer) drawing it.                  |
+| `fluid.mesh`                                    | The liquid surface mesh in the scene.                                                                                       |
+| `softbody.mesh`                                 | The [`SoftbodyMesh`](advanced/softbody-system.md#softbodymesh) drawing the body.                                            |
+| `softbody.softbodySystem`, `softbody.bodyIndex` | The [`SoftbodySystem`](advanced/softbody-system.md) holding every soft body in the simulation, and this body's index in it. |
+| `cloth.clothSystem`                             | The [`ClothSystem`](advanced/cloth-system.md).                                                                              |
+| `cloth.mesh`                                    | The cloth surface mesh.                                                                                                     |
+| `smoke.gasSystem`                               | The [`GasSystem`](advanced/gas-system.md).                                                                                  |
 
 For example, to give a cloth more air drag than `Simulation` sets:
 
@@ -182,7 +173,7 @@ curtain.clothSystem.drag = 0.6;
 
 For settings the handle already has, such as wind, softness, and viscosity, change them on the handle. The handle copies its wind into the `ClothSystem` every step, so a change made on `curtain.clothSystem.wind` is lost. Setting `curtain.softness` rewrites `clothSystem.bendCompliance`. And if you set `fluid.fluidSystem.viscosity` directly, `fluid.viscosity` still reports the old value.
 
-The list of physics the loop runs is fixed once built, so you can't add your own [custom materials](advanced/custom-materials.md) to a `Simulation`. You can still run your own compute shaders on `sim.particles` between steps, for example to push liquid where the user clicks.
+The list of physics the loop runs is fixed once built, so you can't add your own [custom materials](advanced/custom-materials.md) to a `Simulation`. You can still run your own compute shaders on `sim.particleSystem` between steps, for example to push liquid where the user clicks.
 
 ---
 

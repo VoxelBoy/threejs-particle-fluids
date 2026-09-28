@@ -75,11 +75,11 @@ export interface SimulationOptions {
   readonly closed?: boolean;
   /**
    * About how many particles to use in total, which sets the detail and the
-   * cost. Default 20,000. Ignored when `particleSize` is given.
+   * cost. Default 20,000. Ignored when `particleRadius` is given.
    */
   readonly particles?: number;
   /** Radius of every particle in metres. Default: whatever fits the `particles` budget. */
-  readonly particleSize?: number;
+  readonly particleRadius?: number;
   /** Gravity in m/s². Default `(0, -9.81, 0)`, or `(0, -1, 0)` for smoke. Change it later with {@link Simulation.gravity}. */
   readonly gravity?: Vector3;
   /** Solver substeps per step. Default: chosen from the particle size and what's in the scene. */
@@ -99,7 +99,11 @@ export interface FluidOptions {
   readonly vorticity?: number;
   /** Default 0.1. */
   readonly adhesion?: number;
-  /** Extra thickness for honey-like liquids, around 20 for honey. Default 0. */
+  /**
+   * Extra thickness for honey-like liquids, around 20 for honey. Giving it,
+   * even as 0, adds a slower solver that stays stable at these values, and
+   * lets you change {@link Fluid.thickness} later.
+   */
   readonly thickness?: number;
   /** Tint of the liquid. Shorthand for `appearance.color`. */
   readonly color?: number;
@@ -114,6 +118,11 @@ export interface SmokeOptions {
   readonly radius?: number;
   /** Tracers released per second. Default 4000. */
   readonly rate?: number;
+  /**
+   * The highest `rate` you'll set later, which sizes the tracer pool.
+   * Default: twice `rate`. Higher rates are capped to it.
+   */
+  readonly maxRate?: number;
   /** Seconds each tracer lives. Default 6. */
   readonly lifetime?: number;
   /** Upward acceleration of heated air in m/s². Default 3. */
@@ -121,7 +130,7 @@ export interface SmokeOptions {
   /** How fast the air cools, per second. Default 0.6. */
   readonly cooling?: number;
   /** How opaque the smoke looks. Default 0.7. */
-  readonly density?: number;
+  readonly opacity?: number;
   /** Color of lit smoke. Default `0xd8dfe6`. */
   readonly color?: number;
   /** Color of smoke in its own shadow. Default `0x3b4758`. */
@@ -129,7 +138,10 @@ export interface SmokeOptions {
 }
 
 export interface SoftbodyOptions {
-  /** A closed mesh in its current world placement. It's hidden and replaced by a deforming copy. */
+  /**
+   * A closed mesh in its current world placement. It's hidden and replaced by
+   * a deforming copy that keeps its standard material's colors and maps.
+   */
   readonly mesh: Mesh;
   /** 0 is firm rubber, 1 is loose jelly. Default 0.3. */
   readonly softness?: number;
@@ -168,7 +180,11 @@ export interface ColliderOptions {
 }
 
 export interface MovingColliderOptions extends ColliderOptions {
-  /** Follow this object's position (and, for boxes, rotation) as it moves. */
+  /**
+   * Follow this object as it moves. The obstacle's center becomes the
+   * object's position; boxes also take its rotation. The object's scale is
+   * ignored. Moving obstacles drag liquid and cloth along by friction.
+   */
   readonly follow?: Object3D;
 }
 
@@ -183,7 +199,14 @@ type ColliderDef =
       follow?: Object3D;
       friction: number;
     }
-  | { kind: 'capsule'; a: Vector3; b: Vector3; radius: number; friction: number }
+  | {
+      kind: 'capsule';
+      a: Vector3;
+      b: Vector3;
+      radius: number;
+      follow?: Object3D;
+      friction: number;
+    }
   | { kind: 'mesh'; mesh: Mesh; resolution: number; friction: number };
 
 interface FluidEntry {
@@ -244,6 +267,8 @@ export class Simulation {
   private readonly gravityValue: Vector3;
   private particleView = false;
   private started: Promise<void> | undefined;
+  private stepping: Promise<void> | undefined;
+  private lastStepMs = -Infinity;
   private system: ParticleSystem | undefined;
   private simLoop: SimLoop | undefined;
   private radius = 0;
@@ -256,6 +281,7 @@ export class Simulation {
   /** Fill a box or a mesh with liquid. */
   addFluid(options: FluidOptions): Fluid {
     this.assertNotStarted('addFluid');
+    this.assertNoSmoke('addFluid');
     if (!options.box === !options.mesh) throw new Error('addFluid: give either `box` or `mesh`');
     const handle = new Fluid(
       {
@@ -271,6 +297,7 @@ export class Simulation {
         ...options.appearance,
         ...(options.color === undefined ? {} : { color: options.color }),
       },
+      options.thickness !== undefined,
     );
     this.fluids.push({
       handle,
@@ -285,6 +312,12 @@ export class Simulation {
     this.assertNotStarted('addSmoke');
     const container = this.options.container;
     if (!container) throw new Error('addSmoke: smoke needs a `container` for the air to fill');
+    if (this.smokes.length) throw new Error('addSmoke: a simulation can have one smoke source');
+    if (this.fluids.length || this.softbodies.length || this.cloths.length) {
+      throw new Error(
+        'addSmoke: gas and liquid can’t be simulated together, so smoke can’t share a simulation with liquids, soft bodies, or cloth. Use a separate Simulation for the smoke',
+      );
+    }
     const source =
       options.source?.clone() ??
       new Vector3(
@@ -292,10 +325,13 @@ export class Simulation {
         container.min.y,
         container.getCenter(new Vector3()).z,
       );
+    const rate = options.rate ?? 4000;
     const handle = new Smoke({
-      rate: options.rate ?? 4000,
+      rate,
+      maxRate: Math.max(rate, options.maxRate ?? rate * 2),
       heat: options.heat ?? 3,
-      density: options.density ?? 0.7,
+      cooling: options.cooling ?? 0.6,
+      opacity: options.opacity ?? 0.7,
       source,
       sourceRadius: options.radius ?? 0.15,
     });
@@ -307,6 +343,7 @@ export class Simulation {
   /** Turn a closed mesh into a soft body. */
   addSoftbody(options: SoftbodyOptions): Softbody {
     this.assertNotStarted('addSoftbody');
+    this.assertNoSmoke('addSoftbody');
     const handle = new Softbody(options.mesh, {
       softness: options.softness ?? 0.3,
       density: options.density ?? 500,
@@ -318,6 +355,7 @@ export class Simulation {
   /** Add a rectangle of cloth. */
   addCloth(options: ClothOptions): Cloth {
     this.assertNotStarted('addCloth');
+    this.assertNoSmoke('addCloth');
     const handle = new Cloth({
       softness: options.softness ?? 0.75,
       weight: options.weight ?? 0.1,
@@ -363,9 +401,9 @@ export class Simulation {
     });
   }
 
-  /** A solid rod with rounded ends from `start` to `end`. */
+  /** A solid rod with rounded ends from `start` to `end`. With `follow`, it keeps its length and direction and moves with the object. */
   addCapsule(
-    options: ColliderOptions & {
+    options: MovingColliderOptions & {
       readonly start: Vector3;
       readonly end: Vector3;
       readonly radius: number;
@@ -376,6 +414,7 @@ export class Simulation {
       a: options.start.clone(),
       b: options.end.clone(),
       radius: options.radius,
+      ...(options.follow ? { follow: options.follow } : {}),
       friction: friction(options),
     });
   }
@@ -394,13 +433,13 @@ export class Simulation {
     });
   }
 
-  /** Gravity in m/s². Mutate it to change gravity while running. */
+  /** Gravity in m/s². Mutate it to change gravity at any time. */
   get gravity(): Vector3 {
-    return this.simLoop ? this.simLoop.gravity : this.gravityValue;
+    return this.gravityValue;
   }
 
   /** Radius of every particle, in metres. Known once the simulation starts. */
-  get particleSize(): number {
+  get particleRadius(): number {
     return this.radius;
   }
   /** Number of particles. Known once the simulation starts. */
@@ -419,8 +458,8 @@ export class Simulation {
   }
 
   /** The {@link ParticleSystem} underneath, for advanced use. Available once the simulation starts. */
-  get particles(): ParticleSystem {
-    if (!this.system) throw new Error('Simulation.particles is created on the first step');
+  get particleSystem(): ParticleSystem {
+    if (!this.system) throw new Error('Simulation.particleSystem is created on the first step');
     return this.system;
   }
   /** The {@link SimLoop} underneath, for advanced use. Available once the simulation starts. */
@@ -434,19 +473,23 @@ export class Simulation {
    * before rendering. Without `dt`, it keeps pace with the clock at 60 steps
    * per second. The first call builds everything that was added.
    */
-  async step(dt?: number): Promise<void> {
-    await this.start();
-    if (dt === undefined) {
-      await this.stepper.pump(performance.now(), (fixed) => this.advance(fixed));
-    } else {
-      await this.advance(dt);
-    }
-    await this.render();
+  step(dt?: number): Promise<void> {
+    // A step already running (from an animation loop that doesn't wait) covers this frame.
+    this.stepping ??= this.runStep(dt).finally(() => (this.stepping = undefined));
+    return this.stepping;
   }
 
   /** Build the particles, physics, and renderers now instead of on the first step. */
   start(): Promise<void> {
-    this.started ??= Promise.resolve().then(() => this.build());
+    this.started ??= Promise.resolve()
+      .then(() => this.build())
+      .catch((error: unknown) => {
+        // Nothing reaches the GPU before the checks that can fail, so the
+        // scene can be fixed and started again.
+        this.started = undefined;
+        this.restoreSources();
+        throw error;
+      });
     return this.started;
   }
 
@@ -454,20 +497,48 @@ export class Simulation {
   dispose(): void {
     for (const object of [...this.objects, ...this.debug]) object.removeFromParent();
     for (const dispose of this.disposers) dispose();
+    this.disposers.length = 0;
     this.simLoop?.dispose();
     this.system?.dispose();
+    this.restoreSources();
+  }
+
+  private async runStep(dt: number | undefined): Promise<void> {
+    await this.start();
+    if (dt === undefined) {
+      // After a pause, start the clock again instead of catching up.
+      const now = performance.now();
+      if (now - this.lastStepMs > 250) this.stepper.reset();
+      this.lastStepMs = now;
+      await this.stepper.pump(now, (fixed) => this.advance(fixed));
+    } else {
+      await this.advance(dt);
+    }
+    await this.render();
+  }
+
+  /** Show the meshes that soft bodies and liquids were made from again. */
+  private restoreSources(): void {
     for (const { handle } of this.softbodies) handle.source.visible = true;
     for (const { options } of this.fluids) if (options.mesh) options.mesh.visible = true;
   }
 
   private addCollider(def: ColliderDef): void {
-    this.assertNotStarted('adding colliders');
+    this.assertNotStarted('adding obstacles');
     this.colliderDefs.push(def);
   }
 
   private assertNotStarted(what: string): void {
     if (this.started) {
-      throw new Error(`Simulation: ${what} must happen before the first step`);
+      throw new Error(`Simulation: ${what} must happen before the first step() or start()`);
+    }
+  }
+
+  private assertNoSmoke(what: string): void {
+    if (this.smokes.length) {
+      throw new Error(
+        `${what}: gas and liquid can’t be simulated together, so this can’t share a simulation with smoke. Use a separate Simulation for the smoke`,
+      );
     }
   }
 
@@ -476,8 +547,9 @@ export class Simulation {
       mesh.updateWorldMatrix(true, false);
       collider.setTransform(mesh.matrixWorld);
     }
+    this.loop.gravity.copy(this.gravityValue);
     for (const { handle } of this.smokes) {
-      handle.carry += handle.settings.rate * dt;
+      handle.carry += Math.min(handle.settings.rate, handle.settings.maxRate) * dt;
       const count = Math.floor(handle.carry);
       handle.carry -= count;
       const { source, sourceRadius } = handle.settings;
@@ -505,14 +577,13 @@ export class Simulation {
   private build(): void {
     const { renderer, scene, camera, container } = this.options;
     const smoke = this.smokes.length > 0;
-    if (smoke && (this.fluids.length || this.softbodies.length || this.cloths.length)) {
-      throw new Error(
-        'Simulation: smoke can’t share a simulation with liquids, soft bodies, or cloth. Use a separate Simulation for the smoke',
-      );
-    }
-    if (this.smokes.length > 1) throw new Error('Simulation: only one smoke source is supported');
     if (!this.fluids.length && !smoke && !this.softbodies.length && !this.cloths.length) {
       throw new Error('Simulation: add a fluid, smoke, soft body, or cloth before stepping');
+    }
+    if (this.fluids.length && !container) {
+      console.warn(
+        'Simulation: without a `container`, liquid is only drawn near where it starts. Give a container to draw it wherever it flows.',
+      );
     }
 
     // Size the particles. Every particle shares one radius.
@@ -527,7 +598,7 @@ export class Simulation {
       (smoke ? boxVolume(container!) : 0);
     const area = this.cloths.reduce((sum, { options }) => sum + options.width * options.height, 0);
     const r = (this.radius =
-      this.options.particleSize ??
+      this.options.particleRadius ??
       radiusForBudget(volume, area, CLOTH_SPACING, this.options.particles ?? 20000));
     const spacing = 2 * r;
 
@@ -546,7 +617,16 @@ export class Simulation {
           : def.rotation;
         obstacles.push(boxObstacle(center, def.half, rotation));
       }
-      if (def.kind === 'capsule') obstacles.push(capsuleObstacle(def.a, def.b, def.radius));
+      if (def.kind === 'capsule') {
+        const shift = def.follow
+          ? def.follow
+              .getWorldPosition(new Vector3())
+              .sub(def.a.clone().add(def.b).multiplyScalar(0.5))
+          : new Vector3();
+        obstacles.push(
+          capsuleObstacle(def.a.clone().add(shift), def.b.clone().add(shift), def.radius),
+        );
+      }
       if (def.kind === 'floor') obstacles.push((p) => p.y - def.height);
       if (def.kind === 'mesh') {
         const sdf = bakeMeshToSdf(def.mesh.geometry, {
@@ -676,7 +756,7 @@ export class Simulation {
       for (const range of solidRanges) fluid.addBoundary(range);
       handle.system = fluid;
       materials.push(fluid);
-      if (thickness > 0) {
+      if (handle.thickEnabled) {
         handle.thick = new ViscositySolver(fluid, {
           viscosity: thickness,
           iterations: Math.round(16 * Math.cbrt(fluidRanges[i]!.count / 10000)),
@@ -698,7 +778,7 @@ export class Simulation {
       });
       const height = container!.max.y - container!.min.y;
       const gas = new GasSystem(air, {
-        capacity: Math.ceil(handle.settings.rate * (options.lifetime ?? 6) * 1.1) + 1000,
+        capacity: Math.ceil(handle.settings.maxRate * (options.lifetime ?? 6) * 1.1) + 1000,
         lifetime: options.lifetime ?? 6,
         bounds: new Box3(
           container!.min.clone().subScalar(1),
@@ -706,7 +786,7 @@ export class Simulation {
         ),
         heatSources: [{ position: handle.settings.source, radius: handle.settings.sourceRadius }],
         buoyancy: handle.settings.heat,
-        cooling: options.cooling ?? 0.6,
+        cooling: handle.settings.cooling,
       });
       handle.system = gas;
       materials.push(gas, air);
@@ -737,7 +817,10 @@ export class Simulation {
         const slot = walls.addBox(def.center, def.half, { rotation: def.rotation, muS, muK });
         if (def.follow) walls.attach(slot, def.follow);
       }
-      if (def.kind === 'capsule') walls.addCapsule(def.a, def.b, def.radius, { muS, muK });
+      if (def.kind === 'capsule') {
+        const slot = walls.addCapsule(def.a, def.b, def.radius, { muS, muK });
+        if (def.follow) walls.attach(slot, def.follow);
+      }
       if (def.kind === 'mesh') {
         const collider = new SDFCollider(particles, sdfs.get(def.mesh)!, {
           muS,
@@ -801,9 +884,17 @@ export class Simulation {
       );
     });
     this.softbodies.forEach(({ handle, geometry }) => {
+      // Standard and node standard materials share the fields the skin copies.
+      const source = handle.source.material;
       const material =
-        handle.source.material instanceof MeshStandardMaterial ? handle.source.material : undefined;
+        !Array.isArray(source) && 'roughness' in source && 'color' in source
+          ? (source as MeshStandardMaterial)
+          : undefined;
       const mesh = new SoftbodyMesh(softbodySystem!, handle.index, geometry, material);
+      this.disposers.push(() => {
+        mesh.geometry.dispose();
+        mesh.material.dispose();
+      });
       mesh.castShadow = mesh.receiveShadow = true;
       handle.skinned = mesh;
       handle.source.visible = false;
@@ -834,6 +925,10 @@ export class Simulation {
       });
       surface.castShadow = surface.receiveShadow = true;
       handle.surfaceMesh = surface;
+      this.disposers.push(() => {
+        surface.geometry.dispose();
+        if (!options.material) material.dispose();
+      });
       this.show(surface);
       this.debugView(
         createParticleMesh(particles, {
@@ -857,7 +952,7 @@ export class Simulation {
         max: container!.max.clone().setY(top),
         resolution,
         steps: 80,
-        density: handle.settings.density,
+        density: handle.settings.opacity,
         ...(options.color === undefined ? {} : { color: options.color }),
         ...(options.shadowColor === undefined ? {} : { shadowColor: options.shadowColor }),
       });
