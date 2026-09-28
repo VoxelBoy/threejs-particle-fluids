@@ -92,9 +92,10 @@ export interface BuildImplicitMomentPolarKernelArgs {
  *   A_i = (r²/5) Σ_j R_j + Σ_j (x*_j − c_i)(x̃_j − c̄_i)ᵀ,   R_i = polar(A_i)
  *
  * The orientation term sums every member's own rotation `R_j`, read from
- * its orientation at the start of the substep; including only the center's
- * under-regularizes the fit and lets noise build up. Groups outside any body
- * get the identity.
+ * its predicted orientation; including only the center's under-regularizes
+ * the fit and lets noise build up. Reading the orientation from the start of
+ * the substep instead would pull every fit back toward it and damp spin.
+ * Groups outside any body get the identity.
  */
 export function buildImplicitMomentPolarKernel(
   args: BuildImplicitMomentPolarKernelArgs,
@@ -134,13 +135,13 @@ export function buildImplicitMomentPolarKernel(
     Loop({ start: start, end: end, type: 'uint', condition: '<' }, ({ i: k }: { i: Any }) => {
       const j: Any = neighborIndices.element(k);
 
-      // (r²/5) · R_j_prev — the A_j term from this neighbor (Eq. 8).
-      // R_j_prev = mat3FromQuat(particles.rotation[j]). Standard formula
+      // (r²/5) · R_j — the A_j term from this neighbor (Eq. 8).
+      // R_j = mat3FromQuat(particles.predictedRotation[j]). Standard formula
       // for unit quaternion q = (x, y, z, w):
       //   m00 = 1 − 2(y² + z²)     m01 = 2(xy − wz)     m02 = 2(xz + wy)
       //   m10 = 2(xy + wz)         m11 = 1 − 2(x² + z²) m12 = 2(yz − wx)
       //   m20 = 2(xz − wy)         m21 = 2(yz + wx)     m22 = 1 − 2(x² + y²)
-      const qj: Any = particles.rotation.element(j).toVar();
+      const qj: Any = particles.predictedRotation.element(j).toVar();
       const xx: Any = qj.x.mul(qj.x);
       const yy: Any = qj.y.mul(qj.y);
       const zz: Any = qj.z.mul(qj.z);

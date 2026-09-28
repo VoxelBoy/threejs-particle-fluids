@@ -11,28 +11,34 @@ import {
 } from 'three';
 import { Simulation, createParticleRenderer } from '../../../src/index.js';
 
-// The high-level Simulation: it sizes particles from a budget, lays out
-// every material, couples them, and fails early with plain messages.
+// The high-level Simulation: it lays out every material at the given
+// particle size, couples them, and fails early with plain messages.
 
 const tank = () => new Box3(new Vector3(-0.3, 0, -0.2), new Vector3(0.3, 0.6, 0.2));
 
 describe('Simulation', () => {
-  it('spends about the requested particle budget on a fluid', async () => {
+  it('fills a fluid box at the given particle size, within maxParticles', async () => {
     const renderer = await createParticleRenderer();
     try {
-      const sim = new Simulation({
+      const base = {
         renderer,
         scene: new Scene(),
         camera: new PerspectiveCamera(),
         container: tank(),
-        particles: 6000,
-      });
-      sim.addFluid({ box: new Box3(new Vector3(-0.3, 0, -0.2), new Vector3(0, 0.3, 0.2)) });
+        particleRadius: 0.01,
+      };
+      // Clipped one radius inside the walls and filled on a 2 cm grid: 15 × 15 × 19.
+      const water = new Box3(new Vector3(-0.3, 0, -0.2), new Vector3(0.005, 0.305, 0.2));
+      const sim = new Simulation({ ...base, maxParticles: 5000 });
+      sim.addFluid({ box: water });
       await sim.step(1 / 60);
-      console.log(`[simulation] ${sim.particleCount} particles, radius ${sim.particleRadius}`);
-      expect(sim.particleCount).toBeGreaterThan(6000 * 0.8);
-      expect(sim.particleCount).toBeLessThan(6000 * 1.2);
+      expect(sim.particleCount).toBe(15 * 15 * 19);
+      expect(sim.particleRadius).toBe(0.01);
       sim.dispose();
+
+      const over = new Simulation({ ...base, maxParticles: 3000 });
+      over.addFluid({ box: water });
+      await expect(over.start()).rejects.toThrow(/needs 4275 particles.*maxParticles \(3000\)/);
     } finally {
       renderer.dispose();
     }
@@ -52,7 +58,8 @@ describe('Simulation', () => {
         scene,
         camera: new PerspectiveCamera(),
         container: tank(),
-        particles: 8000,
+        particleRadius: 0.009,
+        maxParticles: 10000,
       });
       sim.addFluid({ box: new Box3(new Vector3(-0.3, 0, -0.2), new Vector3(0.3, 0.25, 0.2)) });
       const ball = sim.addSoftbody({ mesh: light, density: 300 });
@@ -84,12 +91,20 @@ describe('Simulation', () => {
   it('explains what went wrong', async () => {
     const renderer = await createParticleRenderer();
     try {
-      const base = { renderer, scene: new Scene(), camera: new PerspectiveCamera() };
+      const base = {
+        renderer,
+        scene: new Scene(),
+        camera: new PerspectiveCamera(),
+        particleRadius: 0.02,
+        maxParticles: 10000,
+      };
+      expect(() => new Simulation({ ...base, particleRadius: 0 })).toThrow(/particleRadius/);
+      expect(() => new Simulation({ ...base, maxParticles: 0 })).toThrow(/maxParticles/);
       expect(() => new Simulation(base).addSmoke()).toThrow(/container/);
       expect(() => new Simulation(base).addFluid({})).toThrow(/box.*mesh/);
       await expect(new Simulation(base).step(1 / 60)).rejects.toThrow(/add a fluid/);
 
-      const sim = new Simulation({ ...base, container: tank(), particles: 2000 });
+      const sim = new Simulation({ ...base, container: tank() });
       const water = sim.addFluid({ box: tank() });
       expect(() => water.surface).toThrow(/first step/);
       await sim.start();
@@ -104,7 +119,13 @@ describe('Simulation', () => {
   it('keeps its settings working before and after the start', async () => {
     const renderer = await createParticleRenderer();
     try {
-      const base = { renderer, scene: new Scene(), camera: new PerspectiveCamera() };
+      const base = {
+        renderer,
+        scene: new Scene(),
+        camera: new PerspectiveCamera(),
+        particleRadius: 0.02,
+        maxParticles: 10000,
+      };
 
       // Mixing smoke with other materials fails at the add call that causes it.
       const smoky = new Simulation({ ...base, container: tank() });
@@ -115,7 +136,7 @@ describe('Simulation', () => {
       wet.addFluid({ box: tank() });
       expect(() => wet.addSmoke()).toThrow(/gas and liquid/);
 
-      const sim = new Simulation({ ...base, container: tank(), particles: 2000 });
+      const sim = new Simulation({ ...base, container: tank() });
       const thick = sim.addFluid({
         box: new Box3(new Vector3(-0.3, 0, -0.2), new Vector3(0, 0.3, 0.2)),
         thickness: 0,

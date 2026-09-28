@@ -11,13 +11,16 @@ export interface SolverContext {
   readonly dt: UniformNode<'float', number>;
   /**
    * Neighbor grid over every particle, rebuilt at the start of each substep.
-   * Only available when a material declares a {@link Material.neighborRadius}
-   * or particle contacts are enabled.
+   * Only usable when a material declares a {@link Material.neighborRadius}
+   * or particle contacts are enabled. Otherwise it is a placeholder that
+   * throws when any of its properties is read (so destructuring it is safe).
    */
   readonly hashGrid: HashGrid;
   /**
    * Reserve a collision group that no other material, and no particle
-   * uploaded before the loop was created, uses.
+   * uploaded before the loop was created, uses. Groups start above the
+   * highest group in the CPU copy of `particles.collisionGroup` when the
+   * loop is constructed; groups written to particles after that can clash.
    */
   allocateCollisionGroup(): number;
 }
@@ -58,8 +61,13 @@ export interface MaterialKernels {
  * ```
  */
 export interface Material {
-  /** Farthest distance, in metres, this material looks for neighbors through the grid. */
+  /**
+   * Farthest distance, in metres, this material looks for neighbors through
+   * the grid. Finite and ≥ 0; `0` or absent means no neighbor queries.
+   */
   readonly neighborRadius?: number;
+  /** Particles the material was built for. When set, {@link SimLoop} checks it matches its own. */
+  readonly particles?: ParticleSystem;
   build(context: SolverContext): MaterialKernels;
   /** Called by {@link SimLoop.step} before each step's GPU work, with the step length. */
   update?(dt: number): void;

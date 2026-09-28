@@ -2,15 +2,14 @@ import { DoubleSide, Mesh, PlaneGeometry } from 'three';
 import { MeshPhysicalNodeMaterial } from 'three/webgpu';
 import {
   Fn,
-  cameraViewMatrix,
   cross,
   faceDirection,
   float,
   mat3,
   normalize,
+  transformNormalToView,
   uv,
   vec3,
-  vec4,
 } from 'three/tsl';
 import type { ClothSystem } from './ClothSystem.js';
 
@@ -24,8 +23,9 @@ export interface ClothSurfaceOptions {
   /** Mesh vertices per grid cell along each axis. Default 3. */
   readonly subdivisions?: number;
   /**
-   * Material to draw with. Its position and normal nodes are replaced.
-   * Default: a double-sided sheen material.
+   * Material to draw with. Its `positionNode` and `normalNode` are
+   * overwritten, so don't share it with another mesh. Default: a
+   * double-sided sheen material.
    */
   readonly material?: MeshPhysicalNodeMaterial;
   /**
@@ -40,6 +40,12 @@ export interface ClothSurfaceOptions {
  * A mesh that follows a grid-shaped cloth on the GPU, as a bicubic surface
  * through the particles with analytic normals. The cloth must come from a
  * grid (such as a `PlaneGeometry`) whose vertices are in row-major order.
+ *
+ * The particles' simulation positions become the mesh's local positions,
+ * as with `createParticleMesh`, so the mesh's world transform (its own and
+ * its parents') is applied on top of them. Leave it at the identity to draw
+ * the cloth where it is simulated; colliders and other materials don't see
+ * the transform.
  */
 export function createClothSurface(cloth: ClothSystem, options: ClothSurfaceOptions): Mesh {
   const { particles } = cloth;
@@ -131,9 +137,7 @@ export function createClothSurface(cloth: ClothSystem, options: ClothSurfaceOpti
   material.positionNode = frame.element(0);
   const normal = normalize(cross(frame.element(2), frame.element(1))).toVarying();
   // Custom normalNode bypasses the built-in two-sided normal adjustment.
-  material.normalNode = normalize(cameraViewMatrix.mul(vec4(normal, 0)).xyz).mul(
-    faceDirection as Any,
-  );
+  material.normalNode = normalize(transformNormalToView(normal) as Any).mul(faceDirection as Any);
   const geometry = new PlaneGeometry(1, 1, (columns - 1) * subdivisions, (rows - 1) * subdivisions);
   const mesh = new Mesh(geometry, material);
   mesh.frustumCulled = false;

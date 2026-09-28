@@ -5,7 +5,7 @@ import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import type UniformNode from 'three/src/nodes/core/UniformNode.js';
 import type StorageBufferNode from 'three/src/nodes/accessors/StorageBufferNode.js';
 
-import type { ParticleSystem } from '../particles.js';
+import { releaseStorageBuffers, type ParticleSystem } from '../particles.js';
 import { buildCellIndexKernels } from './cellIndex.js';
 import { allocateSortedPositionsBuffer, buildSortedPositionsKernel } from './sortedPositions.js';
 import {
@@ -34,13 +34,14 @@ export interface HashGridOptions {
   readonly cellSize: number;
   /**
    * Hash buckets; a power of two. Default: the next power of two above
-   * `2 × capacity`, which keeps collisions between distant cells rare.
-   * At most 1,048,576.
+   * `2 × capacity`, which keeps collisions between distant cells rare,
+   * capped at 1,048,576.
    */
   readonly hashTableSize?: number;
   /**
    * Offset subtracted from positions before they are quantized to cells.
-   * Keeps cell indices precise for scenes far from the origin. Default
+   * Cells keep their spatial locality within ±512 cells of it on each axis,
+   * so set it near the middle of scenes far from the world origin. Default
    * `(0, 0, 0)`.
    */
   readonly hashOrigin?: Vector3;
@@ -80,7 +81,6 @@ export class HashGrid {
   readonly renderer: WebGPURenderer;
   readonly particles: ParticleSystem;
   readonly cellSize: number;
-  readonly hashOrigin: Vector3;
   /** Number of hash buckets, a power of two. */
   readonly hashTableSize: number;
   /** `hashTableSize` rounded up to a multiple of `SCAN_WORKGROUP_SIZE`. */
@@ -93,7 +93,12 @@ export class HashGrid {
   readonly sortedIndices: StorageBufferNode<'uint'>;
   /** `predictedPositions` in bucket order, refreshed by every rebuild. */
   readonly sortedPredictedPositions: StorageBufferNode<'vec4'>;
-  /** Atomic flag set to 1 when a particle's cell coordinate saturated during a rebuild. */
+  /**
+   * Atomic flag set to 1 during a rebuild when a particle's cell coordinate
+   * is outside ±512 cells of {@link hashOrigin} on some axis (or so far out
+   * that it had to be clamped). Such particles still find their neighbors,
+   * but through buckets shared with distant cells, so queries do extra work.
+   */
   readonly overflowFlag: StorageBufferNode<'uint'>;
 
   readonly hashOriginUniform: UniformNode<'vec3', Vector3>;
@@ -112,8 +117,16 @@ export class HashGrid {
       throw new Error(`HashGrid: cellSize must be a positive finite number, got ${cellSize}`);
     }
 
-    const hashTableSize = options.hashTableSize ?? nextPow2(2 * particles.capacity);
-    if ((hashTableSize & (hashTableSize - 1)) !== 0 || hashTableSize < 1) {
+    // Past the scan's limit, more particles share each bucket, which costs
+    // query time but stays correct.
+    const hashTableSize =
+      options.hashTableSize ??
+      Math.min(nextPow2(2 * particles.capacity), MAX_CELLS_SINGLE_LEVEL_SCAN);
+    if (
+      !Number.isInteger(hashTableSize) ||
+      hashTableSize < 1 ||
+      (hashTableSize & (hashTableSize - 1)) !== 0
+    ) {
       throw new Error(
         `HashGrid: hashTableSize must be a positive power of two, got ${hashTableSize}`,
       );
@@ -122,18 +135,17 @@ export class HashGrid {
 
     if (hashTableSizePadded > MAX_CELLS_SINGLE_LEVEL_SCAN) {
       throw new Error(
-        `HashGrid: hashTableSize=${hashTableSize} padded to ${hashTableSizePadded} ` +
-          `exceeds the single-level Blelloch scan cap (${MAX_CELLS_SINGLE_LEVEL_SCAN} = ` +
-          `SCAN_WORKGROUP_SIZE²). Use a smaller hashTableSize.`,
+        `HashGrid: hashTableSize=${hashTableSize} (capacity ${particles.capacity}) exceeds ` +
+          `the ${MAX_CELLS_SINGLE_LEVEL_SCAN}-bucket limit of the prefix scan. ` +
+          `Use a smaller hashTableSize.`,
       );
     }
 
-    const hashOrigin = (options.hashOrigin ?? new Vector3(0, 0, 0)).clone();
+    const hashOrigin = options.hashOrigin ?? new Vector3(0, 0, 0);
 
     this.renderer = particles.renderer;
     this.particles = particles;
     this.cellSize = cellSize;
-    this.hashOrigin = hashOrigin;
     this.hashTableSize = hashTableSize;
     this.hashTableSizePadded = hashTableSizePadded;
 
@@ -156,7 +168,7 @@ export class HashGrid {
       particles.capacity,
       hashTableSize,
       hashTableSizePadded,
-      this.hashOrigin,
+      hashOrigin,
       cellSize,
     );
     this.hashOriginUniform = cellIndexKernels.hashOrigin;
@@ -192,6 +204,17 @@ export class HashGrid {
     ];
   }
 
+  /**
+   * Origin the cells are measured from, in metres: the kernels' uniform
+   * itself, so mutate it in place to move the grid. Move it only right
+   * before a rebuild: queries read it too, and look in the wrong cells of a
+   * grid built around the old origin. Particles more than 512 cells from it
+   * on an axis set {@link overflowFlag}.
+   */
+  get hashOrigin(): Vector3 {
+    return this.hashOriginUniform.value;
+  }
+
   /** Rebuild the grid from the current `particles.predictedPositions`. */
   async rebuild(): Promise<void> {
     this.assertAlive();
@@ -200,6 +223,7 @@ export class HashGrid {
 
   /** The rebuild's kernels, for batching into a larger dispatch. Don't modify it. */
   get rebuildPipeline(): readonly ComputeNode[] {
+    this.assertAlive();
     return this.pipeline;
   }
 
@@ -224,15 +248,36 @@ export class HashGrid {
     };
   }
 
-  /** 1 if a particle was too far out for its cell coordinate during the last rebuild. Stalls on the GPU. */
-  async readbackOverflow(): Promise<number> {
+  /**
+   * True if {@link overflowFlag} was set by the last rebuild: some particle
+   * was more than 512 cells from {@link hashOrigin} on an axis. Stalls on
+   * the GPU.
+   */
+  async readbackOverflow(): Promise<boolean> {
     this.assertAlive();
     const buf = await this.renderer.getArrayBufferAsync(this.overflowFlag.value);
-    return new Uint32Array(buf)[0]!;
+    return new Uint32Array(buf)[0] !== 0;
   }
 
+  /**
+   * Free the grid's GPU buffers. Later rebuilds, readbacks, and reads of
+   * {@link rebuildPipeline} throw; kernels that query the grid can't run
+   * afterwards.
+   */
   dispose(): void {
+    if (this.disposed) return;
     this.disposed = true;
+    releaseStorageBuffers(this.renderer, [
+      this.cellIndex,
+      this.counts,
+      this.cellStart,
+      this.cellEnd,
+      this.sortedIndices,
+      this.sortedPredictedPositions,
+      this.overflowFlag,
+      this.blockSums,
+      this.writeCursor,
+    ]);
   }
 
   private assertAlive(): void {

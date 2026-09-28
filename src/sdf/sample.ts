@@ -12,6 +12,9 @@ import type { SDFData } from '../core/collision/SDFCollider.js';
 export function sampleSdf(sdf: SDFData, x: number, y: number, z: number): number {
   const { data, resolution, origin, voxelSize } = sdf;
   const [resX, resY, resZ] = resolution;
+  if (!(isGridSize(resX) && isGridSize(resY) && isGridSize(resZ))) {
+    throw new Error(`sampleSdf: resolution must be integers ≥ 2, got [${resX}, ${resY}, ${resZ}]`);
+  }
   // Continuous voxel index — 0.5 offset so voxel (0,0,0) center is at gc = 0.5.
   const gx = (x - origin[0]) / voxelSize[0] - 0.5;
   const gy = (y - origin[1]) / voxelSize[1] - 0.5;
@@ -61,6 +64,10 @@ export function sampleSdfGradient(
   const phiZp = sampleSdf(sdf, x, y, z + hz);
   const phiZn = sampleSdf(sdf, x, y, z - hz);
   return [(phiXp - phiXn) / (2 * hx), (phiYp - phiYn) / (2 * hy), (phiZp - phiZn) / (2 * hz)];
+}
+
+function isGridSize(n: number): boolean {
+  return Number.isInteger(n) && n >= 2;
 }
 
 function lerp(a: number, b: number, t: number): number {

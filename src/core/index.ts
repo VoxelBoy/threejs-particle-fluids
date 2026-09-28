@@ -22,7 +22,8 @@ export { FrameStepper, type FrameStepperOptions, type FrameStepperResult } from 
 export { HashGrid, type HashGridOptions } from './hashGrid/HashGrid.js';
 export { MAX_NEIGHBORS, NeighborList } from './hashGrid/neighborList.js';
 export { emitForEachNeighbor } from './hashGrid/query.js';
-export { SimLoop, type ContactOptions, type SimLoopOptions } from './loop.js';
+export { SimLoop, type ContactOptions, type SimLoopOptions, type SimLoopOverflow } from './loop.js';
+export type { ContactBuffer } from './contact/index.js';
 export type { Material, MaterialKernels, SolverContext } from './materials.js';
 export {
   ParticleSystem,

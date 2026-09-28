@@ -190,4 +190,13 @@ describe('bindSoftbodyMesh', () => {
     expect(cBar[1]).toBeCloseTo(0, 6);
     expect(cBar[2]).toBeCloseTo(0, 6);
   });
+
+  it('reports errors under the SoftbodyMesh name', () => {
+    const softbody = makeSoftbody(PARTICLE_RADIUS, buildSmallGrid(PARTICLE_RADIUS));
+    const geom = meshFromVertices(new Float32Array([0, 0, 0]));
+    expect(() => bindSoftbodyMesh(geom, softbody, 1)).toThrow(/^SoftbodyMesh: no body 1/);
+    expect(() => bindSoftbodyMesh(new BufferGeometry(), softbody, 0)).toThrow(
+      /^SoftbodyMesh: geometry has no position attribute/,
+    );
+  });
 });

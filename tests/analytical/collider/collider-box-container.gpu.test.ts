@@ -117,7 +117,7 @@ describe('collider: box container (1000 particles)', () => {
       expect(maxSpeed).toBeLessThan(0.5);
 
       const overflow = await positionAccumulator!.readbackOverflow();
-      expect(overflow).toBe(0);
+      expect(overflow).toBe(false);
 
       loop.dispose();
       particles.dispose();

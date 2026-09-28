@@ -16,10 +16,14 @@ type Any = any;
 
 /**
  * Long-range attachment (LRA) tethers (Kim et al. 2012 §3.1): each free
- * particle `x_i` is kept within `r_i` of a pinned anchor `a`.
+ * particle `x_i` is kept within `r_i` of a pinned anchor particle `a`.
  *
  *   `C(x_i) = |x_i − a| − r_i`,  active only when `C > 0`
  *   `∇C = n = (x_i − a) / |x_i − a|`
+ *
+ * `a` is read from the anchor's predicted position every iteration, so
+ * tethers follow pinned particles that are moved at runtime. The anchor
+ * is pinned, so only `x_i` moves.
  *
  * The tether is unilateral: it stops the cloth over-stretching but never
  * pulls inward, so buckling and wrinkles are left to the distance and
@@ -40,7 +44,7 @@ export function createClothTetherConstraints(args: {
   /**
    * Cloth-local LRA constraint list — typically the output of
    * {@link "./tetherBuild.js".buildTethers}. Each entry is one
-   * (free-particle, anchor, restRadius) tuple.
+   * (free-particle, anchor-particle, restRadius) tuple.
    */
   readonly tethers: readonly TetherConstraint[];
   /**
@@ -79,20 +83,19 @@ export function createClothTetherConstraints(args: {
         `createClothTetherConstraints: tether for particle ${t.particle} has invalid restRadius ${t.restRadius}`,
       );
     }
-    for (const v of t.anchor) {
-      if (!Number.isFinite(v)) {
-        throw new Error(
-          `createClothTetherConstraints: tether for particle ${t.particle} has non-finite anchor coord ${v}`,
-        );
-      }
+    const anchor = particleOffset + t.anchor;
+    if (!Number.isInteger(t.anchor) || t.anchor < 0 || anchor >= particles.capacity) {
+      throw new Error(
+        `createClothTetherConstraints: tether anchor ${t.anchor} (absolute ${anchor}) out of range for capacity ${particles.capacity}`,
+      );
     }
   }
 
   const indices = Uint32Array.from(tethers, (t) => particleOffset + t.particle);
   const particleIndices = instancedArray(indices, 'uint');
-  const anchorBuf = instancedArray(
-    Float32Array.from(tethers.flatMap((t) => [...t.anchor, 0])),
-    'vec4',
+  const anchorIndices = instancedArray(
+    Uint32Array.from(tethers, (t) => particleOffset + t.anchor),
+    'uint',
   );
   const complianceBuf = instancedArray(nConstraints, 'float');
   const restBuf = instancedArray(
@@ -113,7 +116,7 @@ export function createClothTetherConstraints(args: {
       Return();
     });
 
-    const a: Any = anchorBuf.element(c).xyz.toVar();
+    const a: Any = particles.predictedPositions.element(anchorIndices.element(c)).xyz.toVar();
     const alpha: Any = complianceBuf.element(c).toVar();
     const rest: Any = restBuf.element(c).toVar();
     const lamCurrent: Any = lambda.element(c).toVar();

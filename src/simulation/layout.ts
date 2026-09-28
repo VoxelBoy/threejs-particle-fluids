@@ -2,7 +2,6 @@ import { Box3, Matrix4, Quaternion, Vector3, type BufferGeometry, type Mesh } fr
 
 import { sampleSdf } from '../sdf/index.js';
 import type { SDFData } from '../core/index.js';
-import { voxelize } from '../softbody/index.js';
 
 /** Grid points spaced `spacing` apart filling `box`, offset half a spacing from its corner. */
 export function fillBox(box: Box3, spacing: number): number[] {
@@ -18,36 +17,6 @@ export function fillBox(box: Box3, spacing: number): number[] {
 export function worldGeometry(mesh: Mesh): BufferGeometry {
   mesh.updateWorldMatrix(true, false);
   return mesh.geometry.clone().applyMatrix4(mesh.matrixWorld);
-}
-
-/** Volume inside a closed geometry, estimated by filling it with a coarse grid. */
-export function meshVolume(geometry: BufferGeometry): number {
-  geometry.computeBoundingBox();
-  const size = geometry.boundingBox!.getSize(new Vector3());
-  const radius = Math.max(size.x, size.y, size.z) / 60;
-  return voxelize(geometry, { particleRadius: radius }).count * (2 * radius) ** 3;
-}
-
-/**
- * The particle radius that fills `volume` cubic metres at spacing `2r` and
- * `area` square metres of cloth at spacing `clothSpacing · r` with about
- * `budget` particles in total.
- */
-export function radiusForBudget(
-  volume: number,
-  area: number,
-  clothSpacing: number,
-  budget: number,
-): number {
-  const count = (r: number) => volume / (2 * r) ** 3 + area / (clothSpacing * r) ** 2;
-  let low = 1e-4,
-    high = 1;
-  for (let i = 0; i < 60; i++) {
-    const mid = Math.sqrt(low * high);
-    if (count(mid) > budget) low = mid;
-    else high = mid;
-  }
-  return high;
 }
 
 /** A solid that liquid particles must not start inside. */

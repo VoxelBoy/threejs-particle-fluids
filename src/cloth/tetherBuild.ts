@@ -3,26 +3,24 @@ import type { ClothGraph } from './graph.js';
 /**
  * One Long-Range-Attachment (LRA) constraint per Kim, Chentanez,
  * Müller-Fischer 2012 §3.1 — a unilateral distance constraint
- * between a free cloth particle and a fixed attachment point in
- * world space.
+ * between a free cloth particle and a pinned attachment particle.
  *
- *   `C(x_i) = |x_i - a| - r_i ≤ 0`
+ *   `C(x_i) = |x_i - x_a| - r_i ≤ 0`
  *
  * `restRadius` is the **geodesic** (along-surface) shortest path
  * from the attachment to the particle at rest, per §3.2 — Euclidean
  * distance fails for pre-sculpted curved cloth where straightening
  * geometry would exceed straight-line distance (paper Fig. 4).
  *
- * The anchor is stored as a world position, not a particle index,
- * because the kinematically-driven attachment point may be a fixed
- * point in space (a flag pole, a curtain rod) rather than another
- * pinned particle.
+ * The anchor is stored as a particle index, not a position, so the
+ * solver reads the pinned particle's current position every substep
+ * and the tethers follow pins that are moved at runtime.
  */
 export interface TetherConstraint {
   /** Cloth-local index of the constrained free particle (`invMass > 0`). */
   readonly particle: number;
-  /** World-space position of the attachment point (a fixed point). */
-  readonly anchor: readonly [number, number, number];
+  /** Cloth-local index of the pinned particle the tether hangs from. */
+  readonly anchor: number;
   /**
    * Geodesic rest distance from `particle` to `anchor` along the cloth
    * surface, in metres. Inflated by `(1 + stretchTolerance)` per
@@ -74,7 +72,7 @@ const DEFAULT_STRETCH_TOLERANCE = 0;
  *      vertex in that island.
  *   4. For each free particle: sort islands by geodesic distance,
  *      take the closest `N`, emit one LRA constraint per island
- *      anchored at the **nearest pinned vertex's world position**
+ *      anchored at the **nearest pinned vertex**
  *      (paper §3.4 — "the closest attachment point from each
  *      island"). Apply `(1 + stretchTolerance)` to each `r_i`.
  *
@@ -152,8 +150,7 @@ export function buildTethers(args: {
   // full edge graph with sources = pinned vertices in that island.
   // Result: per (free particle, island), the geodesic distance to
   // the nearest pinned vertex in that island, plus the index of
-  // that pinned vertex (so we can read its world position as the
-  // anchor).
+  // that pinned vertex (the anchor).
   const INF = Number.POSITIVE_INFINITY;
   // Per-island per-particle: distance + nearest-pinned-vertex index.
   // Stored as flat arrays to avoid per-iteration allocations.
@@ -218,10 +215,9 @@ export function buildTethers(args: {
     const take = Math.min(maxAttachments, list.length);
     for (let k = 0; k < take; k++) {
       const { attachment } = list[k]!;
-      const anchorPos = graph.positions[attachment.anchorVertex]!;
       out.push({
         particle: v,
-        anchor: [anchorPos[0], anchorPos[1], anchorPos[2]],
+        anchor: attachment.anchorVertex,
         restRadius: attachment.distance * radiusScale,
       });
     }

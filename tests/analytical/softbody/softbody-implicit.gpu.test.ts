@@ -252,6 +252,111 @@ describe('local shape matching (Müller & Chentanez 2011 §5.1)', () => {
     }
   }, 60_000);
 
+  it('keeps bodyCenters and bodyRotations current: the center of mass and best-fit rotation', async () => {
+    const renderer = await createParticleRenderer();
+    try {
+      const r = 0.05;
+      const { rest, edges, count } = buildVoxelGrid(3, 3, 3, r);
+      const omega = 2.0;
+      const drift: [number, number, number] = [0.5, 0, 0];
+      const initial: ParticleInit[] = [];
+      for (let i = 0; i < count; i++) {
+        const px = rest[3 * i]!;
+        const py = rest[3 * i + 1]!;
+        const pz = rest[3 * i + 2]!;
+        initial.push({
+          position: [px, py, pz],
+          velocity: [drift[0] - omega * py, drift[1] + omega * px, drift[2]],
+        });
+      }
+      const particles = new ParticleSystem(renderer, count, r);
+      particles.uploadParticles(initial);
+      const softbody = localBody(particles, count, rest, edges, 1e-12);
+      const loop = new SimLoop(particles, {
+        substeps: 4,
+        iterations: 2,
+        gravity: new Vector3(0, 0, 0),
+        materials: [softbody],
+      });
+      for (let f = 0; f < 30; f++) await loop.step(1 / 60);
+
+      const snap = await particles.readback();
+      const centers = new Float32Array(
+        await renderer.getArrayBufferAsync(softbody.bodyCenters.value),
+      );
+      const rows = new Float32Array(
+        await renderer.getArrayBufferAsync(softbody.bodyRotations.value),
+      );
+      const mean = [0, 0, 0];
+      for (let i = 0; i < count; i++) {
+        for (let a = 0; a < 3; a++) mean[a]! += snap.positions[4 * i + a]! / count;
+      }
+      for (let a = 0; a < 3; a++) expect(centers[a]!).toBeCloseTo(mean[a]!, 4);
+      // The body has moved half a second at 0.5 m/s, so a stale zero center would fail.
+      expect(centers[0]!).toBeCloseTo(0.25, 2);
+
+      const bodyR = [0, 1, 2].flatMap((row) => [0, 1, 2].map((col) => rows[4 * row + col]!));
+      // A rigid body's best fit agrees with every particle's own rotation.
+      const center = 13; // middle of the 3×3×3 grid
+      expect(frobeniusDiff(bodyR, readRotation(snap.rotation, center))).toBeLessThan(5e-3);
+      // And with the particles' turn about z, measured on particle 14, which
+      // rests at +x from the center.
+      const turned = Math.atan2(
+        snap.positions[4 * 14 + 1]! - mean[1]!,
+        snap.positions[4 * 14]! - mean[0]!,
+      );
+      console.info(`[implicit-body-frame] turn=${turned.toFixed(4)} rad`);
+      expect(Math.abs(turned)).toBeGreaterThan(0.01);
+      expect(Math.atan2(bodyR[3]!, bodyR[0]!)).toBeCloseTo(turned, 3);
+      particles.dispose();
+    } finally {
+      renderer.dispose();
+    }
+  }, 60_000);
+
+  it('a stiff spinning body keeps its angular velocity (ω·t turn)', async () => {
+    const renderer = await createParticleRenderer();
+    try {
+      const r = 0.05;
+      const { rest, edges, count } = buildVoxelGrid(3, 3, 3, r);
+      const omega = 2.0;
+      const initial: ParticleInit[] = [];
+      for (let i = 0; i < count; i++) {
+        const px = rest[3 * i]!;
+        const py = rest[3 * i + 1]!;
+        initial.push({
+          position: [px, py, rest[3 * i + 2]!],
+          velocity: [-omega * py, omega * px, 0],
+        });
+      }
+      const particles = new ParticleSystem(renderer, count, r);
+      particles.uploadParticles(initial);
+      const softbody = localBody(particles, count, rest, edges, 1e-12);
+      const loop = new SimLoop(particles, {
+        substeps: 4,
+        iterations: 2,
+        gravity: new Vector3(0, 0, 0),
+        materials: [softbody],
+      });
+      const frames = 30;
+      for (let f = 0; f < frames; f++) await loop.step(1 / 60);
+
+      // Particle 14 rests at +x from the center particle 13, which stays at the origin.
+      const snap = await particles.readback();
+      const turned = Math.atan2(
+        snap.positions[4 * 14 + 1]! - snap.positions[4 * 13 + 1]!,
+        snap.positions[4 * 14]! - snap.positions[4 * 13]!,
+      );
+      const expected = omega * frames * (1 / 60);
+      console.info(`[implicit-spin] turned=${turned.toFixed(4)} rad, expected ${expected} rad`);
+      expect(turned).toBeGreaterThan(0.9 * expected);
+      expect(turned).toBeLessThan(1.05 * expected);
+      particles.dispose();
+    } finally {
+      renderer.dispose();
+    }
+  }, 60_000);
+
   it('particles without edges stay stable: the A_i term keeps their fit non-singular (no NaN, R_i = identity)', async () => {
     const renderer = await createParticleRenderer();
     try {

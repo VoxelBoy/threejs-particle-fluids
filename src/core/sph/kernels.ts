@@ -7,10 +7,11 @@ type Any = any;
 /**
  * SPH smoothing kernels from Müller et al. 2003, as used by Position Based
  * Fluids (Macklin & Müller 2013, §3). The `h`-dependent coefficients are
- * computed once on the CPU.
+ * computed on the CPU: setting `h.value` recomputes `hSq`, `poly6Coef`, and
+ * `spikyCoef`.
  */
 export interface SphKernelUniforms {
-  /** Smoothing radius. */
+  /** Smoothing radius. Setting its value updates the other three; it must stay positive. */
   readonly h: UniformNode<'float', number>;
   readonly hSq: UniformNode<'float', number>;
   readonly poly6Coef: UniformNode<'float', number>;
@@ -19,15 +20,37 @@ export interface SphKernelUniforms {
 
 /** Uniforms for the Poly6 and Spiky kernels (Müller et al. 2003) with smoothing radius `h`. */
 export function createSphKernelUniforms(h: number): SphKernelUniforms {
+  assertRadius(h);
+  const hSq = uniform(0, 'float');
+  const poly6Coef = uniform(0, 'float');
+  const spikyCoef = uniform(0, 'float');
+  const hNode = uniform(h, 'float');
+  // Replace the uniform's value field with an accessor, so writes to it keep
+  // the derived coefficients in step. The renderer reads `value` each dispatch.
+  let current = h;
+  const derive = (value: number): void => {
+    hSq.value = value * value;
+    poly6Coef.value = 315 / (64 * Math.PI * value ** 9);
+    spikyCoef.value = 45 / (Math.PI * value ** 6);
+  };
+  Object.defineProperty(hNode, 'value', {
+    get: () => current,
+    set: (value: number) => {
+      assertRadius(value);
+      current = value;
+      derive(value);
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  derive(h);
+  return { h: hNode, hSq, poly6Coef, spikyCoef };
+}
+
+function assertRadius(h: number): void {
   if (!Number.isFinite(h) || h <= 0) {
     throw new Error(`createSphKernelUniforms: h must be positive, got ${h}`);
   }
-  return {
-    h: uniform(h, 'float'),
-    hSq: uniform(h * h, 'float'),
-    poly6Coef: uniform(315 / (64 * Math.PI * h ** 9), 'float'),
-    spikyCoef: uniform(45 / (Math.PI * h ** 6), 'float'),
-  };
 }
 
 export function emitPoly6(r_vec: Any, u: SphKernelUniforms): Any {

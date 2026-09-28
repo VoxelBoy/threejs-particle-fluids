@@ -48,7 +48,7 @@ describe('HashGrid: overflow flag', () => {
       await grid.rebuild();
 
       const flag = await grid.readbackOverflow();
-      expect(flag).toBe(0);
+      expect(flag).toBe(false);
 
       grid.dispose();
       particles.dispose();
@@ -74,7 +74,7 @@ describe('HashGrid: overflow flag', () => {
       await grid.rebuild();
 
       const flag = await grid.readbackOverflow();
-      expect(flag).toBe(1);
+      expect(flag).toBe(true);
 
       grid.dispose();
       particles.dispose();
@@ -95,7 +95,7 @@ describe('HashGrid: overflow flag', () => {
 
       const grid = new HashGrid(particles, { cellSize: 0.1 });
       await grid.rebuild();
-      expect(await grid.readbackOverflow()).toBe(1);
+      expect(await grid.readbackOverflow()).toBe(true);
 
       // Pull the escapee back. Rebuild should clear the flag — the
       // pipeline's resetOverflowFlag kernel runs before the histogram
@@ -105,7 +105,7 @@ describe('HashGrid: overflow flag', () => {
         { position: [0.5, 0, 0], velocity: [0, 0, 0], invMass: 1 },
       ]);
       await grid.rebuild();
-      expect(await grid.readbackOverflow()).toBe(0);
+      expect(await grid.readbackOverflow()).toBe(false);
 
       grid.dispose();
       particles.dispose();

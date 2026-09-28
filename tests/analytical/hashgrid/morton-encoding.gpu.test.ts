@@ -89,7 +89,7 @@ describe('HashGrid: Morton bucket encoding', () => {
       }
 
       // Overflow flag should stay 0 for cells inside the Morton range.
-      expect(await grid.readbackOverflow()).toBe(0);
+      expect(await grid.readbackOverflow()).toBe(false);
 
       grid.dispose();
       particles.dispose();
@@ -116,7 +116,7 @@ describe('HashGrid: Morton bucket encoding', () => {
       const grid = new HashGrid(particles, { cellSize: CELL });
       await grid.rebuild();
 
-      expect(await grid.readbackOverflow()).toBe(1);
+      expect(await grid.readbackOverflow()).toBe(true);
 
       grid.dispose();
       particles.dispose();

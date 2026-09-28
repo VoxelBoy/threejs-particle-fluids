@@ -77,6 +77,14 @@ export function decodeSdfBinary(buffer: ArrayBuffer): SDFData {
   const voxelX = header.getFloat32(36, true);
   const voxelY = header.getFloat32(40, true);
   const voxelZ = header.getFloat32(44, true);
+  if (resX < 2 || resY < 2 || resZ < 2) {
+    throw new Error(`decodeSdfBinary: resolution must be ≥ 2, got [${resX}, ${resY}, ${resZ}]`);
+  }
+  if (![voxelX, voxelY, voxelZ].every((v) => v > 0 && Number.isFinite(v))) {
+    throw new Error(
+      `decodeSdfBinary: voxelSize must be positive, got [${voxelX}, ${voxelY}, ${voxelZ}]`,
+    );
+  }
   const voxelCount = resX * resY * resZ;
   const expectedBytes = HEADER_BYTES + voxelCount * 4;
   if (buffer.byteLength < expectedBytes) {

@@ -30,8 +30,14 @@ export interface HeatSource {
   readonly radius: number;
 }
 
-/** Temperatures are summed on the GPU as fixed-point integers. */
-const FIXED = 4096;
+/**
+ * Temperatures are summed on the GPU as 32-bit fixed-point integers, 4096
+ * steps per degree. Temperatures stay in [0, 1], so above about a million
+ * air particles the scale shrinks to keep the sum from overflowing.
+ */
+export function fixedPointScale(count: number): number {
+  return Math.max(1, Math.min(4096, Math.floor(0xffffffff / count)));
+}
 
 /**
  * Per-particle air temperature with Boussinesq buoyancy: air inside a heat
@@ -44,6 +50,8 @@ export class AirHeat {
   readonly temperature: StorageBufferNode<'float'>;
   readonly buoyancy: UniformNode<'float', number>;
   readonly cooling: UniformNode<'float', number>;
+  /** Storage buffers this heat model owns, for disposal. */
+  readonly buffers: StorageBufferNode<'float' | 'uint'>[] = [];
 
   constructor(
     private readonly fluid: FluidSystem,
@@ -52,6 +60,7 @@ export class AirHeat {
     cooling: number,
   ) {
     this.temperature = instancedArray(fluid.range.count, 'float');
+    this.buffers.push(this.temperature);
     this.buoyancy = uniform(buoyancy, 'float');
     this.cooling = uniform(cooling, 'float');
   }
@@ -60,6 +69,8 @@ export class AirHeat {
     const { particles, range } = this.fluid;
     const { temperature, buoyancy, cooling } = this;
     const total = (instancedArray(1, 'uint') as Any).setAtomic(true);
+    this.buffers.push(total);
+    const fixed = fixedPointScale(range.count);
     const sources = this.sources.map((source) => ({
       position: uniform(source.position),
       radiusSq: source.radius ** 2,
@@ -80,12 +91,12 @@ export class AirHeat {
       }
       t.mulAssign(exp(cooling.mul(dt).negate()));
       temperature.element(k).assign(t);
-      atomicAdd(total.element(0), t.mul(FIXED).toUint());
+      atomicAdd(total.element(0), t.mul(fixed).toUint());
     })().compute(range.count);
     const lift = Fn(() => {
       const k: Any = instanceIndex;
       const velocity: Any = particles.velocities.element(k.add(uint(range.start)));
-      const mean: Any = (atomicLoad(total.element(0)) as Any).toFloat().div(FIXED * range.count);
+      const mean: Any = (atomicLoad(total.element(0)) as Any).toFloat().div(fixed * range.count);
       const dv: Any = buoyancy.mul(temperature.element(k).sub(mean)).mul(dt);
       velocity.assign(vec4(velocity.xyz.add(vec3(0, dv, 0)), velocity.w));
     })().compute(range.count);

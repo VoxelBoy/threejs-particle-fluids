@@ -27,10 +27,10 @@ type Any = any;
 export function createDistanceConstraints(args: {
   readonly particles: ParticleSystem;
   readonly pairs: readonly [number, number][];
-  /** Compliance α (s²/kg). Scalar broadcasts to every pair. */
-  readonly compliance: number | readonly number[];
+  /** Compliance α (s²/kg). Scalar broadcasts to every pair; an array or typed array gives one per pair. */
+  readonly compliance: number | ArrayLike<number>;
   /** Rest length per pair (metres). Required — must match `pairs.length`. */
-  readonly restLength: readonly number[];
+  readonly restLength: ArrayLike<number>;
   /** Substep length, usually {@link SolverContext.dt}. */
   readonly dt: UniformNode<'float', number>;
 }): ConstraintType {
@@ -42,9 +42,10 @@ export function createDistanceConstraints(args: {
       `createDistanceConstraints: restLength length ${restLength.length} ≠ pairs.length ${nConstraints}`,
     );
   }
-  const complianceArray = Array.isArray(compliance)
-    ? compliance
-    : Array.from({ length: nConstraints }, () => compliance as number);
+  const complianceArray =
+    typeof compliance === 'number'
+      ? new Float32Array(nConstraints).fill(compliance)
+      : Float32Array.from(compliance);
   if (complianceArray.length !== nConstraints) {
     throw new Error(
       `createDistanceConstraints: compliance length ${complianceArray.length} ≠ pairs.length ${nConstraints}`,
@@ -70,7 +71,7 @@ export function createDistanceConstraints(args: {
 
   const indices = new Uint32Array(pairs.flat());
   const particleIndices = instancedArray(indices, 'uint');
-  const complianceBuf = instancedArray(Float32Array.from(complianceArray), 'float');
+  const complianceBuf = instancedArray(complianceArray, 'float');
   const restBuf = instancedArray(Float32Array.from(restLength), 'float');
   const lambda = instancedArray(nConstraints, 'float');
 

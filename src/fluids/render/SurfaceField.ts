@@ -1,5 +1,5 @@
 import { HalfFloatType, Vector3 } from 'three';
-import { Storage3DTexture } from 'three/webgpu';
+import { Storage3DTexture, type WebGPURenderer } from 'three/webgpu';
 import {
   Fn,
   If,
@@ -21,6 +21,7 @@ import {
 } from 'three/tsl';
 import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import { emitColliderSdf, emitSampleSdf } from '../../core/collision/index.js';
+import { releaseStorageBuffers } from '../../core/particles.js';
 import type { ParticleRange, PrimitiveSet, SDFCollider } from '../../core/index.js';
 import type { FluidSystem } from '../FluidSystem.js';
 
@@ -102,6 +103,7 @@ export class SurfaceField {
   readonly kernels: readonly ComputeNode[];
   /** Recomputes wetted-collider proximity. Run once, and again after colliders move. */
   readonly wallKernel: ComputeNode;
+  private readonly buffers: readonly { readonly value: object }[];
 
   constructor(options: SurfaceFieldOptions) {
     const {
@@ -120,7 +122,7 @@ export class SurfaceField {
     const spacing = fluidSystem.particleSpacing;
     const size = max.clone().sub(min);
     if (Math.min(size.x, size.y, size.z) <= 0)
-      throw new Error('Liquid bounds must have positive extent.');
+      throw new Error('FluidSurfaceRenderer: bounds must have positive extent');
 
     const voxel = Math.max(r, Math.cbrt((size.x * size.y * size.z) / voxelBudget));
     const nx = Math.ceil(size.x / voxel),
@@ -355,9 +357,13 @@ export class SurfaceField {
     if (solids && solids.count > 0) kernels.push(splat(solids, false));
     kernels.push(blur(0, false), blur(1, false), blur(2, true));
     this.kernels = kernels;
+    this.buffers = [mass, offX, offY, offZ, solid, a, b, sa, sb, walls];
   }
 
-  dispose(): void {
+  /** Free the texture, the kernels, and the GPU buffers. */
+  dispose(renderer: WebGPURenderer): void {
+    for (const kernel of [...this.kernels, this.wallKernel]) kernel.dispose();
     this.texture.dispose();
+    releaseStorageBuffers(renderer, this.buffers);
   }
 }

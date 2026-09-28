@@ -13,16 +13,21 @@ export interface VoxelizeOptions {
    */
   readonly largestPiece?: boolean;
   /**
-   * Distance field input only: also fill grid points up to this far outside
-   * the surface, in metres. A little dilation keeps thin parts attached.
-   * Default 0.
+   * Distance field input only (mesh input throws): also fill grid points up
+   * to this far outside the surface, in metres. A little dilation keeps thin
+   * parts attached. Default 0.
    */
   readonly dilation?: number;
 }
 
 export interface VoxelizeResult {
-  /** xyz per particle, surface particles first. */
+  /**
+   * xyz per particle, surface particles first, in the input's own space:
+   * the geometry's local coordinates for a mesh, the field's coordinates
+   * (those of `origin`) for {@link SDFData}.
+   */
   readonly positions: Float32Array;
+  /** Number of particles. 0 when the shape is too small for the grid. */
   readonly count: number;
   /** Number of leading particles on the surface. */
   readonly surfaceCount: number;
@@ -36,7 +41,11 @@ export interface VoxelizeResult {
  * must be closed) or a baked signed distance field.
  *
  * Particles are ordered surface first, as {@link SoftbodySystem} expects;
- * surface particles are those with a missing grid neighbor.
+ * surface particles are those with a missing grid neighbor. Positions are in
+ * the shape's own space: a `BufferGeometry` is read without any object
+ * transform, and a field's positions share its `origin`'s coordinates. Move
+ * them into world space before uploading. Check `count`: a shape smaller
+ * than the grid spacing gives no particles.
  */
 export function voxelize(
   shape: BufferGeometry | TriangleMesh | SDFData,
@@ -46,9 +55,18 @@ export function voxelize(
   if (!(particleRadius > 0) || !Number.isFinite(particleRadius)) {
     throw new Error(`voxelize: particleRadius must be positive, got ${particleRadius}`);
   }
+  const { dilation } = options;
+  const isField = 'data' in shape;
+  if (dilation !== undefined) {
+    if (!isField) throw new Error('voxelize: dilation applies only to SDFData input');
+    if (!Number.isFinite(dilation)) {
+      throw new Error(`voxelize: dilation must be a finite number, got ${dilation}`);
+    }
+  }
   const spacing = 2 * particleRadius;
-  const { min, max, inside } =
-    'data' in shape ? sdfShape(shape, options.dilation ?? 0) : meshShape(toTriangleMesh(shape));
+  const { min, max, inside } = isField
+    ? sdfShape(shape, dilation ?? 0)
+    : meshShape(toTriangleMesh(shape));
   const dims = [0, 1, 2].map((a) => Math.max(1, Math.ceil((max[a]! - min[a]!) / spacing))) as [
     number,
     number,

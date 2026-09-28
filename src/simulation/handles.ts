@@ -141,6 +141,7 @@ export class Smoke {
     return this.settings.heat;
   }
   set heat(value: number) {
+    if (!Number.isFinite(value)) throw new Error(`Smoke.heat: must be finite, got ${value}`);
     this.settings.heat = value;
     if (this.system) this.system.buoyancy = value;
   }
@@ -149,6 +150,9 @@ export class Smoke {
     return this.settings.cooling;
   }
   set cooling(value: number) {
+    if (!(value >= 0) || !Number.isFinite(value)) {
+      throw new Error(`Smoke.cooling: must be finite and ≥ 0, got ${value}`);
+    }
     this.settings.cooling = value;
     if (this.system) this.system.cooling = value;
   }

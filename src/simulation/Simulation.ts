@@ -51,8 +51,6 @@ import {
   capsuleObstacle,
   clearOf,
   fillBox,
-  meshVolume,
-  radiusForBudget,
   sdfObstacle,
   sphereObstacle,
   worldGeometry,
@@ -74,12 +72,17 @@ export interface SimulationOptions {
   /** Put a lid on the container. Default `false`; smoke always gets one. */
   readonly closed?: boolean;
   /**
-   * About how many particles to use in total, which sets the detail and the
-   * cost. Default 20,000. Ignored when `particleRadius` is given.
+   * Radius of every particle in metres. Particles are laid out `2 × particleRadius`
+   * apart, so a box of liquid holds about `volume / (2r)³` of them. Smaller
+   * particles give finer detail and cost more.
    */
-  readonly particles?: number;
-  /** Radius of every particle in metres. Default: whatever fits the `particles` budget. */
-  readonly particleRadius?: number;
+  readonly particleRadius: number;
+  /**
+   * The most particles the scene may use. The first step throws, with the
+   * count it needed, if everything added takes more than this at
+   * `particleRadius`. Cost scales with the particle count.
+   */
+  readonly maxParticles: number;
   /** Gravity in m/s². Default `(0, -9.81, 0)`, or `(0, -1, 0)` for smoke. Change it later with {@link Simulation.gravity}. */
   readonly gravity?: Vector3;
   /** Solver substeps per step. Default: chosen from the particle size and what's in the scene. */
@@ -236,7 +239,14 @@ const CLOTH_SPACING = 2.2;
  *
  * ```ts
  * const renderer = await createParticleRenderer();
- * const sim = new Simulation({ renderer, scene, camera, container: new Box3(min, max) });
+ * const sim = new Simulation({
+ *   renderer,
+ *   scene,
+ *   camera,
+ *   container: new Box3(min, max),
+ *   particleRadius: 0.015,
+ *   maxParticles: 5000,
+ * });
  * sim.addFluid({ box: new Box3(new Vector3(-0.5, 0, -0.3), new Vector3(0, 0.5, 0.3)) });
  *
  * async function frame() {
@@ -271,9 +281,18 @@ export class Simulation {
   private lastStepMs = -Infinity;
   private system: ParticleSystem | undefined;
   private simLoop: SimLoop | undefined;
-  private radius = 0;
 
   constructor(options: SimulationOptions) {
+    if (!(options.particleRadius > 0) || !Number.isFinite(options.particleRadius)) {
+      throw new Error(
+        `Simulation: particleRadius must be a positive number of metres, got ${options.particleRadius}`,
+      );
+    }
+    if (!(options.maxParticles > 0) || !Number.isInteger(options.maxParticles)) {
+      throw new Error(
+        `Simulation: maxParticles must be a positive integer, got ${options.maxParticles}`,
+      );
+    }
     this.options = options;
     this.gravityValue = options.gravity?.clone() ?? new Vector3(0, -9.81, 0);
   }
@@ -401,7 +420,10 @@ export class Simulation {
     });
   }
 
-  /** A solid rod with rounded ends from `start` to `end`. With `follow`, it keeps its length and direction and moves with the object. */
+  /**
+   * A solid rod with rounded ends from `start` to `end`. With `follow`, its
+   * midpoint moves with the object and it turns as the object turns.
+   */
   addCapsule(
     options: MovingColliderOptions & {
       readonly start: Vector3;
@@ -438,11 +460,11 @@ export class Simulation {
     return this.gravityValue;
   }
 
-  /** Radius of every particle, in metres. Known once the simulation starts. */
+  /** Radius of every particle, in metres. */
   get particleRadius(): number {
-    return this.radius;
+    return this.options.particleRadius;
   }
-  /** Number of particles. Known once the simulation starts. */
+  /** Number of particles in use. Known once the simulation starts. */
   get particleCount(): number {
     return this.system?.capacity ?? 0;
   }
@@ -558,7 +580,7 @@ export class Simulation {
         const r = sourceRadius * 0.9 * Math.sqrt(Math.random());
         handle.system!.emit([
           source.x + Math.cos(angle) * r,
-          source.y + this.radius + Math.random() * sourceRadius * 0.3,
+          source.y + this.options.particleRadius + Math.random() * sourceRadius * 0.3,
           source.z + Math.sin(angle) * r,
         ]);
       }
@@ -586,20 +608,9 @@ export class Simulation {
       );
     }
 
-    // Size the particles. Every particle shares one radius.
+    // Every particle shares one radius.
     const inside = container?.clone();
-    const fluidVolume = (entry: FluidEntry) =>
-      entry.options.box
-        ? boxVolume(inside ? entry.options.box.clone().intersect(inside) : entry.options.box)
-        : meshVolume(entry.geometry!);
-    const volume =
-      this.fluids.reduce((sum, entry) => sum + fluidVolume(entry), 0) +
-      this.softbodies.reduce((sum, entry) => sum + meshVolume(entry.geometry), 0) +
-      (smoke ? boxVolume(container!) : 0);
-    const area = this.cloths.reduce((sum, { options }) => sum + options.width * options.height, 0);
-    const r = (this.radius =
-      this.options.particleRadius ??
-      radiusForBudget(volume, area, CLOTH_SPACING, this.options.particles ?? 20000));
+    const r = this.options.particleRadius;
     const spacing = 2 * r;
 
     // Colliders, so liquid doesn't start inside them.
@@ -710,6 +721,13 @@ export class Simulation {
     for (const range of fluidRanges)
       if (range.count === 0)
         throw new Error('addFluid: the fluid has no room; check its box and the container');
+    const { maxParticles } = this.options;
+    if (init.length > maxParticles) {
+      throw new Error(
+        `Simulation: the scene needs ${init.length} particles at particleRadius ${r}, above maxParticles (${maxParticles}). ` +
+          'Raise maxParticles, raise particleRadius, or add less',
+      );
+    }
 
     const particles = (this.system = new ParticleSystem(renderer, init.length, r));
     particles.uploadParticles(init);
@@ -789,6 +807,7 @@ export class Simulation {
         cooling: handle.settings.cooling,
       });
       handle.system = gas;
+      this.disposers.push(() => gas.dispose());
       materials.push(gas, air);
     }
 
@@ -985,12 +1004,6 @@ export class Simulation {
 
 function friction(options: ColliderOptions): number {
   return options.friction ?? 0.5;
-}
-
-function boxVolume(box: Box3): number {
-  if (box.isEmpty()) return 0;
-  const size = box.getSize(new Vector3());
-  return size.x * size.y * size.z;
 }
 
 function pinned(pin: NonNullable<ClothOptions['pin']>, columns: number, rows: number): number[] {

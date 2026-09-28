@@ -13,6 +13,9 @@ export interface SmokeTracers {
   readonly smokeAge: StorageBufferNode<'float'>;
   /** 1 for live tracers, 0 for free slots. */
   readonly smokeAlive: StorageBufferNode<'uint'>;
-  /** Optional velocity per tracer; point sprites stretch along it. */
+  /**
+   * Optional velocity per tracer. {@link GasSpriteRenderer} passes it to its
+   * `colorNode`, or zero when absent.
+   */
   readonly smokeVelocities?: StorageBufferNode<'vec4'>;
 }

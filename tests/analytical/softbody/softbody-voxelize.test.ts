@@ -169,6 +169,22 @@ describe('voxelize (unit cube)', () => {
     expect(() => voxelize(mesh, { particleRadius: NaN })).toThrow(/particleRadius/);
   });
 
+  it('rejects dilation for mesh input, and a non-finite dilation for a field', () => {
+    expect(() => voxelize(unitCubeMesh(), { particleRadius: 0.1, dilation: 0.01 })).toThrow(
+      /dilation applies only to SDFData input/,
+    );
+    const field = {
+      data: new Float32Array(8).fill(-1),
+      resolution: [2, 2, 2] as const,
+      origin: [0, 0, 0] as const,
+      voxelSize: [0.1, 0.1, 0.1] as const,
+    };
+    expect(() => voxelize(field, { particleRadius: 0.05, dilation: NaN })).toThrow(
+      /dilation must be a finite number/,
+    );
+    expect(voxelize(field, { particleRadius: 0.05, dilation: 0.01 }).count).toBeGreaterThan(0);
+  });
+
   it('rejects malformed indices / vertices', () => {
     expect(() =>
       voxelize(

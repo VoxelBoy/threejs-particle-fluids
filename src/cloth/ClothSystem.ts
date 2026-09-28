@@ -41,14 +41,17 @@ export interface ClothSystemOptions {
   readonly offset?: number;
   /** Stretch compliance in s²/kg. Default 1e-7 (barely stretches). */
   readonly stretchCompliance?: number;
-  /** Bending compliance. Default 1e-5. Higher values drape more loosely. */
+  /**
+   * Bending compliance in rad²/(N·m). Default 1e-5. Higher values drape
+   * more loosely.
+   */
   readonly bendCompliance?: number;
   /**
    * Compliance of the long-range attachments that stop pinned cloth from
    * stretching under its own weight (Kim et al. 2012). Default 0.
    */
   readonly tetherCompliance?: number;
-  /** How far past its rest distance a particle may drift from its pins, as a fraction. Default 0. */
+  /** How far past its rest distance a particle may drift from its pins, as a fraction ≥ 0. Default 0. */
   readonly stretchTolerance?: number;
   /** Wind velocity in m/s. Default none. */
   readonly wind?: Vector3;
@@ -60,7 +63,8 @@ export interface ClothSystemOptions {
    * Blend each particle's velocity toward its neighbors' after every
    * substep, from 0 (off) to 1. Calms high-frequency ripples, such as
    * stretched cloth chattering against a collider, without slowing the
-   * cloth's overall motion. Default 0.
+   * cloth's overall motion. Default off. The smoothing pass is only built
+   * when this option is given, so pass `0` to change it later.
    */
   readonly damping?: number;
 }
@@ -72,6 +76,7 @@ export interface ClothSystemOptions {
  *
  * The cloth writes its particles' positions and masses into the
  * {@link ParticleSystem} from its graph, so there is no need to upload them.
+ * Their velocities are set to zero; their collision groups are kept.
  *
  * ```ts
  * const graph = createClothGraph(new PlaneGeometry(1, 1, 40, 40), { pinnedIndices: [0, 40] });
@@ -83,7 +88,7 @@ export class ClothSystem implements Material {
   readonly particles: ParticleSystem;
   readonly graph: ClothGraph;
   readonly range: ParticleRange;
-  /** Long-range attachments built from the pins. */
+  /** Long-range attachments built from the pins, with cloth-local particle indices. */
   readonly tethers: readonly TetherConstraint[];
 
   private readonly options: ClothSystemOptions;
@@ -98,12 +103,18 @@ export class ClothSystem implements Material {
     const { graph } = options;
     this.range = { start: options.offset ?? 0, count: graph.positions.length };
     assertRange(particles, this.range, 'ClothSystem');
-    for (const key of ['stretchCompliance', 'bendCompliance', 'tetherCompliance'] as const) {
+    for (const key of [
+      'stretchCompliance',
+      'bendCompliance',
+      'tetherCompliance',
+      'stretchTolerance',
+      'drag',
+      'lift',
+    ] as const) {
       const value = options[key];
-      if (value !== undefined && !(value >= 0 && Number.isFinite(value))) {
-        throw new Error(`ClothSystem: ${key} must be ≥ 0, got ${value}`);
-      }
+      if (value !== undefined) nonNegative(value, key);
     }
+    if (options.damping !== undefined) unitInterval(options.damping, 'damping');
     this.particles = particles;
     this.graph = graph;
     this.options = options;
@@ -117,8 +128,14 @@ export class ClothSystem implements Material {
       options: { stretchTolerance: options.stretchTolerance ?? 0 },
     });
 
+    // Keep any collision group already set on the range.
+    const groups = particles.collisionGroup.value.array as Uint32Array;
     particles.uploadParticles(
-      graph.positions.map((position, i) => ({ position, invMass: graph.invMass[i]! })),
+      graph.positions.map((position, i) => ({
+        position,
+        invMass: graph.invMass[i]!,
+        collisionGroup: groups[this.range.start + i]!,
+      })),
       this.range.start,
     );
   }
@@ -128,25 +145,34 @@ export class ClothSystem implements Material {
     return this.windUniform.value;
   }
 
+  /** Air drag, `½ · C_D · ρ_air` in kg/m³. */
   get drag(): number {
     return this.dragUniform.value;
   }
   set drag(value: number) {
-    this.dragUniform.value = value;
+    this.dragUniform.value = nonNegative(value, 'drag');
   }
 
+  /** Air lift, `½ · C_L · ρ_air` in kg/m³. */
   get lift(): number {
     return this.liftUniform.value;
   }
   set lift(value: number) {
-    this.liftUniform.value = value;
+    this.liftUniform.value = nonNegative(value, 'lift');
   }
 
+  /**
+   * Velocity smoothing, 0 to 1. `0` when the `damping` option was not
+   * given; setting it then throws, since the smoothing pass was not built.
+   */
   get damping(): number {
     return this.dampingUniform.value;
   }
   set damping(value: number) {
-    this.dampingUniform.value = value;
+    if (this.options.damping === undefined) {
+      throw new Error('ClothSystem: pass `damping` in the options to enable it before changing it');
+    }
+    this.dampingUniform.value = unitInterval(value, 'damping');
   }
 
   /** Bending compliance. Changes take effect on the next step. */
@@ -154,10 +180,7 @@ export class ClothSystem implements Material {
     return this.bendComplianceValue;
   }
   set bendCompliance(value: number) {
-    if (!(value >= 0) || !Number.isFinite(value)) {
-      throw new Error(`ClothSystem.bendCompliance must be ≥ 0, got ${value}`);
-    }
-    this.bendComplianceValue = value;
+    this.bendComplianceValue = nonNegative(value, 'bendCompliance');
     if (this.bending) {
       (this.bending.compliance.value.array as Float32Array).fill(value);
       this.bending.compliance.value.needsUpdate = true;
@@ -264,4 +287,18 @@ export class ClothSystem implements Material {
     })().compute(count);
     return [average, apply];
   }
+}
+
+function nonNegative(value: number, name: string): number {
+  if (!(value >= 0) || !Number.isFinite(value)) {
+    throw new Error(`ClothSystem: ${name} must be ≥ 0, got ${value}`);
+  }
+  return value;
+}
+
+function unitInterval(value: number, name: string): number {
+  if (!(value >= 0 && value <= 1)) {
+    throw new Error(`ClothSystem: ${name} must be between 0 and 1, got ${value}`);
+  }
+  return value;
 }

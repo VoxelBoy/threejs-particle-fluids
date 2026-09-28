@@ -1,14 +1,17 @@
 import type { Box3, Vector3 } from 'three';
 import { Fn, If, instanceIndex, instancedArray, uint, uniform, vec4 } from 'three/tsl';
 import type StorageBufferNode from 'three/src/nodes/accessors/StorageBufferNode.js';
+import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import type UniformNode from 'three/src/nodes/core/UniformNode.js';
 
 import {
   createSphKernelUniforms,
   type Material,
   type MaterialKernels,
+  type ParticleSystem,
   type SolverContext,
 } from '../core/index.js';
+import { releaseStorageBuffers } from '../core/particles.js';
 import type { FluidSystem } from '../fluids/index.js';
 import { AirHeat, type HeatSource } from './heat.js';
 import { buildSmokeAdvectKernel } from './smokeAdvect.js';
@@ -34,10 +37,10 @@ export interface GasSystemOptions {
   readonly heatSources?: readonly HeatSource[];
   /**
    * Upward acceleration, in m/s², of air at temperature 1 relative to the
-   * average air temperature. Default 3.
+   * average air temperature. Default 3. Requires `heatSources`.
    */
   readonly buoyancy?: number;
-  /** How fast air cools, as an exponential rate per second. Default 0.8. */
+  /** How fast air cools, as an exponential rate per second. Default 0.8. Requires `heatSources`. */
   readonly cooling?: number;
 }
 
@@ -47,8 +50,8 @@ export interface GasSystemOptions {
  * motion visible. Draw them with {@link GasVolumeRenderer} or
  * {@link GasSpriteRenderer}.
  *
- * List the gas before its fluid in the {@link SimLoop}'s `materials`, so
- * tracers follow the solved velocities before vorticity and viscosity
+ * List the gas before its fluid in the same {@link SimLoop}'s `materials`,
+ * so tracers follow the solved velocities before vorticity and viscosity
  * adjust them.
  *
  * ```ts
@@ -71,6 +74,11 @@ export interface GasSystemOptions {
  */
 export class GasSystem implements Material, SmokeTracers {
   readonly fluid: FluidSystem;
+
+  /** The fluid's particle storage. */
+  get particles(): ParticleSystem {
+    return this.fluid.particles;
+  }
   readonly capacity: number;
   readonly lifetime: number;
   readonly bounds: Box3 | undefined;
@@ -94,6 +102,11 @@ export class GasSystem implements Material, SmokeTracers {
   private readonly spawns: StorageBufferNode<'vec4'>;
   private readonly spawnStart: UniformNode<'uint', number>;
   private readonly spawnCount: UniformNode<'uint', number>;
+  /** Substep uniform of the loop that last built this gas; identifies that loop. */
+  private loopDt: UniformNode<'float', number> | undefined;
+  private fluidChecked = false;
+  private readonly kernels: ComputeNode[] = [];
+  private disposed = false;
 
   constructor(fluid: FluidSystem, options: GasSystemOptions) {
     const { capacity } = options;
@@ -109,13 +122,14 @@ export class GasSystem implements Material, SmokeTracers {
     this.lifetime = lifetime;
     this.bounds = options.bounds?.clone();
     if (options.heatSources?.length) {
-      const buoyancy = options.buoyancy ?? 3;
-      const cooling = options.cooling ?? 0.8;
-      if (!Number.isFinite(buoyancy))
-        throw new Error(`GasSystem: buoyancy must be finite, got ${buoyancy}`);
-      if (!(cooling >= 0) || !Number.isFinite(cooling))
-        throw new Error(`GasSystem: cooling must be ≥ 0, got ${cooling}`);
-      this.heat = new AirHeat(fluid, options.heatSources, buoyancy, cooling);
+      this.heat = new AirHeat(
+        fluid,
+        options.heatSources,
+        checkBuoyancy(options.buoyancy ?? 3),
+        checkCooling(options.cooling ?? 0.8),
+      );
+    } else if (options.buoyancy !== undefined || options.cooling !== undefined) {
+      throw new Error('GasSystem: buoyancy and cooling need heatSources');
     }
     this.temperature = this.heat?.temperature;
     this.bornAt = new Float64Array(capacity).fill(-Infinity);
@@ -134,7 +148,7 @@ export class GasSystem implements Material, SmokeTracers {
     return this.requireHeat().buoyancy.value;
   }
   set buoyancy(value: number) {
-    this.requireHeat().buoyancy.value = value;
+    this.requireHeat().buoyancy.value = checkBuoyancy(value);
   }
 
   /** Exponential cooling rate of the air, per second. Requires `heatSources`. */
@@ -142,7 +156,7 @@ export class GasSystem implements Material, SmokeTracers {
     return this.requireHeat().cooling.value;
   }
   set cooling(value: number) {
-    this.requireHeat().cooling.value = value;
+    this.requireHeat().cooling.value = checkCooling(value);
   }
 
   private requireHeat(): AirHeat {
@@ -166,6 +180,7 @@ export class GasSystem implements Material, SmokeTracers {
    * `false` if every tracer is still alive.
    */
   emit(position: Vector3 | readonly [number, number, number]): boolean {
+    this.assertAlive();
     const slot = (this.cursor + this.pending.length / 3) % this.capacity;
     if (
       this.pending.length / 3 >= this.capacity ||
@@ -179,6 +194,15 @@ export class GasSystem implements Material, SmokeTracers {
   }
 
   update(dt: number): void {
+    this.assertAlive();
+    // The fluid is built after the gas, so the first step is the earliest
+    // point to check it was built by the same loop.
+    if (this.loopDt && !this.fluidChecked) {
+      if (this.fluidLoopDt() !== this.loopDt) {
+        throw new Error("GasSystem: its FluidSystem must be in the same SimLoop's `materials`");
+      }
+      this.fluidChecked = true;
+    }
     const count = this.pending.length / 3;
     const spawns = this.spawns.value.array as Float32Array;
     for (let k = 0; k < count; k++) {
@@ -197,13 +221,11 @@ export class GasSystem implements Material, SmokeTracers {
   }
 
   build({ hashGrid, dt }: SolverContext): MaterialKernels {
-    let fluidBuilt = true;
-    try {
-      void this.fluid.kernelContext;
-    } catch {
-      fluidBuilt = false;
+    if (this.fluidLoopDt() === dt) {
+      throw new Error('GasSystem: list it before its FluidSystem in `materials`');
     }
-    if (fluidBuilt) throw new Error('GasSystem: list it before its FluidSystem in `materials`');
+    this.loopDt = dt;
+    this.fluidChecked = false;
 
     const spawn = Fn(() => {
       const k: Any = instanceIndex;
@@ -216,20 +238,63 @@ export class GasSystem implements Material, SmokeTracers {
       });
     })().compute(this.capacity);
 
-    return {
-      beforeStep: [spawn],
-      postSolve: [
-        buildSmokeAdvectKernel({
-          tracers: this,
-          fluid: this.fluid,
-          hashGrid,
-          sph: createSphKernelUniforms(this.fluid.smoothingRadius),
-          dt,
-          lifetime: this.lifetime,
-          bounds: this.bounds,
-        }),
-        ...(this.heat?.build(dt) ?? []),
-      ],
-    };
+    const postSolve = [
+      buildSmokeAdvectKernel({
+        tracers: this,
+        fluid: this.fluid,
+        hashGrid,
+        sph: createSphKernelUniforms(this.fluid.smoothingRadius),
+        dt,
+        lifetime: this.lifetime,
+        bounds: this.bounds,
+      }),
+      ...(this.heat?.build(dt) ?? []),
+    ];
+    this.kernels.push(spawn, ...postSolve);
+    return { beforeStep: [spawn], postSolve };
   }
+
+  /**
+   * Free the tracer and temperature buffers and the compiled kernels. Dispose
+   * the {@link SimLoop} that runs this gas first; the gas can't be used after.
+   */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    for (const kernel of this.kernels) kernel.dispose();
+    this.kernels.length = 0;
+    releaseStorageBuffers(this.fluid.particles.renderer, [
+      this.smokePositions,
+      this.smokeVelocities,
+      this.smokeAge,
+      this.smokeAlive,
+      this.spawns,
+      ...(this.heat?.buffers ?? []),
+    ]);
+  }
+
+  /** Substep uniform of the loop that built the fluid, if it has been built. */
+  private fluidLoopDt(): UniformNode<'float', number> | undefined {
+    try {
+      return this.fluid.kernelContext.dt;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private assertAlive(): void {
+    if (this.disposed) throw new Error('GasSystem: already disposed');
+  }
+}
+
+function checkBuoyancy(value: number): number {
+  if (!Number.isFinite(value)) throw new Error(`GasSystem: buoyancy must be finite, got ${value}`);
+  return value;
+}
+
+function checkCooling(value: number): number {
+  if (!(value >= 0) || !Number.isFinite(value)) {
+    throw new Error(`GasSystem: cooling must be ≥ 0, got ${value}`);
+  }
+  return value;
 }

@@ -11,9 +11,10 @@ import {
   RedFormat,
   Vector3,
 } from 'three';
+import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import type UniformNode from 'three/src/nodes/core/UniformNode.js';
 
-import type { ParticleSystem } from '../particles.js';
+import { releaseStorageBuffers, type ParticleSystem } from '../particles.js';
 import {
   emitColliderContact,
   emitColliderFriction,
@@ -21,7 +22,7 @@ import {
   type ColliderContext,
   type ColliderKernels,
 } from './collider.js';
-import { resolveFriction } from './PrimitiveSet.js';
+import { normalized, resolveFriction } from './PrimitiveSet.js';
 import { emitSampleSdf, type SdfFields } from './sdf.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -44,7 +45,7 @@ export interface SDFColliderOptions {
   readonly muK?: number;
   /** World position of the mesh's local origin. Default `(0, 0, 0)`. */
   readonly position?: Vector3;
-  /** Orientation about the local origin. Default identity. */
+  /** Orientation about the local origin. Normalized. Default identity. */
   readonly rotation?: Quaternion;
   /** Uniform scale about the local origin. Default `1`. */
   readonly scale?: number;
@@ -52,7 +53,8 @@ export interface SDFColliderOptions {
    * Extra contact distance beyond the particle radius, in metres. Default
    * `0`. Sparse particle surfaces such as cloth leave gaps that thin
    * features (ears, fins) can slip through; about half the particle spacing
-   * closes them.
+   * closes them. It belongs to the particles, so it does not scale with
+   * {@link SDFCollider.setScale}.
    */
   readonly thickness?: number;
 }
@@ -66,6 +68,8 @@ export interface SDFColliderOptions {
 export class SDFCollider implements Collider {
   readonly particles: ParticleSystem;
   readonly texture: Data3DTexture;
+  /** Per-loop solver buffers, freed on dispose. */
+  private readonly lambdas: { readonly value: object }[] = [];
   /** @internal Sampling inputs, shared with the fluid surface renderer. */
   readonly fields: SdfFields;
 
@@ -78,6 +82,8 @@ export class SDFCollider implements Collider {
   private readonly scaleUniform: UniformNode<'float', number>;
   private readonly invScaleUniform: UniformNode<'float', number>;
   private readonly orientation = new Quaternion();
+  private readonly kernels: ComputeNode[] = [];
+  private changes = 0;
 
   constructor(particles: ParticleSystem, sdf: SDFData, options: SDFColliderOptions = {}) {
     const [nx, ny, nz] = sdf.resolution;
@@ -90,10 +96,8 @@ export class SDFCollider implements Collider {
       );
     }
     const thickness = options.thickness ?? 0;
-    if (!(thickness >= 0) || !Number.isFinite(thickness)) {
-      throw new Error(`SDFCollider: thickness must be non-negative, got ${thickness}`);
-    }
-    const { muS, muK } = resolveFriction(options);
+    assertThickness(thickness);
+    const { muS, muK } = resolveFriction(options, 'SDFCollider');
     this.particles = particles;
 
     // Half floats filter on every adapter; 32-bit float filtering is optional in WebGPU.
@@ -132,19 +136,37 @@ export class SDFCollider implements Collider {
     this.setPosition(options.position ?? new Vector3());
     this.setRotation(options.rotation ?? new Quaternion());
     this.setScale(options.scale ?? 1);
+    this.changes = 0;
+  }
+
+  /**
+   * Increments whenever the placement (position, rotation, or scale) changes,
+   * so renderers can refresh anything cached against it.
+   */
+  get version(): number {
+    return this.changes;
   }
 
   get muS(): number {
     return this.muSUniform.value;
   }
   set muS(value: number) {
-    this.muSUniform.value = resolveFriction({ muS: value }).muS;
+    this.muSUniform.value = resolveFriction({ muS: value }, 'SDFCollider').muS;
   }
   get muK(): number {
     return this.muKUniform.value;
   }
   set muK(value: number) {
-    this.muKUniform.value = resolveFriction({ muK: value }).muK;
+    this.muKUniform.value = resolveFriction({ muK: value }, 'SDFCollider').muK;
+  }
+
+  /** Extra contact distance beyond the particle radius, in metres. Not scaled by `scale`. */
+  get thickness(): number {
+    return this.thicknessUniform.value;
+  }
+  set thickness(value: number) {
+    assertThickness(value);
+    this.thicknessUniform.value = value;
   }
 
   get position(): Vector3 {
@@ -158,21 +180,29 @@ export class SDFCollider implements Collider {
   }
 
   setPosition(position: Vector3): void {
+    if (this.positionUniform.value.equals(position)) return;
     this.positionUniform.value.copy(position);
+    this.changes++;
   }
 
+  /** Set the orientation. `rotation` is normalized. */
   setRotation(rotation: Quaternion): void {
-    this.orientation.copy(rotation);
-    this.rotationUniform.value.setFromMatrix4(new Matrix4().makeRotationFromQuaternion(rotation));
+    const unit = normalized(rotation, 'SDFCollider.setRotation');
+    if (this.orientation.equals(unit)) return;
+    this.orientation.copy(unit);
+    this.rotationUniform.value.setFromMatrix4(new Matrix4().makeRotationFromQuaternion(unit));
     this.invRotationUniform.value.copy(this.rotationUniform.value).transpose();
+    this.changes++;
   }
 
   setScale(scale: number): void {
     if (!(scale > 0) || !Number.isFinite(scale)) {
       throw new Error(`SDFCollider.setScale: scale must be positive, got ${scale}`);
     }
+    if (this.scaleUniform.value === scale) return;
     this.scaleUniform.value = scale;
     this.invScaleUniform.value = 1 / scale;
+    this.changes++;
   }
 
   /** Place the collider from a matrix. Scale must be uniform. */
@@ -195,6 +225,7 @@ export class SDFCollider implements Collider {
   buildKernels({ particles, dt, positions, velocities }: ColliderContext): ColliderKernels {
     // (λ_n, λ_t) per particle.
     const lambda = instancedArray(2 * particles.capacity, 'float');
+    this.lambdas.push(lambda);
     const reach: Any = float(particles.particleRadius).add(this.thicknessUniform);
 
     const resetLambda = Fn(() => {
@@ -253,10 +284,22 @@ export class SDFCollider implements Collider {
       });
     })().compute(particles.capacity);
 
+    this.kernels.push(resetLambda, solve, friction);
     return { preSolve: [resetLambda], solve: [solve], postSolve: [friction] };
   }
 
+  /** Dispose `texture` and release the kernels' pipelines and bindings. */
   dispose(): void {
     this.texture.dispose();
+    for (const kernel of this.kernels) kernel.dispose();
+    this.kernels.length = 0;
+    releaseStorageBuffers(this.particles.renderer, this.lambdas);
+    this.lambdas.length = 0;
+  }
+}
+
+function assertThickness(value: number): void {
+  if (!(value >= 0) || !Number.isFinite(value)) {
+    throw new Error(`SDFCollider: thickness must be non-negative, got ${value}`);
   }
 }

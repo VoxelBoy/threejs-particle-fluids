@@ -111,9 +111,7 @@ export class FluidSystem implements Material {
     for (const key of ['viscosity', 'vorticity', 'surfaceTension', 'adhesion'] as const) {
       const value = options[key];
       if (value === undefined) continue;
-      if (!Number.isFinite(value))
-        throw new Error(`FluidSystem: ${key} must be finite, got ${value}`);
-      this.uniforms[key] = uniform(value, 'float');
+      this.uniforms[key] = uniform(finite(value, key), 'float');
     }
 
     // The fluid owns its particles' mass.
@@ -133,7 +131,7 @@ export class FluidSystem implements Material {
     return this.uniform('viscosity').value;
   }
   set viscosity(value: number) {
-    this.uniform('viscosity').value = value;
+    this.uniform('viscosity').value = finite(value, 'viscosity');
   }
 
   /** Vorticity confinement strength. Requires `vorticity` in the options. */
@@ -141,7 +139,7 @@ export class FluidSystem implements Material {
     return this.uniform('vorticity').value;
   }
   set vorticity(value: number) {
-    this.uniform('vorticity').value = value;
+    this.uniform('vorticity').value = finite(value, 'vorticity');
   }
 
   /** Surface tension strength. Requires `surfaceTension` in the options. */
@@ -149,7 +147,7 @@ export class FluidSystem implements Material {
     return this.uniform('surfaceTension').value;
   }
   set surfaceTension(value: number) {
-    this.uniform('surfaceTension').value = value;
+    this.uniform('surfaceTension').value = finite(value, 'surfaceTension');
   }
 
   /** Adhesion strength. Requires `adhesion` in the options. */
@@ -157,14 +155,15 @@ export class FluidSystem implements Material {
     return this.uniform('adhesion').value;
   }
   set adhesion(value: number) {
-    this.uniform('adhesion').value = value;
+    this.uniform('adhesion').value = finite(value, 'adhesion');
   }
 
   /**
    * Treat the particles in `range` as a solid boundary (Akinci et al. 2012):
    * the fluid can't pass through them, pushes on them (buoyancy), and wets
    * them when `adhesion` is set. Use the surface particles of a soft body or
-   * a cloth. Call before creating the {@link SimLoop}.
+   * a cloth. Call before creating the {@link SimLoop}. Boundaries may not
+   * overlap the fluid or each other.
    *
    * @param options.dynamic Recompute the boundary each substep because it
    *   moves or deforms. Default `true`; pass `false` for static geometry.
@@ -174,11 +173,22 @@ export class FluidSystem implements Material {
       throw new Error('FluidSystem.addBoundary: add boundaries before creating the SimLoop');
     }
     assertRange(this.particles, range, 'FluidSystem.addBoundary');
-    const fluidEnd = this.range.start + this.range.count;
-    if (range.start < fluidEnd && this.range.start < range.start + range.count) {
+    if (overlaps(range, this.range)) {
       throw new Error('FluidSystem.addBoundary: a boundary cannot overlap the fluid');
     }
+    if (this.boundaries.some((boundary) => overlaps(range, boundary.range))) {
+      throw new Error('FluidSystem.addBoundary: boundaries cannot overlap each other');
+    }
     this.boundaries.push({ range, dynamic: options.dynamic ?? true });
+  }
+
+  /**
+   * True if, at the last neighbor rebuild, some fluid particle had more than
+   * 64 neighbors within `smoothingRadius` and the extras were dropped.
+   * Stalls on the GPU, so use it for debugging and tests.
+   */
+  async readbackOverflow(): Promise<boolean> {
+    return this.kernelContext.neighbors.readbackOverflow();
   }
 
   /** @internal Kernel inputs, available once the fluid is in a {@link SimLoop}. */
@@ -249,11 +259,16 @@ export class FluidSystem implements Material {
     }
 
     // Pressure solve. With boundaries, the fluid's push on them is scattered
-    // into `reaction` and applied right after the fluid's own correction.
+    // into `reaction` and applied right after the fluid's own correction,
+    // over the span that covers every boundary range.
     const deltaX = vec4Buffer();
     const lambda = instancedArray(particles.capacity, 'float');
-    const reaction = this.boundaries.length > 0 ? new Accumulator(particles, 10) : undefined;
-    if (reaction) preSolve.push(reaction.buildResetKernel());
+    const boundaryRanges = this.boundaries.map((boundary) => boundary.range);
+    const reaction =
+      boundaryRanges.length > 0
+        ? { accumulator: new Accumulator(particles, 10), ranges: boundaryRanges }
+        : undefined;
+    if (reaction) preSolve.push(reaction.accumulator.buildResetKernel());
     const solve = [
       buildLambdaKernel(context, {
         compliance: uniform(this.options.compliance ?? 1e-4, 'float'),
@@ -262,7 +277,14 @@ export class FluidSystem implements Material {
       }),
       buildPositionDeltaKernel(context, { lambda, deltaX, ...(reaction ? { reaction } : {}) }),
       buildApplyDeltaKernel(context, deltaX),
-      ...(reaction ? [reaction.buildApplyKernel([particles.predictedPositions])] : []),
+      ...(reaction
+        ? [
+            reaction.accumulator.buildApplyKernel(
+              [particles.predictedPositions],
+              coveringRange(boundaryRanges),
+            ),
+          ]
+        : []),
     ];
 
     const postSolve: ComputeNode[] = [];
@@ -297,6 +319,22 @@ export class FluidSystem implements Material {
     }
     return node;
   }
+}
+
+function overlaps(a: ParticleRange, b: ParticleRange): boolean {
+  return a.start < b.start + b.count && b.start < a.start + a.count;
+}
+
+/** The smallest range that contains every range in `ranges`. */
+function coveringRange(ranges: readonly ParticleRange[]): ParticleRange {
+  const start = Math.min(...ranges.map((range) => range.start));
+  const end = Math.max(...ranges.map((range) => range.start + range.count));
+  return { start, count: end - start };
+}
+
+function finite(value: number, name: string): number {
+  if (!Number.isFinite(value)) throw new Error(`FluidSystem: ${name} must be finite, got ${value}`);
+  return value;
 }
 
 function positive(value: number, name: string): number {

@@ -126,7 +126,7 @@ describe('collider: sphere bowl rest (100 particles)', () => {
 
       // (c) The position accumulator's overflow flag is clear.
       const overflow = await positionAccumulator!.readbackOverflow();
-      expect(overflow).toBe(0);
+      expect(overflow).toBe(false);
 
       loop.dispose();
       particles.dispose();

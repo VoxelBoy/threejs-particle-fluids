@@ -15,7 +15,7 @@ import {
 import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import type StorageBufferNode from 'three/src/nodes/accessors/StorageBufferNode.js';
 
-import type { ParticleRange, ParticleSystem } from './particles.js';
+import { releaseStorageBuffers, type ParticleRange, type ParticleSystem } from './particles.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -67,15 +67,28 @@ export class Accumulator {
     atomicAdd(this.delta.element(base.add(uint(2))), value.z.mul(this.scale).round().toInt());
   }
 
-  /** Zero every sum and the overflow flag. */
-  buildResetKernel(): ComputeNode {
+  /**
+   * Zero every sum, and the overflow flag unless `resetOverflow` is false
+   * (to keep the flag across several resets and clear it with
+   * {@link buildResetOverflowKernel} instead).
+   */
+  buildResetKernel(resetOverflow = true): ComputeNode {
     return Fn(() => {
       const i: Any = instanceIndex;
       atomicStore(this.delta.element(i), int(0));
-      If(i.equal(uint(0)), () => {
-        atomicStore(this.overflowFlag.element(uint(0)), uint(0));
-      });
+      if (resetOverflow) {
+        If(i.equal(uint(0)), () => {
+          atomicStore(this.overflowFlag.element(uint(0)), uint(0));
+        });
+      }
     })().compute(3 * this.particles.capacity);
+  }
+
+  /** Zero only the overflow flag. */
+  buildResetOverflowKernel(): ComputeNode {
+    return Fn(() => {
+      atomicStore(this.overflowFlag.element(uint(0)), uint(0));
+    })().compute(1);
   }
 
   /**
@@ -117,9 +130,14 @@ export class Accumulator {
     })().compute(range.count);
   }
 
-  /** 1 if a sum saturated since the last reset, else 0. Stalls on the GPU. */
-  async readbackOverflow(): Promise<number> {
+  /** True if a sum saturated since the overflow flag was last reset. Stalls on the GPU. */
+  async readbackOverflow(): Promise<boolean> {
     const buffer = await this.particles.renderer.getArrayBufferAsync(this.overflowFlag.value);
-    return new Uint32Array(buffer)[0]!;
+    return new Uint32Array(buffer)[0] !== 0;
+  }
+
+  /** Free the sums and flag on the GPU. Kernels built from this accumulator can't run afterwards. */
+  dispose(): void {
+    releaseStorageBuffers(this.particles.renderer, [this.delta, this.overflowFlag]);
   }
 }

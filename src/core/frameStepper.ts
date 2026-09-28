@@ -1,3 +1,6 @@
+/** Fraction of a step that still counts as a whole step, absorbing float rounding. */
+const STEP_TOLERANCE = 1e-6;
+
 export interface FrameStepperOptions {
   /** Simulation time advanced per step, in seconds. Typically `1 / 60`. */
   readonly fixedDt: number;
@@ -62,16 +65,18 @@ export class FrameStepper {
     this.accumulator += Math.max(0, (nowMs - this.lastMs) / 1000);
     this.lastMs = nowMs;
 
-    const maxAccumulated = this.fixedDt * this.maxStepsPerFrame;
-    const truncated = this.accumulator > maxAccumulated;
-    if (truncated) this.accumulator = maxAccumulated;
+    // Count whole steps instead of subtracting fixedDt repeatedly, so float
+    // rounding can't leave a step's worth of time behind. The tolerance
+    // absorbs rounding in the millisecond sums (a millionth of a step).
+    const available = this.accumulator / this.fixedDt;
+    const truncated = available > this.maxStepsPerFrame + STEP_TOLERANCE;
+    const steps = truncated
+      ? this.maxStepsPerFrame
+      : Math.min(Math.floor(available + STEP_TOLERANCE), this.maxStepsPerFrame);
+    // Truncation drops everything past the last step.
+    this.accumulator = truncated ? 0 : Math.max(0, this.accumulator - steps * this.fixedDt);
 
-    let steps = 0;
-    while (this.accumulator >= this.fixedDt && steps < this.maxStepsPerFrame) {
-      await step(this.fixedDt);
-      this.accumulator -= this.fixedDt;
-      steps++;
-    }
+    for (let i = 0; i < steps; i++) await step(this.fixedDt);
     return { steps, truncated, remainderSeconds: this.accumulator };
   }
 

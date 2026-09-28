@@ -52,6 +52,18 @@ export interface GasVolumeRendererOptions {
   readonly shadowColor?: number;
   /** Direction toward the light. Default `(-0.35, 0.8, 0.4)`. */
   readonly lightDirection?: Vector3;
+  /**
+   * Density fades smoothly to zero near the box's walls, so smoke doesn't end
+   * in a hard edge. Each value is the fade's width as a fraction of the box:
+   * `sides` for the four vertical walls, `bottom` and `top` for the floor and
+   * ceiling. 0 turns that fade off. Default
+   * `{ sides: 0.07, bottom: 0.025, top: 0.24 }`.
+   */
+  readonly edgeFade?: {
+    readonly sides?: number;
+    readonly bottom?: number;
+    readonly top?: number;
+  };
 }
 
 /**
@@ -71,15 +83,30 @@ export class GasVolumeRenderer {
     const { min, max, resolution = [32, 56, 32], steps = 56 } = options;
     this.renderer = options.renderer;
     const [nx, ny, nz] = resolution;
-    if (
-      resolution.some((n) => !Number.isInteger(n) || n < 4 || n > 128) ||
-      steps < 8 ||
-      steps > 128
-    )
-      throw new Error('Volume resolution must be 4–128 voxels per axis and steps must be 8–128.');
+    if (resolution.some((n) => !Number.isInteger(n) || n < 4 || n > 128)) {
+      throw new Error(
+        `GasVolumeRenderer: resolution must be integers in 4–128, got [${resolution.join(', ')}]`,
+      );
+    }
+    if (!Number.isInteger(steps) || steps < 8 || steps > 128) {
+      throw new Error(`GasVolumeRenderer: steps must be an integer in 8–128, got ${steps}`);
+    }
     const size = max.clone().sub(min);
-    if (Math.min(size.x, size.y, size.z) <= 0)
-      throw new Error('Volume bounds must have positive extent.');
+    if (!(Math.min(size.x, size.y, size.z) > 0)) {
+      throw new Error('GasVolumeRenderer: max must exceed min on every axis');
+    }
+    const { sides = 0.07, bottom = 0.025, top = 0.24 } = options.edgeFade ?? {};
+    for (const [name, value, limit] of [
+      ['sides', sides, 0.5],
+      ['bottom', bottom, 1],
+      ['top', top, 1],
+    ] as const) {
+      if (!(value >= 0 && value <= limit)) {
+        throw new Error(
+          `GasVolumeRenderer: edgeFade.${name} must be in [0, ${limit}], got ${value}`,
+        );
+      }
+    }
     const count = nx * ny * nz;
     const ticks = (instancedArray(count, 'uint') as Any).setAtomic(true);
     const a = instancedArray(count, 'float');
@@ -162,14 +189,15 @@ export class GasVolumeRenderer {
         target.element(instanceIndex).assign(sum);
       })().compute(count);
     const extinction = 0.00015 / ((size.x * size.y * size.z) / count);
+    // 0 → 1 over `width` from a wall; smoothstep with equal edges is undefined, so skip it.
+    const ramp = (distance: Any, width: number): Any =>
+      width > 0 ? distance.smoothstep(0, width) : float(1);
     const sampleParticles = Fn(([world]: Any[]) => {
       const unit: Any = world.sub(minimum).div(extent).toVar();
       const edge: Any = unit.min(vec3(1).sub(unit));
-      const fade: Any = edge.x
-        .min(edge.z)
-        .smoothstep(0, 0.07)
-        .mul(unit.y.smoothstep(0, 0.025))
-        .mul(float(1).sub(unit.y.smoothstep(0.76, 1)));
+      const fade: Any = ramp(edge.x.min(edge.z), sides)
+        .mul(ramp(unit.y, bottom))
+        .mul(ramp(float(1).sub(unit.y), top));
       const p: Any = unit.mul(scale).clamp(vec3(0), scale.sub(0.001)).toVar();
       const cell = p.floor(),
         f = p.fract();

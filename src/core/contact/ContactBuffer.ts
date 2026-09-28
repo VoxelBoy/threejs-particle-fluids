@@ -3,6 +3,8 @@ import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import type StorageBufferNode from 'three/src/nodes/accessors/StorageBufferNode.js';
 import type { WebGPURenderer } from 'three/webgpu';
 
+import { releaseStorageBuffers } from '../particles.js';
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
@@ -49,7 +51,9 @@ export class ContactBuffer {
     }
     this.renderer = renderer;
     this.maxContacts = maxContacts;
-    this.records = instancedArray(maxContacts, ContactRecord as Any) as Any;
+    // three r184 declares a one-element struct buffer as a bare struct, which
+    // can't be indexed, so always allocate at least two records.
+    this.records = instancedArray(Math.max(maxContacts, 2), ContactRecord as Any) as Any;
     this.counter = instancedArray(1, 'uint').toAtomic();
 
     const counter = this.counter;
@@ -69,6 +73,11 @@ export class ContactBuffer {
   async readbackCount(): Promise<number> {
     const buffer = await this.renderer.getArrayBufferAsync(this.counter.value);
     return new Uint32Array(buffer)[0]!;
+  }
+
+  /** Free the contact storage on the GPU. Kernels built on it can't run afterwards. */
+  dispose(): void {
+    releaseStorageBuffers(this.renderer, [this.records, this.counter]);
   }
 
   /** The stored `(i, j)` pairs, flattened. For tests and debugging. */

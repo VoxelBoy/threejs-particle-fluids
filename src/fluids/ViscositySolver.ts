@@ -2,7 +2,12 @@ import { Fn, float, instancedArray, uniform, vec3, vec4 } from 'three/tsl';
 import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import type UniformNode from 'three/src/nodes/core/UniformNode.js';
 
-import { emitPoly6FromRSq, type Material, type MaterialKernels } from '../core/index.js';
+import {
+  emitPoly6FromRSq,
+  type Material,
+  type MaterialKernels,
+  type ParticleSystem,
+} from '../core/index.js';
 import type { FluidSystem } from './FluidSystem.js';
 import { emitFluidIndex } from './sim/shared.js';
 
@@ -10,7 +15,13 @@ import { emitFluidIndex } from './sim/shared.js';
 type Any = any;
 
 export interface ViscositySolverOptions {
-  /** Kinematic viscosity. Higher values resist relative motion more. Honey is around 20. */
+  /**
+   * Kinematic viscosity ν, m²/s, as the discrete solve sees it: the
+   * Laplacian is approximated as `10 / smoothingRadius²` times the
+   * difference from the neighbors' weighted mean velocity. Tune it by eye;
+   * honey is around 20. Not the same scale as {@link FluidSystem}'s XSPH
+   * `viscosity`, which is a unitless blend factor. Must be ≥ 0.
+   */
   readonly viscosity: number;
   /** Jacobi sweeps per substep, 1–64. Default 12. Finer particles need more. */
   readonly iterations?: number;
@@ -26,29 +37,32 @@ export interface ViscositySolverOptions {
  */
 export class ViscositySolver implements Material {
   readonly fluid: FluidSystem;
+
+  /** The fluid's particle storage. */
+  get particles(): ParticleSystem {
+    return this.fluid.particles;
+  }
   private readonly viscosityUniform: UniformNode<'float', number>;
   private readonly iterations: number;
 
   constructor(fluid: FluidSystem, options: ViscositySolverOptions) {
     const iterations = options.iterations ?? 12;
-    if (!(options.viscosity >= 0) || !Number.isFinite(options.viscosity)) {
-      throw new Error(`ViscositySolver: viscosity must be ≥ 0, got ${options.viscosity}`);
-    }
     if (!Number.isInteger(iterations) || iterations < 1 || iterations > 64) {
       throw new Error(
         `ViscositySolver: iterations must be an integer from 1 to 64, got ${iterations}`,
       );
     }
     this.fluid = fluid;
-    this.viscosityUniform = uniform(options.viscosity, 'float');
+    this.viscosityUniform = uniform(nonNegative(options.viscosity), 'float');
     this.iterations = iterations;
   }
 
+  /** Kinematic viscosity ν; see {@link ViscositySolverOptions.viscosity}. */
   get viscosity(): number {
     return this.viscosityUniform.value;
   }
   set viscosity(value: number) {
-    this.viscosityUniform.value = value;
+    this.viscosityUniform.value = nonNegative(value);
   }
 
   build(): MaterialKernels {
@@ -84,10 +98,7 @@ export class ViscositySolver implements Material {
           sum.addAssign(source.element(j).xyz.mul(w));
           weight.addAssign(w);
         });
-        const rate: Any = this.viscosityUniform
-          .mul(dt)
-          .mul(10 / (h * h))
-          .max(0);
+        const rate: Any = this.viscosityUniform.mul(dt).mul(10 / (h * h));
         target
           .element(i)
           .assign(vec4(rhs.element(i).xyz.add(sum.mul(rate)).div(weight.mul(rate).add(1)), 0));
@@ -110,4 +121,11 @@ export class ViscositySolver implements Material {
       ],
     };
   }
+}
+
+function nonNegative(viscosity: number): number {
+  if (!(viscosity >= 0) || !Number.isFinite(viscosity)) {
+    throw new Error(`ViscositySolver: viscosity must be ≥ 0, got ${viscosity}`);
+  }
+  return viscosity;
 }

@@ -30,7 +30,12 @@ import { toTriangleMesh, type TriangleMesh } from '../core/mesh.js';
 export interface BakeOptions {
   /** Voxels along each axis of the cubic grid, at least 4. */
   readonly resolution: number;
-  /** Space added around the mesh's bounds on every side, in metres. Default 0. */
+  /**
+   * Space added around the mesh's bounds on every side, in metres. Outside
+   * the grid the field reads its edge voxels, so keep this above the contact
+   * distance (particle radius plus any collider thickness). Default: two
+   * voxels (one below resolution 8).
+   */
   readonly padding?: number;
 }
 
@@ -80,7 +85,7 @@ export function bakeMeshToSdf(mesh: BufferGeometry | TriangleMesh, options: Bake
     positions: vertices,
     indices,
     resolution: options.resolution,
-    padding: options.padding ?? 0,
+    padding: options.padding,
   };
   validateInput(input);
 
@@ -90,6 +95,11 @@ export function bakeMeshToSdf(mesh: BufferGeometry | TriangleMesh, options: Bake
   const data = new Float32Array(res * res * res);
 
   let inconsistentVotes = 0;
+  // Rays start this far off the voxel center, sideways, so they don't run
+  // exactly along the edges of meshes that are symmetric about the grid
+  // (a sphere's meridians on the grid diagonal), where both neighbouring
+  // triangles count a hit.
+  const jitter = voxelSize * 1e-4;
 
   // Per-voxel brute-force loop. Hottest path in the baker; keep simple.
   for (let zi = 0; zi < res; zi++) {
@@ -101,7 +111,7 @@ export function bakeMeshToSdf(mesh: BufferGeometry | TriangleMesh, options: Bake
         const px = origin[0] + (xi + 0.5) * voxelSize;
 
         const minDistSq = closestTriangleDistSq(px, py, pz, triangles);
-        const { inside, inconsistent } = insideByRayMajority(px, py, pz, triangles);
+        const { inside, inconsistent } = insideByRayMajority(px, py, pz, triangles, jitter);
         if (inconsistent) inconsistentVotes++;
 
         const dist = Math.sqrt(minDistSq);
@@ -133,12 +143,12 @@ function validateInput(input: {
   readonly positions: Float32Array;
   readonly indices: Uint32Array;
   readonly resolution: number;
-  readonly padding: number;
+  readonly padding: number | undefined;
 }): void {
   if (!Number.isInteger(input.resolution) || input.resolution < 4) {
     throw new Error(`bakeMeshToSdf: resolution must be an integer ≥ 4, got ${input.resolution}`);
   }
-  if (!(input.padding >= 0) || !Number.isFinite(input.padding)) {
+  if (input.padding !== undefined && !(input.padding >= 0 && Number.isFinite(input.padding))) {
     throw new Error(
       `bakeMeshToSdf: padding must be a non-negative finite number, got ${input.padding}`,
     );
@@ -203,7 +213,7 @@ function extractTriangles(positions: Float32Array, indices: Uint32Array): Triang
 
 function fitCubicGrid(
   triangles: Triangle[],
-  padding: number,
+  padding: number | undefined,
   resolution: number,
 ): { origin: [number, number, number]; voxelSize: number } {
   let minX = Infinity,
@@ -219,6 +229,13 @@ function fitCubicGrid(
     if (tri.maxX > maxX) maxX = tri.maxX;
     if (tri.maxY > maxY) maxY = tri.maxY;
     if (tri.maxZ > maxZ) maxZ = tri.maxZ;
+  }
+  // Default: k voxels on every side of the longest axis, where the voxel
+  // size itself includes the padding: p = k · (extent + 2p) / resolution.
+  if (padding === undefined) {
+    const extent = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
+    const k = resolution >= 8 ? 2 : 1;
+    padding = (k * extent) / (resolution - 2 * k);
   }
   // Expand by padding on all sides.
   minX -= padding;
@@ -355,7 +372,8 @@ function pointTriangleDistSq(
 /**
  * Sign determination by 3-axis ray-cast majority vote. Cast rays along +X,
  * +Y, +Z from `(px, py, pz)`; count Möller-Trumbore intersections per axis;
- * each axis votes "inside" if its hit count is odd. Majority (≥ 2 of 3)
+ * each axis votes "inside" if its hit count is odd. Each ray starts `jitter`-scaled
+ * off the point, sideways to its axis. Majority (≥ 2 of 3)
  * wins. `inconsistent = true` when the three votes split (e.g. two inside
  * and one outside, or vice versa) — the caller uses this to flag
  * non-watertight meshes per module doc.
@@ -365,10 +383,14 @@ function insideByRayMajority(
   py: number,
   pz: number,
   triangles: Triangle[],
+  jitter: number,
 ): { inside: boolean; inconsistent: boolean } {
-  const hitsX = countHitsAxis(px, py, pz, 0, triangles);
-  const hitsY = countHitsAxis(px, py, pz, 1, triangles);
-  const hitsZ = countHitsAxis(px, py, pz, 2, triangles);
+  // Irrational multiples keep the offset ray off rational-slope edges too.
+  const a = jitter * Math.SQRT2;
+  const b = jitter * Math.PI;
+  const hitsX = countHitsAxis(px, py + a, pz + b, 0, triangles);
+  const hitsY = countHitsAxis(px + b, py, pz + a, 1, triangles);
+  const hitsZ = countHitsAxis(px + a, py + b, pz, 2, triangles);
   const insideX = (hitsX & 1) === 1;
   const insideY = (hitsY & 1) === 1;
   const insideZ = (hitsZ & 1) === 1;

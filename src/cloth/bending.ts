@@ -62,7 +62,8 @@ export function createClothBendingConstraints(args: {
    */
   readonly restAngles: readonly number[];
   /**
-   * XPBD compliance `α` (s²/rad²·kg), the same for every tuple.
+   * XPBD compliance `α`, the same for every tuple. `C` is an angle, so `α`
+   * is the inverse of an angular stiffness: rad²/(N·m) = rad²·s²/(kg·m²).
    */
   readonly compliance: number;
   readonly dt: UniformNode<'float', number>;

@@ -32,11 +32,22 @@ export function emitFluidIndex(context: FluidKernelContext): Any {
   return instanceIndex.add(uint(context.range.start)).toVar();
 }
 
+/** Emit whether particle index `j` lies in any of `ranges`. */
+export function emitInRanges(j: Any, ranges: readonly ParticleRange[]): Any {
+  return ranges
+    .map((range) =>
+      j.greaterThanEqual(uint(range.start)).and(j.lessThan(uint(range.start + range.count))),
+    )
+    .reduce((any: Any, inside: Any) => any.or(inside));
+}
+
 /**
  * Emit neighbor `j`'s mass as seen by SPH sums. Boundary particles (non-zero
  * boundary volume) count as `ψ = ρ0 · V` (Akinci et al. 2012, eq. 5), so a
  * sparse layer of solid particles weighs as much as the fluid it displaces.
  * Other particles count with their own mass; pinned ones weigh nothing.
+ * That is what keeps two fluids on one particle system apart, and what
+ * lets a soft body's interior back up its boundary surface.
  */
 export function emitNeighborMass(
   context: FluidKernelContext,

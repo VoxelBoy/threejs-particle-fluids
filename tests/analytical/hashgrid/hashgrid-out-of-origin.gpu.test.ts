@@ -69,7 +69,7 @@ describe('HashGrid: particles far from the world origin', () => {
       // Overflow flag must stay 0 — the hashOrigin offset places the
       // particles at cell ~0 (well inside the Morton range) and ~10⁴ m
       // is far inside the f32→i32 saturation range at cellSize = 0.1.
-      expect(await grid.readbackOverflow()).toBe(0);
+      expect(await grid.readbackOverflow()).toBe(false);
 
       grid.dispose();
       particles.dispose();

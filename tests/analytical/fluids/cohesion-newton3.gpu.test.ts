@@ -147,4 +147,75 @@ describe('surface tension conserves momentum', () => {
       renderer.dispose();
     }
   }, 60_000);
+
+  it('pairs only particles in the fluid range', async () => {
+    const renderer = await createParticleRenderer();
+    try {
+      // A 4³ fluid block with a layer of other-material particles after it in
+      // the buffer, half a spacing past its +x face: inside h of the face,
+      // not boundaries, and higher in index than every fluid particle.
+      const spacing = 0.025;
+      const h = 0.05;
+      const mass = 1000 * spacing ** 3;
+      const n = 4;
+      const count = n ** 3;
+      const initial: ParticleInit[] = [];
+      for (let z = 0; z < n; z++)
+        for (let y = 0; y < n; y++)
+          for (let x = 0; x < n; x++)
+            initial.push({ position: [x * spacing, y * spacing, z * spacing], invMass: 1 / mass });
+      for (let z = 0; z < n; z++)
+        for (let y = 0; y < n; y++)
+          initial.push({
+            position: [(n - 0.5) * spacing, y * spacing, z * spacing],
+            invMass: 1 / mass,
+          });
+      const particles = new ParticleSystem(renderer, initial.length, spacing / 2);
+      particles.uploadParticles(initial);
+
+      const range = { start: 0, count };
+      const grid = new HashGrid(particles, { cellSize: h });
+      const sph = createSphKernelUniforms(h);
+      const neighbors = new NeighborList(particles, range);
+      const context: FluidKernelContext = {
+        particles,
+        range,
+        neighbors,
+        sph,
+        restDensity: uniform(1000, 'float'),
+        particleVolume: uniform(spacing ** 3, 'float'),
+        mass: uniform(mass, 'float'),
+        dt: uniform(1 / 60, 'float'),
+      };
+      const density = instancedArray(new Float32Array(initial.length).fill(1000), 'float');
+      const normal = instancedArray(initial.length, 'vec4');
+      const impulses = new Accumulator(particles, 50);
+      await renderer.computeAsync([
+        ...grid.rebuildPipeline,
+        ...neighbors.buildKernels(grid, sph.hSq),
+        impulses.buildResetKernel(),
+        buildColorFieldNormalKernel(context, normal),
+        buildSurfaceTensionKernel(context, {
+          gamma: uniform(1, 'float'),
+          normal,
+          density,
+          accumulator: impulses,
+        }),
+      ]);
+      const ticks = new Int32Array(await renderer.getArrayBufferAsync(impulses.delta.value));
+
+      // Nothing lands outside the fluid, where no pass would apply or clear it.
+      expect(Array.from(ticks.subarray(3 * count)).every((t) => t === 0)).toBe(true);
+      // So the fluid's own pairs still cancel.
+      const sum = [0, 0, 0];
+      for (let i = 0; i < count; i++) for (let a = 0; a < 3; a++) sum[a]! += ticks[3 * i + a]!;
+      expect(sum).toEqual([0, 0, 0]);
+      expect(ticks.subarray(0, 3 * count).some((t) => t !== 0)).toBe(true);
+
+      grid.dispose();
+      particles.dispose();
+    } finally {
+      renderer.dispose();
+    }
+  }, 60_000);
 });

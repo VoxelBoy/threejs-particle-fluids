@@ -17,6 +17,8 @@ const STABLE_DEGREE = 3;
  * particles and inverse-distance weights that sum to one, stored as the
  * `influences` and `weights` attributes. The geometry must be positioned
  * like the body's rest shape. Returns the geometry.
+ *
+ * Only {@link SoftbodyMesh} calls this, so its errors carry that name.
  */
 export function bindSoftbodyMesh(
   geometry: BufferGeometry,
@@ -24,9 +26,9 @@ export function bindSoftbodyMesh(
   bodyIndex: number,
 ): BufferGeometry {
   const body = softbody.bodies[bodyIndex];
-  if (!body) throw new Error(`bindSoftbodyMesh: no body ${bodyIndex}`);
+  if (!body) throw new Error(`SoftbodyMesh: no body ${bodyIndex} (have ${softbody.bodies.length})`);
   const position = geometry.getAttribute('position');
-  if (!position) throw new Error('bindSoftbodyMesh: geometry has no position attribute');
+  if (!position) throw new Error('SoftbodyMesh: geometry has no position attribute');
   const { restPositions: rest, range, edges } = body;
   const n = range.count;
 

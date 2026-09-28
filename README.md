@@ -1,10 +1,10 @@
 # Three.js Particle Fluids
 
-Water, smoke, soft bodies, and cloth for [Three.js](https://threejs.org), simulated and drawn in real time on the GPU with WebGPU. Say what you want and where, then call `sim.step()` each frame. Water pushes soft bodies around, light ones float and heavy ones sink, cloth drapes over meshes and catches liquid, and smoke curls up from a heated vent.
+GPU particle physics for [three.js](https://threejs.org): liquids, soft bodies, cloth, and smoke, simulated and rendered with WebGPU.
 
 ![Wave Chamber](https://raw.githubusercontent.com/dgreenheck/threejs-particle-fluids/main/public/previews/cover.png)
 
-**[Live demo](https://dgreenheck.github.io/threejs-particle-fluids/)** · **[Documentation](docs/README.md)**
+**[Live demo](https://dgreenheck.github.io/threejs-particle-fluids/)** · **[Documentation](docs/README.md)** · **[API reference](docs/README.md#api-reference)**
 
 ## Install
 
@@ -12,27 +12,23 @@ Water, smoke, soft bodies, and cloth for [Three.js](https://threejs.org), simula
 npm install threejs-particle-fluids three
 ```
 
-The library supports Three.js r184 and needs a browser with WebGPU. There is no WebGL fallback. TypeScript users also need `@types/three` 0.184. The quick start uses top-level `await`, so build for ES2022 or later (in Vite, `build.target: 'es2022'`).
+Requires three.js r184 and a browser with WebGPU (no WebGL fallback). See [Requirements](docs/guide.md#requirements).
 
 ## Quick start
-
-A block of water falling in a tank:
 
 ```ts
 import { Box3, Vector3 } from 'three';
 import { Simulation, createParticleRenderer } from 'threejs-particle-fluids';
 
-// `scene` and `camera`: an ordinary Scene and PerspectiveCamera. Put the camera about
-// 2 m back, and set scene.environment first, or the water looks flat.
 const renderer = await createParticleRenderer({ antialias: true });
-renderer.setSize(innerWidth, innerHeight);
-document.body.append(renderer.domElement);
 
 const sim = new Simulation({
   renderer,
   scene,
   camera,
   container: new Box3(new Vector3(-0.5, 0, -0.3), new Vector3(0.5, 0.8, 0.3)),
+  particleRadius: 0.014, // m; particles are spaced 2r apart
+  maxParticles: 5000, // start() throws if the scene needs more
 });
 sim.addFluid({ box: new Box3(new Vector3(-0.5, 0, -0.3), new Vector3(-0.1, 0.5, 0.3)) });
 
@@ -44,51 +40,19 @@ async function frame() {
 requestAnimationFrame(frame);
 ```
 
-For a complete file you can paste, with the scene, lighting, and camera, see [Getting started](docs/getting-started.md#water-in-a-tank). In this repository, [`examples/fluid.ts`](examples/fluid.ts) runs the same scene: run `npm run dev` and open `/examples/fluid.html`.
-
-Add everything before the first `sim.step()`. To put more in the same tank, add these lines after `addFluid` and before the frame loop starts:
-
-```ts
-sim.addSoftbody({ mesh: duck, density: 400 }); // `duck` is any closed mesh placed in the tank; it floats
-sim.addSphere({ radius: 0.1, follow: ball }); // a solid ball that moves with your `ball` mesh
-```
-
-Liquids, soft bodies, and cloth in one simulation push on each other with no extra setup.
-
-Gas and liquid can't be simulated together, so smoke gets a simulation of its own, with a container beside the water tank for the air to fill. Replace the frame loop above with one that steps both:
-
-```ts
-const smokeSim = new Simulation({
-  renderer,
-  scene,
-  camera,
-  container: new Box3(new Vector3(1, 0, -0.5), new Vector3(2, 1.9, 0.5)), // beside the water tank
-});
-smokeSim.addSmoke(); // rises from the middle of its floor
-
-async function frame() {
-  await sim.step();
-  await smokeSim.step();
-  renderer.render(scene, camera);
-  requestAnimationFrame(frame);
-}
-```
-
-See [Smoke and water in one scene](docs/smoke.md#smoke-and-water-in-one-scene).
+Full scene with lighting and camera: [Guide › First scene](docs/guide.md#first-scene).
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md): the full first scene.
-- [The simulation](docs/simulation.md): the container, the particle budget, stepping, and cleaning up.
-- One page per thing you can add: [fluids](docs/fluids.md), [obstacles](docs/obstacles.md), [soft bodies](docs/soft-bodies.md), [cloth](docs/cloth.md), and [smoke](docs/smoke.md).
-- [Troubleshooting](docs/troubleshooting.md): error messages, speed, and things that look wrong.
-- [Advanced](docs/README.md#advanced): the low-level classes `Simulation` is built on, for emitters, custom forces, and full control.
-
-The API is young and may change before 1.0. The physics is built for interactive visuals, not engineering analysis.
+| Page                                          | Contents                                                |
+| --------------------------------------------- | ------------------------------------------------------- |
+| [Guide](docs/guide.md)                        | Setup, particle sizing, frame loop, combining materials |
+| [API reference](docs/README.md#api-reference) | Every exported class, option, property, and method      |
+| [Limitations](docs/limitations.md)            | Platform, performance, accuracy, and API constraints    |
 
 ## Demo
 
-The [live demo](https://dgreenheck.github.io/threejs-particle-fluids/) runs thirteen presets in any browser with WebGPU. To run it locally, install Node.js 22.12 or newer, then:
+[Live demo](https://dgreenheck.github.io/threejs-particle-fluids/). To run locally (Node.js 22.12+):
 
 ```sh
 npm ci
@@ -111,9 +75,16 @@ npm run dev
 | **Tarp Runoff**       | Red liquid pouring onto a sloped canvas tarp and spilling off its edge           |
 | **Vortex Plume**      | A heated vent drives a buoyant, swirling plume that carries lit volumetric smoke |
 
-Each preset has live controls; controls marked **↻** restart it. **Space** pauses, **R** restarts, dragging orbits, and clicking the liquid splashes it. The **Particles** menu sets the particle budget from 5,000 to 50,000, and **Surface / Particles** shows the particles under the rendering. The overlay reports frame rate, frame time, particle count, and solver settings.
+| Control        | Action                           |
+| -------------- | -------------------------------- |
+| Space          | Pause                            |
+| R              | Restart                          |
+| Drag           | Orbit                            |
+| Click liquid   | Splash                           |
+| Particles menu | Particle count (5,000 to 50,000) |
+| ↻ controls     | Restart the preset when changed  |
 
-The preset sources in [`demo/presets/`](demo/presets) are larger examples built with the [low-level API](docs/advanced/low-level-api.md).
+Preset sources: [`demo/presets/`](demo/presets), built with the [low-level API](docs/api/core.md).
 
 ## Development
 

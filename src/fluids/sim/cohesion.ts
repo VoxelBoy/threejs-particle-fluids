@@ -1,4 +1,4 @@
-import { Continue, Fn, If, float, vec3, vec4 } from 'three/tsl';
+import { Continue, Fn, If, float, uint, vec3, vec4 } from 'three/tsl';
 import type ComputeNode from 'three/src/nodes/gpgpu/ComputeNode.js';
 import type StorageBufferNode from 'three/src/nodes/accessors/StorageBufferNode.js';
 import type UniformNode from 'three/src/nodes/core/UniformNode.js';
@@ -57,7 +57,8 @@ function emitCohesionSpline(r: Any, h: number): Any {
 /**
  * Scatter each fluid pair's surface tension force as velocity changes:
  * `F = K_ij (−γ m² C(r) r̂ − γ m (n_i − n_j))` with `K_ij = 2ρ0 / (ρ_i + ρ_j)`
- * (Akinci et al. 2013, eqs. 1–5). Boundary neighbors are skipped.
+ * (Akinci et al. 2013, eqs. 1–5). Only neighbors in the fluid's own range
+ * pair up: boundaries and other materials' particles are skipped.
  */
 export function buildSurfaceTensionKernel(
   context: FluidKernelContext,
@@ -71,6 +72,7 @@ export function buildSurfaceTensionKernel(
   const { particles, neighbors, sph, restDensity, mass, dt } = context;
   const { gamma, normal, density, accumulator } = buffers;
   const h = sph.h.value;
+  const end = context.range.start + context.range.count;
 
   return Fn(() => {
     const i: Any = emitFluidIndex(context);
@@ -79,8 +81,9 @@ export function buildSurfaceTensionKernel(
     const rhoI: Any = density.element(i).toVar();
 
     neighbors.forEach(i, (j: Any) => {
-      // Visit each pair once, and only fluid–fluid pairs.
-      If(j.lessThanEqual(i).or(particles.boundaryVolume.element(j).greaterThan(0)), () => {
+      // Visit each pair once, and only fluid–fluid pairs. `j > i` already
+      // puts j past the range's start.
+      If(j.lessThanEqual(i).or(j.greaterThanEqual(uint(end))), () => {
         Continue();
       });
       const offset: Any = xi.sub(particles.predictedPositions.element(j).xyz).toVar();

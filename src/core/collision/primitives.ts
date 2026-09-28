@@ -11,6 +11,12 @@ export const KIND_CAPSULE = 3;
 
 /** Flag bit (low 16 bits of the packed word): the inside is the valid region. */
 export const FLAG_INVERT = 1 << 0;
+/**
+ * Flag bit: the primitive moves (attached or placed each frame), so the solver
+ * sweeps it back along its velocity and spin within a frame. Without it,
+ * `velocity` is surface velocity only (a conveyor belt).
+ */
+export const FLAG_SWEEP = 1 << 1;
 
 /** Rotate `v` by unit quaternion `q`: `v + 2w(q × v) + q × (2(q × v))`. */
 function emitQuatRotate(q: Any, v: Any): Any {
@@ -23,6 +29,29 @@ function emitQuatConjugate(q: Any): Any {
   return vec4(q.x.negate(), q.y.negate(), q.z.negate(), q.w);
 }
 
+/** Unit quaternion for a rotation by `|ω|·t` about `ω`. */
+function emitQuatFromSpin(spin: Any, t: Any): Any {
+  const rate: Any = spin.length().toVar();
+  const half: Any = rate.mul(t).mul(0.5).toVar();
+  const axis: Any = spin.div(rate.max(float(EPSILON_GRADIENT)));
+  return vec4(axis.mul(half.sin()), half.cos());
+}
+
+/** The point a primitive turns about: the plane point, a capsule's midpoint, or the center. */
+function emitPivot(kind: Any, data0: Any, data1: Any): Any {
+  return kind
+    .equal(uint(KIND_PLANE))
+    .select(
+      data1.xyz,
+      kind.equal(uint(KIND_CAPSULE)).select(data0.xyz.add(data1.xyz).mul(0.5), data0.xyz),
+    );
+}
+
+/** `rewind` for swept primitives, 0 for the rest. */
+function emitSweepTime(flags: Any, rewind: Any): Any {
+  return flags.bitAnd(uint(FLAG_SWEEP)).notEqual(uint(0)).select(rewind, float(0));
+}
+
 /** Lengths below this are treated as zero when normalizing a gradient. */
 const EPSILON_GRADIENT = 1e-8;
 
@@ -32,7 +61,10 @@ export interface ColliderFields {
   readonly data0: Any;
   readonly data1: Any;
   readonly rotation: Any;
+  /** Linear velocity per slot, `w` unused here. */
   readonly velocity?: Any;
+  /** Angular velocity per slot in rad/s about the pivot, `w` unused. */
+  readonly spin?: Any;
 }
 
 /**
@@ -46,8 +78,9 @@ export interface ColliderFields {
  * - Box: `q = |x_local| − e`, `phi = |max(q, 0)| + min(max(q.x, q.y, q.z), 0)`
  * - Capsule: sphere around the closest point on the segment
  *
- * `rewind` (seconds) moves the query point forward along the primitive's
- * velocity, which is the same as moving the primitive back in time.
+ * `rewind` (seconds) evaluates a primitive flagged {@link FLAG_SWEEP} as it
+ * was that long ago, by moving the query point forward along the primitive's
+ * velocity and spin instead of moving the primitive back.
  */
 export function emitColliderSdf(
   fields: ColliderFields,
@@ -57,16 +90,29 @@ export function emitColliderSdf(
   gradientVar: Any,
   rewind?: Any,
 ): void {
-  // Evaluating at x + v·t is the same as moving a translating collider back by v·t.
-  const x: Any =
-    rewind !== undefined && fields.velocity
-      ? xWorld.add(fields.velocity.element(colliderSlot).xyz.mul(rewind)).toVar()
-      : xWorld;
   const packedVal: Any = fields.packed.element(colliderSlot);
   const kind: Any = packedVal.shiftRight(uint(16)).bitAnd(uint(0xffff));
   const flags: Any = packedVal.bitAnd(uint(0xffff));
   const data0: Any = fields.data0.element(colliderSlot);
   const data1: Any = fields.data1.element(colliderSlot);
+
+  // t seconds ago the primitive sat v·t back and turned R(−ωt) about its
+  // pivot c, so its field then at x is its current field at
+  // x' = c + R(ωt)(x − c + v·t), with the gradient turned back by R(−ωt).
+  let x: Any = xWorld;
+  let unturn: Any;
+  if (rewind !== undefined && fields.velocity) {
+    const t: Any = emitSweepTime(flags, rewind).toVar();
+    const shifted: Any = xWorld.add(fields.velocity.element(colliderSlot).xyz.mul(t));
+    if (fields.spin) {
+      const pivot: Any = emitPivot(kind, data0, data1).toVar();
+      const turn: Any = emitQuatFromSpin(fields.spin.element(colliderSlot).xyz, t).toVar();
+      x = pivot.add(emitQuatRotate(turn, shifted.sub(pivot))).toVar();
+      unturn = emitQuatConjugate(turn);
+    } else {
+      x = shifted.toVar();
+    }
+  }
 
   // -------- Plane --------
   // data0.xyz = unit normal n, data1.xyz = reference point p.
@@ -167,4 +213,30 @@ export function emitColliderSdf(
   const isInverted: Any = invertBit.notEqual(uint(0));
   phiVar.assign(isInverted.select(phiVar.negate(), phiVar));
   gradientVar.assign(isInverted.select(gradientVar.negate(), gradientVar));
+  if (unturn !== undefined) gradientVar.assign(emitQuatRotate(unturn, gradientVar));
+}
+
+/**
+ * Emit TSL for the velocity of the primitive in `colliderSlot`'s surface at
+ * `xWorld`: `v + ω × (x − c)`, with the pivot `c` taken `rewind` seconds ago
+ * for swept primitives, as in {@link emitColliderSdf}.
+ */
+export function emitColliderSurfaceVelocity(
+  fields: ColliderFields & { readonly velocity: Any },
+  colliderSlot: Any,
+  xWorld: Any,
+  rewind?: Any,
+): Any {
+  const velocity: Any = fields.velocity.element(colliderSlot).xyz.toVar();
+  if (!fields.spin) return velocity;
+  const packedVal: Any = fields.packed.element(colliderSlot);
+  const kind: Any = packedVal.shiftRight(uint(16)).bitAnd(uint(0xffff));
+  const pivot: Any = emitPivot(
+    kind,
+    fields.data0.element(colliderSlot),
+    fields.data1.element(colliderSlot),
+  );
+  const t: Any = rewind !== undefined ? emitSweepTime(packedVal.bitAnd(uint(0xffff)), rewind) : 0;
+  const arm: Any = xWorld.sub(pivot).add(velocity.mul(t));
+  return velocity.add(fields.spin.element(colliderSlot).xyz.cross(arm));
 }

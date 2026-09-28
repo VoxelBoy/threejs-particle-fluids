@@ -41,8 +41,7 @@ export class GasSpriteRenderer {
 
   constructor(gas: SmokeTracers, options: GasSpriteRendererOptions = {}) {
     const { color = 0xeeeeee, initialOpacity = 0.6, opacityTau = gas.lifetime / 3 } = options;
-    const size = options.size ?? 0.08;
-    if (!(size > 0)) throw new Error(`GasSpriteRenderer: size must be positive, got ${size}`);
+    const size = checkSize(options.size ?? 0.08);
     if (!(initialOpacity > 0 && initialOpacity <= 1)) {
       throw new Error(`GasSpriteRenderer: initialOpacity must be in (0, 1], got ${initialOpacity}`);
     }
@@ -81,11 +80,18 @@ export class GasSpriteRenderer {
     return this.sizeUniform.value;
   }
   set size(value: number) {
-    this.sizeUniform.value = value;
+    this.sizeUniform.value = checkSize(value);
   }
 
   dispose(): void {
     this.object.geometry.dispose();
     (this.object.material as MeshBasicNodeMaterial).dispose();
   }
+}
+
+function checkSize(size: number): number {
+  if (!(size > 0) || !Number.isFinite(size)) {
+    throw new Error(`GasSpriteRenderer: size must be positive, got ${size}`);
+  }
+  return size;
 }

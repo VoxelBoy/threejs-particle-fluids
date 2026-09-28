@@ -76,7 +76,7 @@ export class ParticleSystem {
   readonly predictedRotation: StorageBufferNode<'vec4'>;
   readonly angularVelocity: StorageBufferNode<'vec4'>;
 
-  private disposed = false;
+  private isDisposed = false;
 
   constructor(renderer: WebGPURenderer, capacity: number, particleRadius: number) {
     if (!Number.isInteger(capacity) || capacity <= 0) {
@@ -115,11 +115,27 @@ export class ParticleSystem {
   /**
    * Write initial particle state into slots `[start, start + data.length)`.
    * Slots that are never written keep `invMass = 0`, so they stay put.
+   * Throws on a range outside the buffer, a negative or non-finite
+   * `invMass`, or a collision group that isn't a `uint32`.
    */
   uploadParticles(data: readonly ParticleInit[], start = 0): void {
     this.assertAlive();
-    if (data.length === 0) return;
+    if (data.length === 0) {
+      // An empty upload still has to start at a slot boundary inside the buffer.
+      if (!Number.isInteger(start) || start < 0 || start > this.capacity) {
+        throw new Error(
+          `ParticleSystem.uploadParticles: invalid particle range start=${start} count=0 (capacity ${this.capacity})`,
+        );
+      }
+      return;
+    }
     assertRange(this, { start, count: data.length }, 'ParticleSystem.uploadParticles');
+    for (const p of data) {
+      if (p.invMass !== undefined) assertInvMass(p.invMass, 'ParticleSystem.uploadParticles');
+      if (p.collisionGroup !== undefined) {
+        assertCollisionGroup(p.collisionGroup, 'ParticleSystem.uploadParticles');
+      }
+    }
     const positions = this.positions.value.array as Float32Array;
     const predicted = this.predictedPositions.value.array as Float32Array;
     const velocities = this.velocities.value.array as Float32Array;
@@ -143,10 +159,11 @@ export class ParticleSystem {
     this.collisionGroup.value.needsUpdate = true;
   }
 
-  /** Set the inverse mass of every particle in `range`. */
+  /** Set the inverse mass of every particle in `range`. Must be finite and ≥ 0. */
   setInvMass(range: ParticleRange, invMass: number): void {
     this.assertAlive();
     assertRange(this, range, 'ParticleSystem.setInvMass');
+    assertInvMass(invMass, 'ParticleSystem.setInvMass');
     (this.invMass.value.array as Float32Array).fill(
       invMass,
       range.start,
@@ -155,10 +172,11 @@ export class ParticleSystem {
     this.invMass.value.needsUpdate = true;
   }
 
-  /** Set the collision group of every particle in `range`. */
+  /** Set the collision group of every particle in `range`. Must be an integer in `[0, 2³² − 1]`. */
   setCollisionGroup(range: ParticleRange, group: number): void {
     this.assertAlive();
     assertRange(this, range, 'ParticleSystem.setCollisionGroup');
+    assertCollisionGroup(group, 'ParticleSystem.setCollisionGroup');
     (this.collisionGroup.value.array as Uint32Array).fill(
       group,
       range.start,
@@ -208,13 +226,72 @@ export class ParticleSystem {
     };
   }
 
-  /** Mark the system as disposed; later uploads and readbacks throw. */
+  /** True after {@link dispose}. */
+  get disposed(): boolean {
+    return this.isDisposed;
+  }
+
+  /**
+   * Free the particle buffers on the GPU. Later uploads and readbacks throw.
+   * Dispose every loop, material, collider, and mesh that reads these
+   * buffers first; they can't run afterwards.
+   */
   dispose(): void {
-    this.disposed = true;
+    if (this.isDisposed) return;
+    this.isDisposed = true;
+    releaseStorageBuffers(this.renderer, [
+      this.positions,
+      this.predictedPositions,
+      this.velocities,
+      this.invMass,
+      this.collisionGroup,
+      this.boundaryVolume,
+      this.rotation,
+      this.predictedRotation,
+      this.angularVelocity,
+    ]);
   }
 
   private assertAlive(): void {
-    if (this.disposed) throw new Error('ParticleSystem has been disposed');
+    if (this.isDisposed) throw new Error('ParticleSystem has been disposed');
+  }
+}
+
+function assertInvMass(invMass: number, context: string): void {
+  if (!(invMass >= 0) || !Number.isFinite(invMass)) {
+    throw new Error(`${context}: invMass must be a finite number ≥ 0, got ${invMass}`);
+  }
+}
+
+function assertCollisionGroup(group: number, context: string): void {
+  if (!Number.isInteger(group) || group < 0 || group > 0xffffffff) {
+    throw new Error(`${context}: collisionGroup must be an integer in [0, 2³² − 1], got ${group}`);
+  }
+}
+
+/**
+ * Destroy the GPU buffers behind storage nodes. A buffer no kernel has used
+ * yet has nothing on the GPU to free. Kernels that still reference a freed
+ * buffer must not be dispatched again.
+ */
+export function releaseStorageBuffers(
+  renderer: WebGPURenderer,
+  buffers: readonly { readonly value: object }[],
+): void {
+  // three r184 has no public call that frees a storage buffer; attribute
+  // disposal only reaches the renderer for geometry attributes. Its
+  // attribute manager's `delete` destroys the GPUBuffer and updates
+  // `renderer.info`.
+  const internals = renderer as unknown as
+    | {
+        readonly _attributes?: { delete(attribute: object): unknown } | null;
+        readonly backend?: { get(object: object): { buffer?: unknown } };
+      }
+    | undefined;
+  // Without a backend (a renderer that never initialized) nothing was uploaded.
+  if (!internals?.backend) return;
+  for (const { value } of buffers) {
+    if (internals.backend.get(value).buffer !== undefined) internals._attributes?.delete(value);
   }
 }
 

@@ -143,4 +143,61 @@ describe('createClothGraph', () => {
       expect(dense.invMass[i]!).toBeCloseTo(0.1 * light.invMass[i]!, 6);
     }
   });
+  it('welds vertices closer than 1e-6 m that straddle a grid boundary', () => {
+    const geom = new BufferGeometry();
+    // Vertex 4 is 2e-10 m from vertex 0, on the far side of x = 0.5e-6.
+    // prettier-ignore
+    geom.setAttribute(
+      'position',
+      new Float32BufferAttribute(
+        [
+          0.4999e-6, 0, 0, // 0
+          1, 0, 0, // 1
+          0, 1, 0, // 2
+          1, 1, 0, // 3
+          0.5001e-6, 0, 0, // 4 — within 1e-6 m of 0
+          1, 0, 0, // 5 — duplicate of 1
+        ],
+        3,
+      ),
+    );
+    geom.setIndex(new Uint32BufferAttribute([0, 1, 2, 4, 5, 3], 1));
+    expect(createClothGraph(geom).positions.length).toBe(4);
+  });
+
+  it('keeps vertices farther apart than 1e-6 m', () => {
+    const geom = new BufferGeometry();
+    // prettier-ignore
+    geom.setAttribute(
+      'position',
+      new Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 3e-6, 0, 0, 1, 1, 0], 3),
+    );
+    geom.setIndex(new Uint32BufferAttribute([0, 1, 2, 3, 4, 2], 1));
+    expect(createClothGraph(geom).positions.length).toBe(5);
+  });
+
+  it('rejects pinned indices that are not vertices', () => {
+    const geom = buildMinimalQuad();
+    expect(() => createClothGraph(geom, { pinnedIndices: [4] })).toThrow(
+      /createClothGraph: pinnedIndices\[0\] is 4/,
+    );
+    expect(() => createClothGraph(geom, { pinnedIndices: [0, -1] })).toThrow(
+      /pinnedIndices\[1\] is -1/,
+    );
+    expect(() => createClothGraph(geom, { pinnedIndices: [1.5] })).toThrow(
+      /pinnedIndices\[0\] is 1.5/,
+    );
+  });
+
+  it('rejects vertices that are in no triangle', () => {
+    const geom = new BufferGeometry();
+    geom.setAttribute(
+      'position',
+      new Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 5, 5, 5], 3),
+    );
+    geom.setIndex(new Uint32BufferAttribute([0, 1, 2], 1));
+    expect(() => createClothGraph(geom)).toThrow(
+      /createClothGraph: vertex 3 is in no non-degenerate triangle/,
+    );
+  });
 });

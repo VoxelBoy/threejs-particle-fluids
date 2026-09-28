@@ -50,8 +50,10 @@ export interface ConstraintType {
  * structured topologies (cloth lattice, chains) it produces an optimal or
  * near-optimal coloring.
  *
- * Guarantee: `numGroups ≤ 1 + maxDegree` where `maxDegree` is the largest
- * number of constraints any single particle participates in. Tested by
+ * Bounds: `numGroups ≥ maxDegree`, the largest number of constraints any
+ * single particle participates in, and `numGroups ≤ 1 + arity · (maxDegree − 1)`,
+ * since a constraint conflicts with at most that many others. Greedy
+ * coloring can exceed `maxDegree + 1`. Tested by
  * `tests/analytical/xpbd/xpbd-group-partition.test.ts`.
  */
 export function colorConstraints(args: {
@@ -60,6 +62,17 @@ export function colorConstraints(args: {
   readonly participantsPerConstraint: readonly number[] | Uint32Array;
 }): { groupOf: Uint32Array; numGroups: number } {
   const { arity, nConstraints, participantsPerConstraint } = args;
+  if (!Number.isInteger(arity) || arity < 1) {
+    throw new Error(`colorConstraints: arity must be a positive integer, got ${arity}`);
+  }
+  if (!Number.isInteger(nConstraints) || nConstraints < 0) {
+    throw new Error(`colorConstraints: nConstraints must be an integer ≥ 0, got ${nConstraints}`);
+  }
+  if (participantsPerConstraint.length !== arity * nConstraints) {
+    throw new Error(
+      `colorConstraints: participantsPerConstraint length ${participantsPerConstraint.length} ≠ arity × nConstraints (${arity * nConstraints})`,
+    );
+  }
   if (nConstraints === 0) return { groupOf: new Uint32Array(0), numGroups: 0 };
 
   const groupOf = new Uint32Array(nConstraints);

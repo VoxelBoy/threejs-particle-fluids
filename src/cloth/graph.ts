@@ -14,7 +14,8 @@ export interface ClothGraph {
   /** Per-particle world position, length `nParticles`. */
   readonly positions: readonly (readonly [number, number, number])[];
   /**
-   * Per-particle inverse mass (kg⁻¹). Pinned vertices return `0`.
+   * Per-particle inverse mass (kg⁻¹). Pinned vertices return `0`; every
+   * other vertex is in at least one triangle, so its mass is positive.
    * Unpinned vertices: `1 / (vertexArea · surfaceDensity)`.
    * Vertex area is `(1/3) · Σ A_t` over incident triangles `t`
    * (lumped-mass convention; see Grinspun 2003 §2 "Dynamics" — the
@@ -94,7 +95,8 @@ export interface ClothGraphOptions {
    */
   readonly surfaceDensity?: number;
   /**
-   * Vertex indices to pin (set `invMass = 0`). Indices reference the
+   * Vertex indices to pin (set `invMass = 0`). Each must be an integer in
+   * `[0, positions.length)`. Indices reference the
    * **deduplicated** vertex list returned in {@link ClothGraph.positions} —
    * call {@link createClothGraph} once and inspect the output before
    * deciding which indices to pin if you need to map from raw geometry
@@ -104,7 +106,7 @@ export interface ClothGraphOptions {
 }
 
 const DEFAULT_SURFACE_DENSITY = 0.2;
-/** Vertices closer than this (metres) are merged, so seams in the input become connected cloth. */
+/** Vertices within this distance (metres) are merged, so seams in the input become connected cloth. */
 const WELD_EPSILON = 1e-6;
 
 /**
@@ -117,6 +119,10 @@ const WELD_EPSILON = 1e-6;
  *     express). Convert via `geom.toIndexed()` or
  *     `BufferGeometryUtils.mergeVertices` upstream.
  *   - A `position` attribute with `itemSize = 3`.
+ *   - Every vertex, after welding, in at least one non-degenerate
+ *     triangle. A vertex outside every triangle would have no mass.
+ *
+ * Vertices within 1e-6 m of an earlier vertex are welded into it.
  *
  * Pure-CPU; no GPU or renderer dependency. Safe to call at scene load
  * time.
@@ -156,23 +162,55 @@ export function createClothGraph(
     rawPositions.push([positionAttr.getX(i), positionAttr.getY(i), positionAttr.getZ(i)]);
   }
 
-  // Vertex dedup. Map old → new index, drop duplicate positions.
+  // Vertex weld. Map old → new index, merging each vertex into the first
+  // kept vertex within WELD_EPSILON. Kept vertices are binned in a grid of
+  // WELD_EPSILON cells, so any match lies in the vertex's cell or one of its
+  // 26 neighbors. Cells are keyed by a hash; a collision only adds
+  // candidates, which the distance test rejects.
   const oldToNew = new Uint32Array(rawCount);
   const positions: [number, number, number][] = [];
-  const bucket = new Map<string, number>();
+  const cells = new Map<number, number[]>();
+  const cellHash = (x: number, y: number, z: number): number =>
+    Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791);
   for (let i = 0; i < rawCount; i++) {
     const p = rawPositions[i]!;
-    const key = p.map((v) => Math.round(v / WELD_EPSILON)).join(',');
-    const existing = bucket.get(key);
-    if (existing === undefined) {
-      oldToNew[i] = positions.length;
-      bucket.set(key, positions.length);
+    const cx = Math.floor(p[0] / WELD_EPSILON);
+    const cy = Math.floor(p[1] / WELD_EPSILON);
+    const cz = Math.floor(p[2] / WELD_EPSILON);
+    let match = -1;
+    search: for (let dx = -1; dx <= 1; dx++)
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dz = -1; dz <= 1; dz++) {
+          for (const k of cells.get(cellHash(cx + dx, cy + dy, cz + dz)) ?? []) {
+            const q = positions[k]!;
+            const ex = p[0] - q[0];
+            const ey = p[1] - q[1];
+            const ez = p[2] - q[2];
+            if (ex * ex + ey * ey + ez * ez <= WELD_EPSILON * WELD_EPSILON) {
+              match = k;
+              break search;
+            }
+          }
+        }
+    if (match === -1) {
+      match = positions.length;
       positions.push(p);
-    } else {
-      oldToNew[i] = existing;
+      const key = cellHash(cx, cy, cz);
+      const cell = cells.get(key);
+      if (cell) cell.push(match);
+      else cells.set(key, [match]);
     }
+    oldToNew[i] = match;
   }
   const nParticles = positions.length;
+  for (let k = 0; k < pinnedIndices.length; k++) {
+    const index = pinnedIndices[k]!;
+    if (!Number.isInteger(index) || index < 0 || index >= nParticles) {
+      throw new Error(
+        `createClothGraph: pinnedIndices[${k}] is ${index}, not a vertex index in [0, ${nParticles})`,
+      );
+    }
+  }
 
   // Walk triangles. Each triangle contributes (a) up to 3 edges to the
   // edge map and (b) up to 3 face areas to the per-vertex area.
@@ -240,16 +278,20 @@ export function createClothGraph(
     addEdge(ic, ia, ib);
   }
 
+  // A vertex outside every triangle would have no mass and no edges, so it
+  // would act as an unattached pin.
+  const isolated = vertexArea.findIndex((area) => !(area > 0));
+  if (isolated !== -1) {
+    throw new Error(
+      `createClothGraph: vertex ${isolated} is in no non-degenerate triangle; remove unused vertices from the geometry`,
+    );
+  }
+
   // Inverse-mass per vertex — pinned slots forced to 0.
   const pinnedSet = new Set<number>(pinnedIndices);
   const invMass: number[] = new Array(nParticles);
   for (let i = 0; i < nParticles; i++) {
-    if (pinnedSet.has(i)) {
-      invMass[i] = 0;
-      continue;
-    }
-    const m = vertexArea[i]! * surfaceDensity;
-    invMass[i] = m > 0 ? 1 / m : 0;
+    invMass[i] = pinnedSet.has(i) ? 0 : 1 / (vertexArea[i]! * surfaceDensity);
   }
 
   // Distance pairs — every unique edge.

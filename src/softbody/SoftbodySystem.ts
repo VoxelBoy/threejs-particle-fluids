@@ -35,9 +35,15 @@ export interface SoftbodyDef {
    */
   readonly surfaceCount?: number;
   /**
-   * Shape-matching compliance in s²/kg: 0 is rigid, around 1e-6 is soft.
-   * Softer bodies need more compliance as their particle count grows.
-   * Default 0.
+   * Shape-matching compliance in s²/kg; 0 is rigid. Default 0.
+   *
+   * Every particle carries its own constraint, so at a fixed compliance a
+   * body with more particles is stiffer: scale compliance roughly with the
+   * particle count to keep the same feel. Global matching stays nearly rigid
+   * at any compliance and mostly controls how much the body wobbles, so try
+   * 1e-7 to 1e-5. Local matching is where compliance shapes the material:
+   * about `1e-6 · count / 200` is firm rubber and `1e-3 · count / 200` loose
+   * jelly (the mapping {@link Simulation.addSoftbody} uses).
    */
   readonly compliance?: number;
   /**
@@ -46,8 +52,9 @@ export interface SoftbodyDef {
    */
   readonly restPositions?: Float32Array;
   /**
-   * Pairs of neighboring particles, as indices local to the body. Required
-   * for local shape matching; {@link voxelize} produces them.
+   * Pairs of neighboring particles `[i0, j0, i1, j1, …]`, as indices local to
+   * the body. Required for local shape matching; under global matching they
+   * only guide {@link SoftbodyMesh} binding. {@link voxelize} produces them.
    */
   readonly edges?: Uint32Array;
 }
@@ -83,6 +90,9 @@ export interface SoftbodyBody {
  *
  * Global shape matching weights particles by the masses they have when the
  * system is created, so a body with a heavy base settles base-down in water.
+ * These weights (also used for {@link bodyCenters}) and the rest centers are
+ * fixed at construction: a later {@link ParticleSystem.setInvMass} changes
+ * how the particles move but not how shape matching weighs them.
  *
  * ```ts
  * const shape = voxelize(mesh, { particleRadius });
@@ -97,11 +107,13 @@ export class SoftbodySystem implements Material {
   readonly bodies: readonly SoftbodyBody[];
   readonly shapeMatching: 'global' | 'local';
   /**
-   * Current rotation of each body as three row vectors (global shape
-   * matching only): rows `3b`, `3b + 1`, `3b + 2` belong to body `b`.
+   * Best-fit rotation of each body relative to its rest shape, as three row
+   * vectors: rows `3b`, `3b + 1`, `3b + 2` belong to body `b`. Identity
+   * until the first step. Under local matching the body can bend, so this is
+   * the rotation that best fits the whole body.
    */
   readonly bodyRotations: StorageBufferNode<'vec4'>;
-  /** Current center of each body (global shape matching only). */
+  /** Current mass-weighted center of each body in `.xyz`. Zero until the first step. */
   readonly bodyCenters: StorageBufferNode<'vec4'>;
   /**
    * @internal Rest position of each particle relative to its body's rest
@@ -145,6 +157,7 @@ export class SoftbodySystem implements Material {
     let spanEnd = 0;
     bodies.forEach((body, b) => {
       const { range } = body;
+      if (range.count === 0) throw new Error(`SoftbodySystem: body ${b} has no particles`);
       assertRange(particles, range, `SoftbodySystem body ${b}`);
       for (let i = range.start; i < range.start + range.count; i++) {
         if (used[i]) throw new Error(`SoftbodySystem: particle ${i} belongs to two bodies`);
@@ -161,6 +174,10 @@ export class SoftbodySystem implements Material {
       const surfaceCount = body.surfaceCount ?? range.count;
       if (!Number.isInteger(surfaceCount) || surfaceCount < 0 || surfaceCount > range.count) {
         throw new Error(`SoftbodySystem: body ${b} surfaceCount ${surfaceCount} is out of range`);
+      }
+      if (body.edges) assertEdges(body.edges, range.count, b);
+      else if (this.shapeMatching === 'local') {
+        throw new Error(`SoftbodySystem: body ${b} needs edges for local shape matching`);
       }
       const bodyWeights = massWeights(invMass.subarray(range.start, range.start + range.count));
       weights.set(bodyWeights, range.start);
@@ -200,20 +217,30 @@ export class SoftbodySystem implements Material {
 
   build({ particles, dt, allocateCollisionGroup }: SolverContext): MaterialKernels {
     if (!this.selfCollision) {
-      for (const body of this.bodies) {
+      const groups = particles.collisionGroup.value.array as Uint32Array;
+      this.bodies.forEach((body, b) => {
+        const { start, count } = body.range;
+        const group = groups[start]!;
+        const shared = groups.subarray(start, start + count).every((g) => g === group);
+        // A group the user gave the whole body already keeps it from colliding with itself.
+        if (shared && group !== 0) return;
+        if (!shared) {
+          throw new Error(
+            `SoftbodySystem: body ${b} has mixed collision groups; give all its particles one group, or none`,
+          );
+        }
         particles.setCollisionGroup(body.range, allocateCollisionGroup());
-      }
+      });
     }
     return this.shapeMatching === 'global' ? this.buildGlobal(dt) : this.buildLocal(dt);
   }
 
-  private buildGlobal(dt: SolverContext['dt']): MaterialKernels {
-    const { particles, bodies } = this;
+  /** Kernels that fit each body's center and rotation to its current particles. */
+  private buildBodyFrameKernels() {
+    const { particles, bodies, weights } = this;
     const bodyStart = instancedArray(new Uint32Array(bodies.map((b) => b.range.start)), 'uint');
     const bodyCount = instancedArray(new Uint32Array(bodies.map((b) => b.range.count)), 'uint');
-    const lambda = instancedArray(particles.capacity, 'vec4');
     const shared = { particles, bodyStart, bodyCount, numBodies: bodies.length };
-    const { weights } = this;
     const center = buildCenterOfMassKernel({ ...shared, weights, bodyCenters: this.bodyCenters });
     const rotation = buildMomentAndPolarDecompKernel({
       ...shared,
@@ -221,6 +248,13 @@ export class SoftbodySystem implements Material {
       restOffsets: this.restOffsets,
       bodyRotations: this.bodyRotations,
     });
+    return { shared, center, rotation };
+  }
+
+  private buildGlobal(dt: SolverContext['dt']): MaterialKernels {
+    const { particles } = this;
+    const lambda = instancedArray(particles.capacity, 'vec4');
+    const { shared, center, rotation } = this.buildBodyFrameKernels();
     return {
       preSolve: [buildResetLambdaKernel({ particles, lambda })],
       // Refit the body frame every iteration so other constraints' pushes carry the body along.
@@ -285,6 +319,8 @@ export class SoftbodySystem implements Material {
       aiScalar: uniform((particles.particleRadius * particles.particleRadius) / 5, 'float'),
     });
     const orientation = buildRotationKernels(particles, span, dt);
+    // Not used by the solve; keeps bodyCenters and bodyRotations current for callers.
+    const frame = this.buildBodyFrameKernels();
 
     return {
       preSolve: [
@@ -299,7 +335,7 @@ export class SoftbodySystem implements Material {
         accumulator.buildApplyKernel([particles.predictedPositions]),
         buildImplicitQpWriteKernel({ particles, range: span, particleRotations, neighborOffsets }),
       ],
-      postSolve: [orientation.advect],
+      postSolve: [orientation.advect, frame.center, frame.rotation],
     };
   }
 
@@ -433,30 +469,35 @@ function smallestEigenvalue(m: [number, number, number, number, number, number])
   return Math.min(a00, a11, a22);
 }
 
+function assertEdges(edges: Uint32Array, count: number, body: number): void {
+  if (edges.length % 2 !== 0) {
+    throw new Error(`SoftbodySystem: body ${body} has an odd number of edge indices`);
+  }
+  for (let e = 0; e < edges.length; e += 2) {
+    const [i, j] = [edges[e]!, edges[e + 1]!];
+    if (!(i < count) || !(j < count) || i === j) {
+      throw new Error(`SoftbodySystem: body ${body} has an invalid edge (${i}, ${j})`);
+    }
+  }
+}
+
 /**
  * Compressed neighbor lists over global particle indices: row `i` holds `i`
  * itself followed by its edge neighbors (Müller & Chentanez 2011, §5.1).
+ * Edges are validated by the constructor.
  */
 function buildNeighborGraph(
   bodies: readonly SoftbodyDef[],
   capacity: number,
 ): { offsets: Uint32Array; indices: Uint32Array } {
   const degree = new Uint32Array(capacity);
-  bodies.forEach((body, b) => {
-    const { range, edges } = body;
-    if (!edges) throw new Error(`SoftbodySystem: body ${b} needs edges for local shape matching`);
-    if (edges.length % 2 !== 0)
-      throw new Error(`SoftbodySystem: body ${b} has an odd number of edge indices`);
+  for (const { range, edges } of bodies) {
     for (let i = 0; i < range.count; i++) degree[range.start + i]! += 1;
-    for (let e = 0; e < edges.length; e += 2) {
-      const [i, j] = [edges[e]!, edges[e + 1]!];
-      if (i >= range.count || j >= range.count || i === j) {
-        throw new Error(`SoftbodySystem: body ${b} has an invalid edge (${i}, ${j})`);
-      }
-      degree[range.start + i]! += 1;
-      degree[range.start + j]! += 1;
+    for (let e = 0; e < edges!.length; e += 2) {
+      degree[range.start + edges![e]!]! += 1;
+      degree[range.start + edges![e + 1]!]! += 1;
     }
-  });
+  }
   const offsets = new Uint32Array(capacity + 1);
   for (let i = 0; i < capacity; i++) offsets[i + 1] = offsets[i]! + degree[i]!;
   const indices = new Uint32Array(Math.max(1, offsets[capacity]!));

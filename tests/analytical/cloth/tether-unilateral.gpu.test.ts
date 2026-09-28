@@ -137,9 +137,10 @@ describe('cloth tethers are unilateral (Kim et al. 2012 §3.1)', () => {
           nanFree = false;
           continue;
         }
-        const dx = x - t.anchor[0];
-        const dy = y - t.anchor[1];
-        const dz = z - t.anchor[2];
+        const anchor = graph.positions[t.anchor]!;
+        const dx = x - anchor[0];
+        const dy = y - anchor[1];
+        const dz = z - anchor[2];
         const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
         const overshoot = dist - t.restRadius;
         if (overshoot > maxOvershoot) maxOvershoot = overshoot;

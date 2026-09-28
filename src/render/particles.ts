@@ -2,7 +2,7 @@ import { Color, InstancedMesh, SphereGeometry } from 'three';
 import { MeshPhongNodeMaterial } from 'three/webgpu';
 import { instanceIndex, positionLocal, uint } from 'three/tsl';
 
-import type { ParticleRange, ParticleSystem } from '../core/index.js';
+import { assertRange, type ParticleRange, type ParticleSystem } from '../core/index.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -31,6 +31,7 @@ export function createParticleMesh(
   options: ParticleMeshOptions = {},
 ): InstancedMesh {
   const range = options.range ?? { start: 0, count: particles.capacity };
+  assertRange(particles, range, 'createParticleMesh');
   const radius = options.radius ?? particles.particleRadius * 0.9;
   const geometry = new SphereGeometry(
     radius,

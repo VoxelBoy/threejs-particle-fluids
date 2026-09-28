@@ -26,10 +26,11 @@ const sim = new Simulation({
   renderer,
   scene,
   camera,
-  container: new Box3(new Vector3(-0.6, 0, -0.4), new Vector3(0.6, 1, 0.4)),
-  particles: 30000,
+  container: new Box3(new Vector3(-0.4, 0, -0.3), new Vector3(0.4, 0.9, 0.3)),
+  particleRadius: 0.016, // about 4,800 particles for the water and both bodies
+  maxParticles: 6000,
 });
-sim.addFluid({ box: new Box3(new Vector3(-0.6, 0, -0.4), new Vector3(0.6, 0.35, 0.4)) });
+sim.addFluid({ box: new Box3(new Vector3(-0.4, 0, -0.3), new Vector3(0.4, 0.3, 0.3)) });
 sim.addSoftbody({ mesh: ball, density: 400, softness: 0.4 });
 sim.addSoftbody({ mesh: cube, density: 2000, softness: 0.1 });
 
