@@ -83,6 +83,13 @@ To set the particle size yourself, pass `particleRadius` in metres instead of `p
 
 `addSoftbody`, `addFluid({ mesh })`, and `addMesh` all take an ordinary three.js mesh. The first two turn it into particles when the simulation starts. The mesh's bounding box is filled with a grid of particles, one particle width apart, and every grid point inside the mesh is kept.
 
+<p>
+  <img src="images/bunny-mesh.png" width="45%" alt="The Stanford bunny drawn as a smooth mesh">
+  <img src="images/bunny-particles.png" width="45%" alt="The same bunny as about 5,900 particles on a grid">
+</p>
+
+The Stanford bunny as it's drawn (left) and as the particles that simulate it (right), with a budget of 6,000 particles.
+
 For this to work, the mesh has to be closed, with no holes in its surface. Parts thinner than about one particle width fall between grid points and disappear. A soft body keeps only its largest connected piece, so a separate hat or eye is dropped.
 
 A soft body doesn't draw its particles. The simulation hides your mesh and draws a copy that bends with them, where each vertex follows its four nearest particles. The surface keeps all of its detail, even when the particles behind it are coarse.
