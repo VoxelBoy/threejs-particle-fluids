@@ -76,6 +76,8 @@ export const compliance = (softness: number, count: number) =>
 
 const names = ['donut', 'croissant', 'banana', 'ginger-bread'] as const;
 const BODIES = 20;
+/** Height the lowest forms are released from. */
+const RELEASE_HEIGHT = 0.55;
 
 export async function buildElastic(ctx: BuildContext, values: Values): Promise<Experiment> {
   // Local CC0 assets are smoothed and voxelized ahead of time, one template
@@ -104,7 +106,7 @@ export async function buildElastic(ctx: BuildContext, values: Values): Promise<E
     const layer = Math.floor(n / 12);
     const center = new Vector3(
       ((n % 4) - 1.5) * 0.44 + (layer ? 0.22 : 0) + (random() - 0.5) * 0.12,
-      values['height']! + layer * 0.55 + random() * 0.14,
+      RELEASE_HEIGHT + layer * 0.55 + random() * 0.14,
       ((Math.floor(n / 4) % 3) - 1) * 0.47 + (random() - 0.5) * 0.12,
     );
     const rotation = new Quaternion().setFromEuler(

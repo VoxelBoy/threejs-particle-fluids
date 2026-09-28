@@ -2,127 +2,100 @@
 
 # Smoke
 
-Smoke is drawn from massless **tracers** that ride the velocity of a fluid (Macklin et al. 2014, §7.2.1). The fluid is the air, simulated with an ordinary [`FluidSystem`](fluids.md); the tracers only make its motion visible. `GasSystem` owns the tracers and can also heat the air so it rises. `GasVolumeRenderer` draws the tracers as lit volumetric smoke, and `GasSpriteRenderer` as soft sprites.
-
-## Air and tracers
-
-The air has to fill the space the smoke moves through, so fill the whole container with fluid particles. The tracers don't take part in the simulation, so you can use far more of them than air particles.
+`sim.addSmoke` releases smoke from a heated spot. The heat makes the air rise, and the smoke rides along with it, curling and spreading as it goes. It's drawn as lit, shadowed volumetric smoke.
 
 ```ts
-import { Box3, Vector3 } from 'three';
-import {
-  FluidSystem,
-  GasSystem,
-  GasVolumeRenderer,
-  ParticleSystem,
-  PrimitiveSet,
-  SimLoop,
-} from 'threejs-particle-fluids';
-
-// Air filling a 1 m × 1.9 m × 1 m tank.
-const particles = new ParticleSystem(renderer, air.length, radius);
-particles.uploadParticles(air);
-const airFluid = new FluidSystem(particles, { viscosity: 0.02, vorticity: 0.06 });
-
-const smoke = new GasSystem(airFluid, { capacity: 30000, lifetime: 6 });
-
-const loop = new SimLoop(particles, {
-  substeps: 2,
-  gravity: new Vector3(0, -1, 0),
-  colliders: [tank],
-  // The gas goes before its fluid.
-  materials: [smoke, airFluid],
-});
-
-// Each frame:
-for (let i = 0; i < 75; i++)
-  smoke.emit([Math.random() * 0.2 - 0.1, 0.05, Math.random() * 0.2 - 0.1]);
-await loop.step(1 / 60);
-```
-
-List the gas **before** its fluid in `materials`, so tracers follow the solved velocities before vorticity and viscosity change them. The loop throws otherwise.
-
-### `GasSystem` options
-
-| Option        | Default | What it does                                                                                                       |
-| ------------- | ------- | ------------------------------------------------------------------------------------------------------------------ |
-| `capacity`    | —       | Most tracers alive at once.                                                                                        |
-| `lifetime`    | 5       | Seconds each tracer lives. Renderers fade tracers out with age.                                                    |
-| `bounds`      | none    | A `Box3`. Tracers that leave it are retired early, so smoke can vent out of a scene instead of pooling at the top. |
-| `heatSources` | none    | Regions that heat the air. Passing any turns on air temperature (below).                                           |
-| `buoyancy`    | 3       | Upward acceleration in m/s² of air at temperature 1, relative to the average. Live: `smoke.buoyancy`.              |
-| `cooling`     | 0.8     | How fast air cools, as an exponential rate per second. Live: `smoke.cooling`.                                      |
-
-`smoke.emit(position)` releases one tracer at the start of the next step and returns `false` when every tracer is still alive. Tracers are recycled oldest first. To keep a steady stream, size `capacity` for `emission rate × lifetime`. A tracer retired by `bounds` frees its slot only once its lifetime is up.
-
-`smoke.aliveCount` reports how many tracers are alive, as the CPU tracks it.
-
-## Heat and buoyancy
-
-Smoke rises because hot air rises. With `heatSources`, each air particle carries a temperature: air inside a source is set to 1, cools exponentially at `cooling`, and accelerates upward by `buoyancy · (T − T̄)`, where `T̄` is the average air temperature. Lifting against the average (the Boussinesq approximation) keeps the net force on the air zero, so the column as a whole doesn't drift.
-
-```ts
-const smoke = new GasSystem(airFluid, {
-  capacity: 30000,
-  lifetime: 6,
-  heatSources: [{ position: new Vector3(0, 0, 0), radius: 0.17 }],
-  buoyancy: 3,
-  cooling: 0.6,
-  bounds: new Box3(new Vector3(-1, -1, -1), new Vector3(1, 1.7, 1)),
-});
-```
-
-A heat source is a sphere. Mutate `source.position` to move it. `smoke.temperature` is a per-air-particle storage buffer, indexed from the start of the fluid's range, which you can read in TSL, for example to color air particles by temperature.
-
-### Keep the air settled
-
-The fluid's density solve only resists compression; it never pulls particles together. Rising air can therefore leave gaps that nothing refills, and the air piles up against the ceiling. Give the air a little gravity, around 1 m/s², so the column stays settled while the hot air still rises. The Vortex Plume preset also closes the tank with a lid, so hot air can't escape through the top.
-
-## `GasVolumeRenderer`
-
-```ts
-const volume = new GasVolumeRenderer(smoke, {
+const sim = new Simulation({
   renderer,
-  min: new Vector3(-0.5, 0, -0.5),
-  max: new Vector3(0.5, 1.7, 0.5),
-  resolution: [80, 128, 80],
-  steps: 80,
-  density: 0.7,
+  scene,
+  camera,
+  container: new Box3(new Vector3(-0.5, 0, -0.5), new Vector3(0.5, 1.9, 0.5)),
 });
-scene.add(volume.object);
-
-// every frame, after loop.step():
-await volume.update();
+const smoke = sim.addSmoke({ source: new Vector3(0, 0, 0), radius: 0.17 });
 ```
 
-Each frame the tracers are splatted into a density grid and blurred, light from one direction is computed per voxel with self-shadowing, and the box is ray-marched. Rays stop at opaque scene geometry, so smoke passes correctly behind and in front of objects. All the detail comes from the tracers, so it moves with the smoke; more tracers make denser, finer smoke.
+[`examples/smoke.ts`](../examples/smoke.ts) is this scene. Run `npm run dev` and open `/examples/smoke.html`.
 
-| Option           | Default             | What it does                                |
-| ---------------- | ------------------- | ------------------------------------------- |
-| `renderer`       | —                   | The renderer that runs the grid kernels.    |
-| `min`, `max`     | —                   | Corners of the box the smoke is drawn in.   |
-| `resolution`     | `[32, 56, 32]`      | Density grid size, 4–128 per axis.          |
-| `steps`          | 56                  | Ray-march steps, 8–128.                     |
-| `density`        | 1                   | Opacity multiplier. Live: `volume.density`. |
-| `color`          | `0xd8dfe6`          | Color of fully lit smoke.                   |
-| `shadowColor`    | `0x3b4758`          | Color of smoke in its own shadow.           |
-| `lightDirection` | `(-0.35, 0.8, 0.4)` | Direction toward the light.                 |
+## How it works
 
-Aim for grid voxels about the size of the gap between neighboring tracers. `update()` does nothing while `volume.object` is hidden.
+The simulation fills the whole container with air. The source heats the air around it, and warm air rises, cools, and sinks again, stirring up swirls. The smoke you see is a cloud of tiny points called _tracers_ that drift with the air. Tracers don't push anything, so there can be many more of them than air particles, and they don't count toward the `particles` budget.
 
-## `GasSpriteRenderer`
+## Smoke needs a container
+
+The air has to fill something, so smoke needs a [container](simulation.md#the-container). `addSmoke` throws without one. Smoke scenes also get two defaults you'd otherwise set yourself:
+
+- **A lid.** The container is always closed, so warm air can't escape out the top.
+- **Light gravity**, `(0, -1, 0)`, unless you pass `gravity`. Full gravity squashes the air to the bottom of the tank. A little gravity keeps the air evenly spread while warm air still rises.
+
+## Options
+
+| Option        | Default             | What it does                                                            |
+| ------------- | ------------------- | ----------------------------------------------------------------------- |
+| `source`      | center of the floor | Where smoke is released and the air is heated.                          |
+| `radius`      | 0.15                | Radius of the source in metres.                                         |
+| `rate`        | 4000                | Tracers released per second. More makes denser, finer smoke.            |
+| `lifetime`    | 6                   | Seconds each tracer lives before it fades out.                          |
+| `heat`        | 3                   | How hard heated air rises, as upward acceleration in m/s². 0 stops it.  |
+| `cooling`     | 0.6                 | How fast the air cools, per second. Higher values make a shorter plume. |
+| `density`     | 0.7                 | How opaque the smoke looks.                                             |
+| `color`       | `0xd8dfe6`          | Color of lit smoke.                                                     |
+| `shadowColor` | `0x3b4758`          | Color of smoke in its own shadow.                                       |
+
+Smoke is lit from a fixed direction, from above and to the left, not by your scene's lights. `color` and `shadowColor` set how its lit and shaded sides look. To change the light direction, build the smoke renderer yourself; see [`GasVolumeRenderer`](advanced/gas-system.md#gasvolumerenderer).
+
+## Live settings
+
+`addSmoke` returns a `Smoke`:
 
 ```ts
-const sprites = new GasSpriteRenderer(smoke, { size: 0.04, initialOpacity: 0.5, opacityTau: 3 });
-scene.add(sprites.object);
+smoke.heat = 5; // a stronger plume
+smoke.density = 1.2; // thicker-looking smoke
+smoke.rate = 2000; // less smoke
+smoke.source.x += 0.1; // move the source; it's a Vector3 you change in place
+smoke.emit(new Vector3(0.2, 0.5, 0)); // one extra puff anywhere
 ```
 
-Draws each tracer as a soft camera-facing sprite that fades with age. It's cheap and good for seeing individual tracers, but sprites aren't depth sorted. Options: `color`, `size` (metres, live through `sprites.size`), `initialOpacity`, `opacityTau` (seconds to fade by a factor of e), and `colorNode(position, velocity)` for a per-sprite TSL color.
+- `rate` can go down freely, but it can't go much above its starting value. The pool of tracers is sized from the starting `rate` and `lifetime`, and extra tracers are dropped once it's full. Start with the highest rate you plan to use.
+- `emit` works once the simulation has started. For a burst, call it many times in one frame.
+- `lifetime`, `color`, and `shadowColor` are fixed once added. Cooling can change after the first step through `smoke.gasSystem.cooling`. For other settings, see [The objects underneath](simulation.md#the-objects-underneath).
 
-## Your own tracers
+## Where smoke is drawn
 
-Both renderers draw anything that implements `SmokeTracers`: a `capacity`, a `lifetime`, and storage buffers `smokePositions`, `smokeAge`, `smokeAlive`, and optionally `smokeVelocities`. The Smoke Bubbles preset moves its puffs with a procedural flow instead of simulated air, using its own tracer buffers and kernels; see `smokePuffs` in [`demo/presets/bubbles.ts`](../demo/presets/bubbles.ts).
+Smoke is drawn in the bottom 90% of the container. Tracers that drift into the top tenth are removed, so smoke doesn't pile up against the lid. Make the container a little taller than the plume you want.
+
+The smoke is hidden behind solid objects in your scene and shows in front of them, so you can put a vent mesh or other props inside the container.
+
+## Limits
+
+- **Gas and liquid can't be simulated together.** Air is about 800 times lighter than water, and particle solvers like this one can't handle that at the interface: in our tests, air either shot through the water as loose particles or got stuck at the bottom, never forming believable bubbles. So smoke can't share a simulation with liquids, soft bodies, or cloth, and the first `step()` throws if you add both. For smoke and water in the same scene, use two simulations, as below.
+- **One smoke source per simulation.** A second `addSmoke` throws on the first step.
+- **Obstacles work, with a jolt at the start.** The air flows around them once it's running. But the air first fills the whole container, including the inside of obstacles, and the first step pushes that air out, so there's a short burst of motion. The air inside an obstacle still counts toward the `particles` budget. Keep obstacles in a smoke scene small.
+
+## Smoke and water in one scene
+
+Give each its own `Simulation`, with its own container, and step both every frame:
+
+```ts
+const water = new Simulation({ renderer, scene, camera, container: tank });
+water.addFluid({ box: waterBox });
+
+const air = new Simulation({ renderer, scene, camera, container: smokeBox });
+air.addSmoke();
+
+async function frame() {
+  await water.step();
+  await air.step();
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+```
+
+- Both share the renderer, the scene, and the camera.
+- Each has its own `particles` budget, 20,000 by default, so the cost adds up. Lower `particles` on one or both if it's slow.
+- Each has its own gravity. The smoke simulation's light gravity doesn't affect the water.
+- The two don't affect each other. Smoke passes straight through the water, and the water doesn't feel the air. Keep the containers apart, or put the smoke somewhere the water can't reach.
 
 ---
 
-Previous: [Cloth](cloth.md) · Next: [Colliders](colliders.md)
+Previous: [Cloth](cloth.md) · Next: [Troubleshooting](troubleshooting.md)

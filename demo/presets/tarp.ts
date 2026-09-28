@@ -38,6 +38,9 @@ const POUR_AT = 0.2;
 const NOZZLE_LENGTH = 0.14;
 /** Liquid is released this far up inside the nozzle, so the start of the flow is hidden. */
 const RELEASE_DEPTH = 0.03;
+/** Bore of the nozzle, and how far above the tarp it hangs. */
+const NOZZLE_WIDTH = 0.07,
+  POUR_HEIGHT = 0.15;
 
 /** A point on the flat tarp, `u` across from left to right, `v` from back to front. */
 function tarpPoint(u: number, v: number, backHeight: number, out = new Vector3()): Vector3 {
@@ -170,16 +173,16 @@ export function buildTarp(ctx: BuildContext, values: Values): Experiment {
     columns: across + 1,
     rows: rows + 1,
     material: new MeshPhysicalNodeMaterial({
-      color: 0xe0a83a,
+      color: 0x7d5a0c,
       side: DoubleSide,
       roughness: 0.8,
       metalness: 0,
       sheen: 0.3,
-      sheenColor: 0xffe2a6,
+      sheenColor: 0xa9843a,
       sheenRoughness: 0.6,
     }),
   });
-  const tarpDots = particleView(particles, { range: tarp.range, color: 0xe0a83a });
+  const tarpDots = particleView(particles, { range: tarp.range, color: 0x7d5a0c });
   const visual = liquidVisual(ctx, liquid, {
     bounds: new Box3(new Vector3(-0.83, -0.02, -0.58), new Vector3(0.83, 1.3, 0.58)),
     colliders: [walls],
@@ -197,7 +200,7 @@ export function buildTarp(ctx: BuildContext, values: Values): Experiment {
   // Each release is one horizontal layer of a square lattice clipped to the
   // nozzle's bore, placed at rest.
   const spacing = liquid.particleSpacing;
-  const bore = values['nozzle']! / 2;
+  const bore = NOZZLE_WIDTH / 2;
   const reach = Math.max(1, bore / spacing);
   const disc: number[] = [];
   for (let i = -Math.floor(reach); i <= reach; i++)
@@ -227,11 +230,8 @@ export function buildTarp(ctx: BuildContext, values: Values): Experiment {
   })().compute(liquidCount);
 
   const spout = nozzle(bore);
-  const placeNozzle = () => {
-    tarpPoint(0.5, POUR_AT, backHeight, spout.position).y += values['height']!;
-    release.value.copy(spout.position).y += RELEASE_DEPTH;
-  };
-  placeNozzle();
+  tarpPoint(0.5, POUR_AT, backHeight, spout.position).y += POUR_HEIGHT;
+  release.value.copy(spout.position).y += RELEASE_DEPTH;
   let released = 0,
     sinceRelease = Infinity;
 
@@ -271,7 +271,6 @@ export function buildTarp(ctx: BuildContext, values: Values): Experiment {
     setParameter(key, value) {
       values[key] = value;
       if (key === 'gravity') loop.gravity.y = -value;
-      if (key === 'height') placeNozzle();
       if (key === 'tension') liquid.surfaceTension = value;
     },
     dispose() {

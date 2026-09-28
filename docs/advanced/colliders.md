@@ -1,8 +1,8 @@
-[Docs](README.md) › Colliders
+[Docs](../README.md) › [Advanced](../README.md#advanced) › Colliders
 
 # Colliders
 
-Colliders are shapes particles can't enter. Particles slide along them with static and kinetic friction. Pass colliders to the `SimLoop`:
+Colliders are shapes particles can't enter. Particles slide along them, slowed by friction. `Simulation`'s [obstacles](../obstacles.md) are built from these two classes. Pass colliders to the `SimLoop`:
 
 ```ts
 const loop = new SimLoop(particles, { materials: [water], colliders: [walls, bunny] });
@@ -38,7 +38,7 @@ Each returns a slot number for moving the shape later.
 
 ### Options
 
-- `muS`, `muK`: static and kinetic friction. Defaults 0.5 and 0.4. Use about 1 for sticky honey, near 0 for slick walls.
+- `muS`, `muK`: static friction (how hard it is to start sliding) and kinetic friction (how much sliding slows down). Defaults 0.5 and 0.4. Use about 1 for sticky honey, near 0 for slick walls.
 - `velocity`: surface velocity in m/s, used for friction, such as a conveyor belt.
 - `invert` (spheres and boxes): keep particles **inside** the shape. An inverted box is a quick container.
 
@@ -64,7 +64,7 @@ const set = new PrimitiveSet(particles, { capacity: 32 });
 
 ## `SDFCollider`: any mesh
 
-For arbitrary shapes, bake the mesh into a signed distance field once, then collide against it:
+For any other shape, bake the mesh once into a _signed distance field_: a 3D grid that stores how far each point is from the surface, negative inside. Then collide against it:
 
 ```ts
 import { SDFCollider, bakeMeshToSdf } from 'threejs-particle-fluids';
@@ -79,13 +79,13 @@ const bunny = new SDFCollider(particles, sdf, {
 });
 ```
 
-The field lives in a half-float 3D texture sampled with hardware filtering, so collisions cost the same for any mesh. Move the collider with `setPosition`, `setRotation`, `setScale`, or `setTransform(matrix)` (scale must be uniform). Friction treats it as static, and `bunny.muS` and `bunny.muK` can be changed live.
+The field is stored as a 3D texture on the GPU, so a detailed mesh costs no more per frame than a simple one. Move the collider with `setPosition`, `setRotation`, `setScale`, or `setTransform(matrix)` (scale must be uniform). Friction treats the collider as standing still, so moving it pushes particles but doesn't drag them along. `bunny.muS` and `bunny.muK` can be changed live.
 
 `thickness` adds contact distance beyond the particle radius. Sparse surfaces, such as cloth, leave gaps that thin features (ears, fins) can slip through; about half the particle spacing closes them.
 
 ### Baking
 
-`bakeMeshToSdf(mesh, { resolution, padding })` fits a cubic grid around the mesh and computes each voxel's signed distance (negative inside). It's a brute-force CPU bake, `O(voxels × triangles)`, so:
+`bakeMeshToSdf(geometry, { resolution, padding })` takes a `BufferGeometry`, not a `Mesh`. It fits a cubic grid around the geometry, in the geometry's own local space, and computes the distance at each grid point. Place the field in the world with the collider's `position`, `rotation`, and `scale`, or with `setTransform(mesh.matrixWorld)`, as `Simulation` does. It's a slow CPU bake, and the time grows with the grid size times the triangle count, so:
 
 - Bake offline and ship the result. `encodeSdfBinary(sdf)` writes a compact `.sdf.bin` buffer, and `decodeSdfBinary(buffer)` reads it back:
 
@@ -94,17 +94,17 @@ The field lives in a half-float 3D texture sampled with hardware filtering, so c
   const sdf = decodeSdfBinary(await response.arrayBuffer());
   ```
 
-  [`scripts/prepare-honey-assets.ts`](../scripts/prepare-honey-assets.ts) bakes the Stanford bunny this way.
+  [`scripts/prepare-honey-assets.ts`](../../scripts/prepare-honey-assets.ts) bakes the Stanford bunny this way.
 
 - Keep collision meshes to a few thousand triangles.
-- The mesh must be closed and manifold. Holes and doubled faces make the inside/outside test disagree, and the bake throws with counts so you can fix the mesh instead of getting a wrong field.
+- The mesh must be closed, with every edge shared by exactly two triangles. Holes and doubled faces make the inside/outside test disagree, and the bake throws with counts so you can fix the mesh instead of getting a wrong field.
 
-`sampleSdf(sdf, x, y, z)` and `sampleSdfGradient(sdf, x, y, z)` sample the field on the CPU the same way the GPU does, which helps when placing objects or writing tests. A baked field also works as input to [`voxelize`](soft-bodies.md#voxelize).
+`sampleSdf(sdf, x, y, z)` and `sampleSdfGradient(sdf, x, y, z)` sample the field on the CPU the same way the GPU does, which helps when placing objects or writing tests. A baked field also works as input to [`voxelize`](softbody-system.md#voxelize).
 
 ## Colliders and the liquid surface
 
-Pass the same colliders to `FluidSurfaceRenderer`'s `colliders` option to draw the meniscus where the liquid meets them. A `PrimitiveSet` given as `carve` is cut out of the liquid every frame, which is how the Smoke Bubbles preset keeps its air bubbles round. See [Fluids](fluids.md#drawing-the-liquid-fluidsurfacerenderer).
+Pass the same colliders to `FluidSurfaceRenderer`'s `colliders` option to draw the thin edge where the liquid meets them. A `PrimitiveSet` given as `carve` is cut out of the liquid every frame. See [`FluidSystem`](fluid-system.md#drawing-the-liquid-fluidsurfacerenderer).
 
 ---
 
-Previous: [Smoke](smoke.md) · Next: [Combining materials](combining-materials.md)
+Previous: [The low-level API](low-level-api.md) · Next: [`FluidSystem`](fluid-system.md)

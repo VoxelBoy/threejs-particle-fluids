@@ -1,8 +1,8 @@
-[Docs](README.md) › Custom materials
+[Docs](../README.md) › [Advanced](../README.md#advanced) › Custom materials
 
 # Custom materials
 
-A material is any object with a `build(context)` method that returns TSL compute kernels. The `SimLoop` calls `build` once, in the order materials are listed, and dispatches the returned kernels at fixed points in every step. This is how you add forces, emitters, or whole new behaviors without changing the library.
+A _material_ is a kind of physics that runs on the particles (it has nothing to do with a three.js `Material`). In code, a material is any object with a `build(context)` method that returns GPU compute shaders written in TSL, three.js's shader language. The `SimLoop` calls `build` once, in the order materials are listed, and runs the shaders at fixed points in every step. This is how you add forces, emitters, or whole new behaviors without changing the library. Custom materials need a hand-built `SimLoop`; a `Simulation` can't take them.
 
 ## The `Material` interface
 
@@ -41,8 +41,11 @@ Forces and velocity changes usually go in `postSolve`: they take effect when the
 ## A force: drag toward a target velocity
 
 ```ts
+import { Vector3 } from 'three';
 import { Fn, instanceIndex, uniform, vec4 } from 'three/tsl';
-import type { Material } from 'threejs-particle-fluids';
+import { SimLoop, type Material } from 'threejs-particle-fluids';
+
+// `particles` and `fluid` are as in The low-level API.
 
 const wind = uniform(new Vector3(1, 0, 0));
 const drag: Material = {
@@ -62,13 +65,15 @@ const loop = new SimLoop(particles, { materials: [fluid, drag] });
 wind.value.set(0, 0, 2); // uniforms can change at any time
 ```
 
-The Vortex Plume preset uses the same pattern for its wall vanes, which swirl the air near the walls; see [`demo/presets/vortex.ts`](../demo/presets/vortex.ts).
+The Vortex Plume preset uses the same pattern for its wall vanes, which swirl the air near the walls; see [`demo/presets/vortex.ts`](../../demo/presets/vortex.ts).
 
-Kernels run over `particles.capacity` threads unless you choose otherwise. To touch only one material's particles, compute over `range.count` and offset the index by `range.start`.
+Shaders run over `particles.capacity` threads unless you choose otherwise. To touch only one material's particles, compute over `range.count` and offset the index by `range.start`.
 
 ## Using neighbors
 
-Set `neighborRadius` to have the loop build the neighbor grid, then query it in your kernels with `emitForEachNeighbor`. Candidates can be farther than the radius, so filter by distance; the SPH kernel helpers do that for you by returning 0 outside the smoothing radius.
+Set `neighborRadius` to have the loop build the neighbor grid, then query it in your shaders with `emitForEachNeighbor`. Candidates can be farther than the radius, so filter by distance.
+
+Fluid code weights each neighbor by its distance, using standard weighting functions from SPH (smoothed particle hydrodynamics). Poly6 and Spiky are two of them. They return 0 for neighbors beyond the smoothing radius, so they also filter out far candidates.
 
 ```ts
 import { Fn, float, instanceIndex, instancedArray, vec3 } from 'three/tsl';
@@ -79,6 +84,7 @@ import {
   type Material,
 } from 'threejs-particle-fluids';
 
+// `particles` and `fluid` are as in The low-level API.
 const h = fluid.smoothingRadius;
 const sph = createSphKernelUniforms(h);
 const smoothed = instancedArray(particles.capacity, 'vec3');
@@ -108,12 +114,12 @@ The callback runs while the shader is built and must emit TSL. Use `Continue()` 
 
 Helpers for neighbor work:
 
-| Export                                           | What it does                                                            |
-| ------------------------------------------------ | ----------------------------------------------------------------------- |
-| `emitForEachNeighbor(grid, x, fn)`               | Visits every particle in the 27 grid cells around `x`.                  |
-| `createSphKernelUniforms(h)`                     | Coefficients for the Poly6 and Spiky kernels with smoothing radius `h`. |
-| `emitPoly6(r, sph)`, `emitPoly6FromRSq(r², sph)` | The Poly6 density kernel `W`.                                           |
-| `emitSpikyGrad(r, sph)`                          | The Spiky kernel gradient `∇W`, taken with respect to `r = xᵢ − xⱼ`.    |
+| Export                                           | What it does                                                              |
+| ------------------------------------------------ | ------------------------------------------------------------------------- |
+| `emitForEachNeighbor(grid, x, fn)`               | Visits every particle in the 27 grid cells around `x`.                    |
+| `createSphKernelUniforms(h)`                     | Coefficients for the Poly6 and Spiky functions with smoothing radius `h`. |
+| `emitPoly6(r, sph)`, `emitPoly6FromRSq(r², sph)` | The Poly6 weight `W`, used for density.                                   |
+| `emitSpikyGrad(r, sph)`                          | The gradient `∇W` of the Spiky weight, with respect to `r = xᵢ − xⱼ`.     |
 
 ## CPU-side updates
 
@@ -121,8 +127,8 @@ Helpers for neighbor work:
 
 ## Reading from other materials
 
-Materials expose their buffers for exactly this: `fluid.density`, `smoke.temperature`, `softbody.bodyCenters`, `softbody.bodyRotations`, and every buffer on `ParticleSystem`. Read them in your kernels to build effects on top of the built-in physics.
+Materials expose their buffers for exactly this: `fluid.density`, `gas.temperature` (on a `GasSystem`), `softbody.bodyCenters`, `softbody.bodyRotations`, and every buffer on `ParticleSystem`. Read them in your shaders to build effects on top of the built-in physics.
 
 ---
 
-Previous: [Combining materials](combining-materials.md) · Next: [Troubleshooting](troubleshooting.md)
+Previous: [Combining materials](combining-materials.md) · [Back to the docs home](../README.md)

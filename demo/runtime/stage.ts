@@ -182,20 +182,27 @@ function basinRim(width: number, depth: number): Mesh {
   return rim;
 }
 
-export function basin(width = 1.65, depth = 1.15, glassHeight = 0, deckMap?: Texture): Group {
+export function basin(
+  width = 1.65,
+  depth = 1.15,
+  glassHeight = 0,
+  deckMap?: Texture,
+  glassOpacity?: number,
+): Group {
   const group = platform(width + 0.13, depth + 0.13, deckMap);
   group.add(basinRim(width, depth));
-  if (glassHeight > 0) group.add(glassShell(width, depth, glassHeight, false));
+  if (glassHeight > 0)
+    group.add(glassShell(width, depth, glassHeight, false, undefined, glassOpacity));
   return group;
 }
 
 /** A sealed, fully clear tank, light enough to tip on a pivot. Floor is y=0. */
-export function glassTank(width: number, depth: number, height: number): Group {
+export function glassTank(width: number, depth: number, height: number, opacity = 0.03): Group {
   const group = new Group();
   // Fainter than the basins' glass: every view ray crosses several panes.
   group.add(
-    glassPane(width, depth, -0.003, 0.025),
-    glassShell(width, depth, height, true, 0, 0.03),
+    glassPane(width, depth, -0.003, opacity * 0.8),
+    glassShell(width, depth, height, true, 0, opacity),
   );
   return group;
 }

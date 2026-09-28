@@ -4,6 +4,7 @@ import { stat } from 'node:fs/promises';
 const presetIds = [
   'wave-chamber',
   'crown-impact',
+  'dam-break',
   'liquid-marble',
   'viscous-pour',
   'buoyancy',
@@ -14,7 +15,6 @@ const presetIds = [
   'velvet-drape',
   'tarp-runoff',
   'vortex-plume',
-  'smoke-bubbles',
 ];
 
 async function ready(page: Page): Promise<void> {

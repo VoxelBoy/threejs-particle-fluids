@@ -90,7 +90,7 @@ export interface FluidSurfaceRendererOptions {
   readonly bounds: Box3;
   /** Colliders the liquid wets, drawing a meniscus where it meets them. */
   readonly colliders?: readonly (PrimitiveSet | SDFCollider)[];
-  /** Moving shapes cut out of the liquid every frame, such as bubbles. */
+  /** Moving shapes cut out of the liquid every frame. */
   readonly carve?: PrimitiveSet;
   /** Particles of floating or submerged solids the liquid wets. */
   readonly solids?: ParticleRange;
@@ -103,7 +103,7 @@ export interface FluidSurfaceRendererOptions {
   readonly voxelBudget?: number;
   readonly appearance?: Partial<FluidAppearance>;
   /**
-   * Draw air pockets inside the liquid (such as bubbles) with a bright rim
+   * Draw pockets cut into the liquid (see `carve`) with a bright rim
    * and an optional smoke fill. Makes the transmitted-light march longer.
    */
   readonly cavities?: { readonly smokeColor: number; readonly smokeDensity: number };

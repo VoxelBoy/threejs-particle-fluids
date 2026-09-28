@@ -30,6 +30,9 @@ type Any = any;
 
 export const BUNNY_YAW = 2.16;
 const MESH_MAGIC = 0x4e554242;
+/** Height of the circling nozzle above the floor, and the speed of the stream leaving it. */
+const NOZZLE_HEIGHT = 0.75,
+  POUR_SPEED = 1.6;
 
 /** Decode the quantized Stanford bunny written by `npm run assets:honey`. */
 export async function loadBunny(): Promise<{ mesh: Mesh; sdf: SDFData; aim: Vector3 }> {
@@ -137,7 +140,7 @@ export async function buildHoney(ctx: BuildContext, values: Values): Promise<Exp
       attenuationDistance: 0.06,
       scattering: 0.4,
       ior: 1.49,
-      roughness: values['roughness']!,
+      roughness: 0.12,
     },
   });
 
@@ -191,10 +194,10 @@ export async function buildHoney(ctx: BuildContext, values: Values): Promise<Exp
       const x = bunny.aim.x + Math.cos(angle) * 0.07,
         z = bunny.aim.z + Math.sin(angle) * 0.07;
       // Release 11 cm up inside the 14 cm nozzle so the start of the flow is hidden.
-      source.value.set(x, values['height']! + 0.11, z);
+      source.value.set(x, NOZZLE_HEIGHT + 0.11, z);
       sweep.value.set(-Math.sin(angle) * 0.063, 0, Math.cos(angle) * 0.063);
-      nozzle.position.set(x, values['height']! + 0.07, z);
-      speed.value = Math.max(0.05, 0.8 * values['flow']!);
+      nozzle.position.set(x, NOZZLE_HEIGHT + 0.07, z);
+      speed.value = POUR_SPEED;
       travelled += speed.value * dt;
       const layers = Math.min(
         Math.floor(travelled / spacing),
@@ -216,7 +219,6 @@ export async function buildHoney(ctx: BuildContext, values: Values): Promise<Exp
       if (key === 'gravity') loop.gravity.y = -value;
       if (key === 'viscosity') viscosity.viscosity = value;
       if (key === 'tension') fluid.surfaceTension = value;
-      if (key === 'roughness') visual.surface.setAppearance({ roughness: value });
       if (key === 'friction') {
         bunnyCollider.muS = value;
         bunnyCollider.muK = value * 0.85;

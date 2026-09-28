@@ -56,6 +56,8 @@ export function liquidVisual(
   };
 }
 
+/** Spin the marble drop starts with, in rad/s. */
+const MARBLE_SPIN = 0.5;
 const WAVE_CEILING = 0.7;
 const WAVE_WALL_HALF = 0.0325;
 // Tall enough that the tank's corners clear the stand through a full turn.
@@ -82,7 +84,7 @@ function waveTank(particles: ParticleSystem, halfX: number, halfZ: number) {
   const body = new Group();
   body.position.y = -WAVE_CEILING / 2;
   pivot.add(body);
-  body.add(glassTank(halfX * 2, halfZ * 2, WAVE_CEILING));
+  body.add(glassTank(halfX * 2, halfZ * 2, WAVE_CEILING, 0.012));
   pivot.updateMatrixWorld(true);
   const colliders = new PrimitiveSet(particles);
   const friction = { muS: 0.08, muK: 0.04 };
@@ -153,7 +155,7 @@ export async function buildFluid(
       (x, y, z) => x * x + (y - 0.51) ** 2 + z * z < 0.3 ** 2,
     ).map(({ position: [x, y, z] }) => ({
       position: [x, y, z],
-      velocity: [-z * values['spin']!, 0, x * values['spin']!],
+      velocity: [-z * MARBLE_SPIN, 0, x * MARBLE_SPIN],
     }));
   };
   // Size particles so the preset fills its volume with the requested count.
@@ -195,14 +197,20 @@ export async function buildFluid(
             new Vector3(halfX + 0.03, values['height']! + 0.35, halfZ + 0.03),
           );
   const looks = {
-    wave: { color: 0xc8102e, attenuationDistance: 0.55, scattering: 0.06 },
-    impact: { color: 0x5aa6cf, attenuationDistance: 0.6, scattering: 0.04 },
-    marble: { color: 0x7fc4d8, attenuationDistance: 0.8, scattering: 0.03, envIntensity: 1.2 },
+    wave: { color: 0x123f8f, attenuationDistance: 0.18, scattering: 0.16, roughness: 0.1 },
+    impact: { color: 0x5aa6cf, attenuationDistance: 0.6, scattering: 0.04, roughness: 0.08 },
+    marble: {
+      color: 0x7fc4d8,
+      attenuationDistance: 0.8,
+      scattering: 0.03,
+      envIntensity: 1.2,
+      roughness: 0.07,
+    },
   };
   const visual = liquidVisual(ctx, fluid, {
     bounds,
     colliders: [colliders],
-    appearance: { roughness: values['roughness']!, ...looks[kind] },
+    appearance: looks[kind],
     // The wave grid covers the tank's whole swing; give it more voxels to keep detail.
     ...(kind === 'wave'
       ? { voxelBudget: 1.6 * FluidSurfaceRenderer.defaultVoxelBudget(initial.length) }
@@ -275,7 +283,6 @@ export async function buildFluid(
       }
       if (key === 'viscosity') fluid.viscosity = value;
       if (key === 'tension') fluid.surfaceTension = value;
-      if (key === 'roughness') visual.surface.setAppearance({ roughness: value });
     },
     async interact(uv) {
       const point = await visual.surface.pick(uv);

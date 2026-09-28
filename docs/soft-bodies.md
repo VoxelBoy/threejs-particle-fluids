@@ -2,124 +2,111 @@
 
 # Soft bodies
 
-`SoftbodySystem` simulates soft and near-rigid bodies made of particles. Each body pulls its particles back toward its rest shape by shape matching (Müller et al. 2005; Müller & Chentanez 2011), solved as XPBD constraints. `voxelize` fills a mesh with particles, and `SoftbodyMesh` skins the original mesh to the result.
-
-## From a mesh to a body
+`sim.addSoftbody` turns a closed mesh into a soft body: something that squashes, wobbles, and bends, then springs back to its shape. It keeps its look, because your mesh is drawn bending along with it.
 
 ```ts
-import { SoftbodyMesh, SoftbodySystem, voxelize, type ParticleInit } from 'threejs-particle-fluids';
+const ball = new Mesh(
+  new SphereGeometry(0.12, 32, 24),
+  new MeshStandardMaterial({ color: 0xf2c14e }),
+);
+ball.position.set(0, 0.65, 0);
+scene.add(ball);
 
-// Place the geometry in world space where the body starts.
-const geometry = source.geometry.clone().applyMatrix4(source.matrixWorld).translate(0, 0.5, 0);
+const jelly = sim.addSoftbody({ mesh: ball, softness: 0.4 });
+```
 
-// 1. Fill it with particles on a grid spaced 2 × radius apart.
-const shape = voxelize(geometry, { particleRadius: radius });
+Place the mesh where the body should start before you call `addSoftbody`. The body takes the mesh's shape, position, rotation, and scale at that moment. When the simulation starts, your mesh is hidden and a deforming copy takes its place in the scene. `sim.dispose()` shows your mesh again.
 
-// 2. Upload them. Rest shape defaults to these positions, so upload first.
-const initial: ParticleInit[] = [];
-for (let i = 0; i < shape.count; i++) {
-  const [x, y, z] = shape.positions.subarray(i * 3, i * 3 + 3);
-  initial.push({ position: [x!, y!, z!] });
-}
-const particles = new ParticleSystem(renderer, initial.length, radius);
-particles.uploadParticles(initial);
+## Options
 
-// 3. Make it a body.
-const bodies = new SoftbodySystem(particles, {
-  bodies: [
-    { range: { start: 0, count: shape.count }, surfaceCount: shape.surfaceCount, compliance: 1e-6 },
-  ],
+| Option     | Default  | What it does                                                       |
+| ---------- | -------- | ------------------------------------------------------------------ |
+| `mesh`     | required | A closed mesh, where it sits in the world.                         |
+| `softness` | 0.3      | 0 is firm rubber, 1 is loose jelly.                                |
+| `density`  | 500      | Density in kg/m³. Water is 1000, so lower floats and higher sinks. |
+
+## Live settings
+
+`addSoftbody` returns a `Softbody`:
+
+```ts
+jelly.softness = 0.8; // go floppy
+jelly.mesh; // the deforming mesh in the scene, once the simulation has started
+jelly.source; // the mesh you passed in
+```
+
+- `density` is fixed once added.
+- `jelly.mesh` stays at the origin. Its vertices move, not its transform, so `jelly.mesh.position` won't tell you where the body is. To find the body, read its particles back from the GPU and average them:
+
+  ```ts
+  const { positions } = await sim.particles.readback(); // x, y, z, w for every particle
+  const { start, count } = jelly.mesh.softbody.particleRange(jelly.mesh.bodyIndex);
+  const center = new Vector3();
+  const point = new Vector3();
+  for (let i = start; i < start + count; i++) center.add(point.fromArray(positions, 4 * i));
+  center.divideScalar(count);
+  ```
+
+  A readback makes the page wait for the GPU, so do it now and then, not every frame. See [Reading the buffers yourself](advanced/low-level-api.md#reading-the-buffers-yourself).
+
+- The source mesh's material is copied once, when the simulation starts. To recolor the body while it runs, change `jelly.mesh.material`, for example `jelly.mesh.material.color.set(0x44aa88)`.
+- For a setting not listed here, reach the object underneath. See [The objects underneath](simulation.md#the-objects-underneath).
+
+The softness scale is the same for every body and every particle count, so a body with `softness: 0.5` feels about the same whether the simulation uses 10,000 or 50,000 particles.
+
+## Floating and sinking
+
+Put a soft body in a liquid and it floats or sinks by its density, like a real object. Water has a density of 1000.
+
+```ts
+const ball = new Mesh(
+  new SphereGeometry(0.12, 32, 24),
+  new MeshStandardMaterial({ color: 0xf2c14e }),
+);
+ball.position.set(-0.2, 0.65, 0); // above the water, so it drops in
+const cube = new Mesh(
+  new BoxGeometry(0.16, 0.16, 0.16),
+  new MeshStandardMaterial({ color: 0xd9534f }),
+);
+cube.position.set(0.2, 0.7, 0);
+scene.add(ball, cube);
+
+const sim = new Simulation({
+  renderer,
+  scene,
+  camera,
+  container: new Box3(new Vector3(-0.6, 0, -0.4), new Vector3(0.6, 1, 0.4)),
+  particles: 30000,
 });
-
-// 4. Draw the original mesh, deformed by the particles.
-const mesh = new SoftbodyMesh(bodies, 0, geometry, source.material);
-scene.add(mesh);
-
-const loop = new SimLoop(particles, {
-  substeps: 6,
-  materials: [bodies],
-  colliders: [floor],
-  contact: true,
-});
+sim.addFluid({ box: new Box3(new Vector3(-0.6, 0, -0.4), new Vector3(0.6, 0.35, 0.4)) });
+sim.addSoftbody({ mesh: ball, density: 400, softness: 0.4 }); // floats
+sim.addSoftbody({ mesh: cube, density: 2000, softness: 0.1 }); // sinks
 ```
 
-## `voxelize`
-
-`voxelize(shape, options)` places particles on a cubic grid inside a closed shape. The shape can be a `BufferGeometry` or `TriangleMesh` (inside is decided by ray-cast parity, so the mesh must be closed) or a baked distance field (`SDFData`, see [Colliders](colliders.md)).
-
-| Option           | Default | What it does                                                                                                     |
-| ---------------- | ------- | ---------------------------------------------------------------------------------------------------------------- |
-| `particleRadius` | —       | Particle radius. Particles are spaced `2 · particleRadius` apart. Use the particle system's radius.              |
-| `largestPiece`   | `false` | Keep only the largest connected piece. Thin features can voxelize into loose islands.                            |
-| `dilation`       | 0       | Distance field input only: also fill points up to this far outside the surface, which keeps thin parts attached. |
-
-It returns `positions` (xyz per particle), `count`, `surfaceCount`, and `edges` (pairs of face-adjacent particles, needed for local shape matching). Particles come **surface first**: the first `surfaceCount` particles are the ones missing a grid neighbor.
-
-Every particle in a simulation shares one radius, so a body's resolution follows from the radius. To hit a target particle count, search on the radius; see `sampleBody` in [`demo/presets/softbodies.ts`](../demo/presets/softbodies.ts).
-
-## Bodies
-
-Each entry in `bodies` is a `SoftbodyDef`:
-
-| Field           | Default                | What it does                                                                                   |
-| --------------- | ---------------------- | ---------------------------------------------------------------------------------------------- |
-| `range`         | —                      | The body's particles. Surface particles must come first.                                       |
-| `surfaceCount`  | all of them            | How many leading particles lie on the surface. Fluids push on these.                           |
-| `compliance`    | 0                      | Shape-matching compliance in s²/kg. 0 is rigid; around 1e-6 is soft.                           |
-| `restPositions` | the uploaded positions | Rest shape, xyz per particle.                                                                  |
-| `edges`         | none                   | Neighbor pairs local to the body. Required for local shape matching; `voxelize` produces them. |
-
-Change a body's stiffness live with `bodies.setCompliance(index, compliance)`.
-
-## Global or local shape matching
-
-```ts
-new SoftbodySystem(particles, { bodies, shapeMatching: 'local' });
-```
-
-- **`'global'`** (default): each body matches its rest shape as a whole. Cheap and stiff. Bodies wobble and squash but don't bend much. Use it for near-rigid objects, such as the floating ducks.
-- **`'local'`**: every particle matches the shape of its own neighborhood, so bodies bend, fold, and droop. Needs `edges`. Use it for jelly and anything with thin parts, like the Bunny Lineup's ears.
-
-### Choosing compliance
-
-Compliance depends on the particle count: with more particles per body, the same compliance feels stiffer, so scale it with the count to keep the same look at every resolution. The Soft Body Squeeze preset uses, for local matching,
-
-```ts
-// softness 0 is firm rubber, 1 is loose jelly
-const compliance = 10 ** (-6 + softness * 3) * (count / 200);
-```
-
-where `count` is the body's particle count. For global matching, the Buoyancy preset's ducks use `1e-6` for a stiff toy. 0 makes a body rigid in either mode.
-
-### Mass and balance
-
-Particle masses come from `invMass` at upload. Global shape matching weights each particle by the mass it has when the system is created, so a body with a heavier base settles base-down. The Buoyancy preset makes each duck's lowest third four times heavier than the rest, which keeps it floating upright without any extra constraint.
-
-To give a body a density of `density` kg/m³ (water is 1000), set each particle's inverse mass to `1 / (density · spacing³)`, where `spacing = 2 · radius`. A body denser than the liquid sinks; a lighter one floats.
+[`examples/floating.ts`](../examples/floating.ts) is this scene. Liquid pushes on bodies, bodies push on liquid and make waves, and the liquid wets their surface. If a body starts inside the water box, the water is cleared around it.
 
 ## Collisions
 
-- **Bodies touching each other** need particle contacts: pass `contact: true` (or `{ muS, muK }`) to the `SimLoop`.
-- **A body touching itself** is off by default, because each body gets its own collision group. Pass `selfCollision: true` so a ring or a limb can fold onto itself without passing through.
-- **Floating and sinking** in a liquid: add each body's `surfaceRange(i)` as a fluid boundary. See [Combining materials](combining-materials.md).
+Soft bodies collide with each other, with [cloth](cloth.md), with [obstacles](obstacles.md), and with the container walls. You don't need to set anything up.
 
-## `SoftbodyMesh`
+## The mesh
 
-```ts
-new SoftbodyMesh(softbody, bodyIndex, geometry, material?);
-```
+- **It must be closed**, with no holes, so there's a clear inside to fill.
+- **Its material carries over.** If the mesh's material is a `MeshStandardMaterial` or `MeshPhysicalMaterial` from `three`, the deforming copy uses its color, roughness, metalness, and texture maps. The maps need the geometry to have UVs. Anything else gets a plain orange-brown. That includes the node materials from `three/webgpu`, such as `MeshStandardNodeMaterial`, and meshes with an array of materials.
+- **Loaded models.** A glTF file loads as a group. Pass the mesh inside it. The position, rotation, and scale of its parents count.
 
-Each vertex follows its nearest particles by dual-quaternion blending on the GPU. Two rules:
+  ```ts
+  import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-- `geometry` must sit exactly where the body's rest shape is, in world space. Voxelize and skin the same transformed geometry.
-- Leave the mesh's own transform at identity. The skinning writes world positions.
+  const gltf = await new GLTFLoader().loadAsync('duck.glb');
+  const duck = gltf.scene.getObjectByProperty('isMesh', true) as Mesh;
+  sim.addSoftbody({ mesh: duck });
+  ```
 
-`material` is a `MeshStandardMaterial` whose colors and maps are copied onto the skinned material. Without one you get a plain orange-brown.
-
-## Reading body transforms
-
-With global shape matching, `bodies.bodyCenters` holds each body's current center and `bodies.bodyRotations` its rotation (three row vectors per body, at rows `3b`, `3b + 1`, `3b + 2`). Read them in TSL to attach effects or objects to a body.
+- **Detail follows the particle size.** Small parts, such as thin ears or fingers, need several particles across to bend nicely. A thin part that ends up disconnected from the rest is dropped. If a body looks blocky or loses a part, raise the simulation's `particles` budget. See [Particles and detail](simulation.md#particles-and-detail).
+- **Too small to fill** throws `addSoftbody: the mesh is too small for the particle size` on the first step. Make the mesh bigger or the particles smaller.
+- Each call makes one body. Call `addSoftbody` again for every body, even from the same mesh; move the mesh between calls.
 
 ---
 
-Previous: [Fluids](fluids.md) · Next: [Cloth](cloth.md)
+Previous: [Obstacles](obstacles.md) · Next: [Cloth](cloth.md)

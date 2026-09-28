@@ -111,7 +111,7 @@ export async function buildBuoyancy(ctx: BuildContext, values: Values): Promise<
       color: 0x9fd8ec,
       attenuationDistance: 1.2,
       scattering: 0.04,
-      roughness: values['roughness']!,
+      roughness: 0.055,
     },
   });
   // Ceramic pool tiles make the water's transparency and refraction readable.
@@ -139,7 +139,6 @@ export async function buildBuoyancy(ctx: BuildContext, values: Values): Promise<
       if (key === 'gravity') loop.gravity.y = -value;
       if (key === 'viscosity') water.viscosity = value;
       if (key === 'tension') water.surfaceTension = value;
-      if (key === 'roughness') visual.surface.setAppearance({ roughness: value });
     },
     dispose() {
       tileTexture.dispose();

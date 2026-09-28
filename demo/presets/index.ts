@@ -1,12 +1,12 @@
 import type { Control, Preset, Values } from '../types.js';
 import { buildFluid } from './liquids.js';
-import { buildBubbles } from './bubbles.js';
 import { buildBuoyancy } from './buoyancy.js';
 import { buildHoney } from './honey.js';
 import { buildElastic } from './elastic.js';
 import { buildBlender, buildBunnyLineup } from './softbodies.js';
 import { buildCloth, buildClothDrop } from './silk.js';
 import { buildVortex } from './vortex.js';
+import { buildDamBreak } from './dambreak.js';
 import { buildTarp } from './tarp.js';
 
 const gravity = (value = 9.81): Control => ({
@@ -37,15 +37,6 @@ const tension = (value = 0.12): Control => ({
   step: 0.01,
   value,
 });
-const roughness = (value = 0.1): Control => ({
-  key: 'roughness',
-  label: 'Surface roughness',
-  description: 'Softens highlights on the rendered surface.',
-  min: 0.02,
-  max: 0.6,
-  step: 0.01,
-  value,
-});
 
 export const presets: readonly Preset[] = [
   {
@@ -73,7 +64,6 @@ export const presets: readonly Preset[] = [
         step: 0.05,
         value: 0.4,
       },
-      roughness(),
     ],
     build: (ctx, values) => buildFluid(ctx, values, 'wave'),
   },
@@ -103,13 +93,42 @@ export const presets: readonly Preset[] = [
         unit: 'm',
         restart: true,
       },
-      roughness(0.08),
     ],
     build: (ctx, values) => buildFluid(ctx, values, 'impact'),
   },
   {
-    id: 'liquid-marble',
+    id: 'dam-break',
     number: '03',
+    name: 'Dam Break',
+    category: 'FLOOD & OBSTACLE',
+    group: 'Liquids',
+    description:
+      'A column of water drops from 20 cm up, collapses, and floods the tank, crashing into a large Stanford bunny.',
+    accent: '#7fb8e0',
+    camera: [2.2, 1.7, 2.6],
+    target: [0, 0.3, 0],
+    duration: 12,
+    controls: [
+      gravity(),
+      viscosity(0.01),
+      tension(0.08),
+      {
+        key: 'height',
+        label: 'Water height',
+        description: 'Height of the water column, which starts 20 cm above the floor.',
+        min: 0.3,
+        max: 0.9,
+        step: 0.05,
+        value: 0.8,
+        unit: 'm',
+        restart: true,
+      },
+    ],
+    build: buildDamBreak,
+  },
+  {
+    id: 'liquid-marble',
+    number: '04',
     name: 'Liquid Marble',
     category: 'SURFACE TENSION',
     group: 'Liquids',
@@ -128,23 +147,12 @@ export const presets: readonly Preset[] = [
       },
       tension(0.12),
       viscosity(0.08),
-      {
-        key: 'spin',
-        label: 'Initial spin',
-        description: 'Adds angular motion to the suspended liquid.',
-        min: 0,
-        max: 2,
-        step: 0.1,
-        value: 0.5,
-        restart: true,
-      },
-      roughness(0.07),
     ],
     build: (ctx, values) => buildFluid(ctx, values, 'marble'),
   },
   {
     id: 'viscous-pour',
-    number: '04',
+    number: '05',
     name: 'Honey Bunny',
     category: 'VISCOSITY',
     group: 'Liquids',
@@ -168,25 +176,6 @@ export const presets: readonly Preset[] = [
       },
       tension(0.015),
       {
-        key: 'flow',
-        label: 'Pour rate',
-        description: 'Speed of the stream leaving the nozzle.',
-        min: 0.2,
-        max: 3,
-        step: 0.1,
-        value: 2,
-      },
-      {
-        key: 'height',
-        label: 'Nozzle height',
-        description: 'Raises the circling nozzle above the bunny.',
-        min: 0.55,
-        max: 1.05,
-        step: 0.05,
-        value: 0.75,
-        unit: 'm',
-      },
-      {
         key: 'friction',
         label: 'Bunny friction',
         description: 'How strongly honey grips the bunny. Low values let it slide off.',
@@ -195,13 +184,12 @@ export const presets: readonly Preset[] = [
         step: 0.05,
         value: 1.2,
       },
-      roughness(0.12),
     ],
     build: buildHoney,
   },
   {
     id: 'buoyancy',
-    number: '05',
+    number: '06',
     name: 'Buoyancy',
     category: 'FLUID & SOLID',
     group: 'Liquids',
@@ -225,13 +213,12 @@ export const presets: readonly Preset[] = [
       },
       viscosity(0.025),
       tension(0.055),
-      roughness(0.055),
     ],
     build: buildBuoyancy,
   },
   {
     id: 'elastic-studies',
-    number: '06',
+    number: '07',
     name: 'Soft Body Squeeze',
     category: 'SOFT BODIES',
     group: 'Soft Body',
@@ -262,23 +249,12 @@ export const presets: readonly Preset[] = [
         value: 0.9,
         restart: true,
       },
-      {
-        key: 'height',
-        label: 'Release height',
-        description: 'Lifts the forms before they drop.',
-        min: 0.35,
-        max: 1.5,
-        step: 0.05,
-        value: 0.55,
-        unit: 'm',
-        restart: true,
-      },
     ],
     build: buildElastic,
   },
   {
     id: 'bunny-lineup',
-    number: '07',
+    number: '08',
     name: 'Bunny Lineup',
     category: 'SOFT BODIES',
     group: 'Soft Body',
@@ -317,7 +293,7 @@ export const presets: readonly Preset[] = [
   },
   {
     id: 'banana-blender',
-    number: '08',
+    number: '09',
     name: 'Banana Blender',
     category: 'SOFT BODIES',
     group: 'Soft Body',
@@ -355,7 +331,7 @@ export const presets: readonly Preset[] = [
   },
   {
     id: 'silk-in-motion',
-    number: '09',
+    number: '10',
     name: 'Velvet Curtain',
     category: 'CLOTH & COLLISION',
     group: 'Cloth',
@@ -401,7 +377,7 @@ export const presets: readonly Preset[] = [
   },
   {
     id: 'velvet-drape',
-    number: '10',
+    number: '11',
     name: 'Velvet Drape',
     category: 'CLOTH & COLLISION',
     group: 'Cloth',
@@ -457,7 +433,7 @@ export const presets: readonly Preset[] = [
   },
   {
     id: 'tarp-runoff',
-    number: '11',
+    number: '12',
     name: 'Tarp Runoff',
     category: 'CLOTH & FLUID',
     group: 'Cloth',
@@ -468,27 +444,6 @@ export const presets: readonly Preset[] = [
     target: [0, 0.5, 0],
     duration: 30,
     controls: [
-      {
-        key: 'nozzle',
-        label: 'Nozzle width',
-        description: 'Wider nozzles pour more liquid.',
-        min: 0.03,
-        max: 0.1,
-        step: 0.005,
-        value: 0.07,
-        unit: 'm',
-        restart: true,
-      },
-      {
-        key: 'height',
-        label: 'Pour height',
-        description: 'How far above the tarp the nozzle hangs.',
-        min: 0.05,
-        max: 0.4,
-        step: 0.01,
-        value: 0.15,
-        unit: 'm',
-      },
       {
         key: 'slope',
         label: 'Tarp slope',
@@ -509,7 +464,7 @@ export const presets: readonly Preset[] = [
   },
   {
     id: 'vortex-plume',
-    number: '12',
+    number: '13',
     name: 'Vortex Plume',
     category: 'GAS & ADVECTION',
     group: 'Gases',
@@ -562,60 +517,6 @@ export const presets: readonly Preset[] = [
       },
     ],
     build: buildVortex,
-  },
-  {
-    id: 'smoke-bubbles',
-    number: '13',
-    name: 'Smoke Bubbles',
-    category: 'GAS & LIQUID',
-    group: 'Gases',
-    description:
-      'Smoke-filled bubbles swell at vents, wobble up through a glass tank, and burst into rising puffs.',
-    accent: '#a8c6d4',
-    camera: [1.35, 1.05, 1.75],
-    target: [0, 0.42, 0],
-    duration: 30,
-    controls: [
-      {
-        key: 'rate',
-        label: 'Bubble rate',
-        description: 'How often each vent releases a bubble.',
-        min: 0.2,
-        max: 3,
-        step: 0.1,
-        value: 1,
-      },
-      {
-        key: 'size',
-        label: 'Bubble size',
-        description: 'Radius of new bubbles.',
-        min: 0.03,
-        max: 0.08,
-        step: 0.005,
-        value: 0.05,
-        unit: 'm',
-      },
-      {
-        key: 'rise',
-        label: 'Rise speed',
-        description: 'How fast bubbles climb and smoke drifts upward.',
-        min: 0.1,
-        max: 0.8,
-        step: 0.05,
-        value: 0.35,
-        unit: 'm/s',
-      },
-      {
-        key: 'density',
-        label: 'Smoke density',
-        description: 'How much light the smoke absorbs and scatters.',
-        min: 0.2,
-        max: 3,
-        step: 0.1,
-        value: 1.2,
-      },
-    ],
-    build: buildBubbles,
   },
 ];
 

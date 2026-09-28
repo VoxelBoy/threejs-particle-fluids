@@ -1,3 +1,4 @@
+export * from './simulation/index.js';
 export * from './core/index.js';
 export * from './fluids/index.js';
 export * from './softbody/index.js';

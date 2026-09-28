@@ -42,7 +42,7 @@ export interface SurfaceFieldOptions {
   /** Colliders the liquid wets: the surface climbs them to form a meniscus. */
   readonly colliders?: readonly PrimitiveSet[] | undefined;
   /**
-   * Moving colliders carved out of the liquid every frame (e.g. bubbles).
+   * Moving colliders carved out of the liquid every frame.
    * Unlike `colliders`, these are not wetted.
    */
   readonly carve?: PrimitiveSet | undefined;
