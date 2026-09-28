@@ -2,7 +2,7 @@
 
 # Simulation
 
-High-level entry point. Collects fluids, soft bodies, cloth, smoke, and obstacles, then builds and couples the underlying systems on the first `step()`.
+`Simulation` is the main way to use the library. You add liquid, soft bodies, cloth, smoke, and obstacles to it, and it builds and connects everything the first time you call `step()`.
 
 ```ts
 import { Simulation, createParticleRenderer } from 'threejs-particle-fluids';
@@ -24,13 +24,13 @@ import { Simulation, createParticleRenderer } from 'threejs-particle-fluids';
 createParticleRenderer(options?: Partial<WebGPURendererParameters>): Promise<WebGPURenderer>
 ```
 
-Creates and initializes a `WebGPURenderer` that requests the device limits the solver needs. Use it in place of `new WebGPURenderer()`.
+Creates a `WebGPURenderer` and waits for it to be ready. Use it instead of `new WebGPURenderer()`, because it asks the GPU for the larger limits the simulation needs.
 
 | Parameter | Type                                | Description                                                                                 |
 | --------- | ----------------------------------- | ------------------------------------------------------------------------------------------- |
-| `options` | `Partial<WebGPURendererParameters>` | Passed to `WebGPURenderer`. `requiredLimits` is merged with the limits below, not replaced. |
+| `options` | `Partial<WebGPURendererParameters>` | Passed to `WebGPURenderer`. Any `requiredLimits` you give are combined with the ones below. |
 
-Required device limits:
+The limits it requests:
 
 | Limit                               | Value |
 | ----------------------------------- | ----- |
@@ -38,9 +38,9 @@ Required device limits:
 | `maxComputeWorkgroupSizeX`          | 1024  |
 | `maxStorageBuffersPerShaderStage`   | 10    |
 
-| Throws                                             | When                                                     |
-| -------------------------------------------------- | -------------------------------------------------------- |
-| `createParticleRenderer: WebGPU is unavailable, …` | The renderer fell back to WebGL. There is no WebGL path. |
+| Throws                                             | When                                                                   |
+| -------------------------------------------------- | ---------------------------------------------------------------------- |
+| `createParticleRenderer: WebGPU is unavailable, …` | The browser doesn't support WebGPU. The library has no WebGL fallback. |
 
 ---
 
@@ -54,52 +54,46 @@ new Simulation(options: SimulationOptions)
 
 ### SimulationOptions
 
-| Option           | Type             | Default                                  | Description                                                             |
-| ---------------- | ---------------- | ---------------------------------------- | ----------------------------------------------------------------------- |
-| `renderer`       | `WebGPURenderer` | required                                 | From [`createParticleRenderer`](#createparticlerenderer).               |
-| `scene`          | `Scene`          | required                                 | Scene the surfaces are added to. Liquid reflects `scene.environment`.   |
-| `camera`         | `Camera`         | required                                 | Camera the liquid surface is ray-marched from.                          |
-| `particles`      | `number`         | one of these two                         | Total particle budget. See [Sizing particles](#sizing-particles).       |
-| `particleRadius` | `number`         | one of these two                         | Radius of every particle, m. See [Sizing particles](#sizing-particles). |
-| `container`      | `Box3`           | none                                     | Walls on the floor and four sides. Required for smoke.                  |
-| `closed`         | `boolean`        | `false`                                  | Adds a lid to `container`. Always on with smoke.                        |
-| `gravity`        | `Vector3`        | `(0, -9.81, 0)`; `(0, -1, 0)` with smoke | m/s². Copied; change it later through [`gravity`](#properties).         |
-| `substeps`       | `number`         | computed                                 | Solver substeps per 1/60 s step. See [Substeps](#substeps).             |
+| Option           | Type             | Default                                  | Description                                                                     |
+| ---------------- | ---------------- | ---------------------------------------- | ------------------------------------------------------------------------------- |
+| `renderer`       | `WebGPURenderer` | required                                 | From [`createParticleRenderer`](#createparticlerenderer).                       |
+| `scene`          | `Scene`          | required                                 | Scene the surfaces are added to. Liquid reflects `scene.environment`.           |
+| `camera`         | `Camera`         | required                                 | The camera you render with.                                                     |
+| `particles`      | `number`         | one of these two                         | Total particle budget. See [Sizing particles](#sizing-particles).               |
+| `particleRadius` | `number`         | one of these two                         | Radius of every particle, m. See [Sizing particles](#sizing-particles).         |
+| `container`      | `Box3`           | none                                     | A box with a floor and four walls that keeps everything in. Required for smoke. |
+| `closed`         | `boolean`        | `false`                                  | Puts a lid on `container`. Smoke always gets one.                               |
+| `gravity`        | `Vector3`        | `(0, -9.81, 0)`; `(0, -1, 0)` with smoke | m/s². To change it later, use the [`gravity`](#properties) property.            |
+| `substeps`       | `number`         | chosen for you                           | How many pieces each 1/60 s step is split into. See [Substeps](#substeps).      |
 
 #### Sizing particles
 
-Every particle in a simulation has the same size. Set it in one of two ways:
+Every particle in a simulation is the same size. You choose it in one of two ways.
 
-- **`particles`** sets a budget. When the simulation starts, it lays everything out and adjusts the particle size until the total fits within the budget, usually within a few percent of it. Each fluid, soft body, and cloth gets a share in proportion to its volume or area.
-- **`particleRadius`** sets the size in metres. The count then follows from what you add: a box of liquid with volume `V` holds about `V / (2r)³` particles, and a `w × h` cloth about `(w / 2.2r) × (h / 2.2r)`.
+With `particles`, you set a budget and the simulation picks the size. When it starts, it lays everything out and adjusts the size until the total fits within the budget, usually within a few percent of it. Big objects get more particles than small ones.
 
-Frame time grows with the particle count. After `start()`, [`particleCount`](#properties) and [`particleRadius`](#properties) report what was chosen, and each handle's `particleCount` shows its share. A soft body with fewer than 100 particles, or a cloth with fewer than 10 along a side, logs a console warning.
+With `particleRadius`, you set the size in metres and the count follows from what you add. A box of water 0.4 × 0.5 × 0.6 m holds about 4,800 particles at a radius of 0.014 m.
+
+More particles make every frame slower. After `start()`, `particleCount` and `particleRadius` show what was chosen, and each object's own `particleCount` shows how many it got. The console warns you about a soft body with fewer than 100 particles or a cloth with fewer than 10 along a side, since those can't keep their shape.
 
 #### Substeps
 
-When `substeps` is omitted:
-
-```
-substeps = min(24, ceil(base × max(1, 0.018 / particleRadius)))
-base     = max(fluid ? 4 : 0, smoke ? 2 : 0, softbody ? 6 : 0, cloth ? 8 : 0)
-```
-
-Each substep costs about as much as the first. Raise it for fast or thin obstacles and stiff solids; lower it to save time.
+Each 1/60 s step is split into smaller substeps. More substeps stop fast or thin obstacles from being passed through and keep stiff objects stiff, but each one costs about as much as a whole step. If you don't set `substeps`, the simulation picks between 2 and 24, using more when the particles are small or the scene has soft bodies or cloth.
 
 ### Properties
 
-| Property         | Type                                         | Access     | Description                                                                                    |
-| ---------------- | -------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------- |
-| `gravity`        | `Vector3`                                    | read       | Live gravity vector, m/s². Mutate it in place; applied on the next step.                       |
-| `particleRadius` | `number`                                     | read       | Radius of every particle, m. With `particles`, `0` until the simulation starts.                |
-| `particleCount`  | `number`                                     | read       | Particles in use. `0` until the simulation starts.                                             |
-| `showParticles`  | `boolean`                                    | read/write | Hide the rendered surfaces and draw raw particles. Default `false`.                            |
-| `particleSystem` | [`ParticleSystem`](./core.md#particlesystem) | read       | The underlying particle storage. Throws before the simulation starts.                          |
-| `loop`           | [`SimLoop`](./core.md#simloop)               | read       | The underlying solver loop. `loop.substeps` can be changed while running. Throws before start. |
+| Property         | Type                                         | Access     | Description                                                                                     |
+| ---------------- | -------------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------- |
+| `gravity`        | `Vector3`                                    | read       | Gravity, m/s². Change it in place, for example `sim.gravity.set(0, -3, 0)`.                     |
+| `particleRadius` | `number`                                     | read       | Radius of every particle, m. When you use `particles`, it's `0` until the simulation starts.    |
+| `particleCount`  | `number`                                     | read       | Particles in use. `0` until the simulation starts.                                              |
+| `showParticles`  | `boolean`                                    | read/write | Draws the particles instead of the surfaces, for debugging. Default `false`.                    |
+| `particleSystem` | [`ParticleSystem`](./core.md#particlesystem) | read       | The particle storage underneath. Available after `start()`.                                     |
+| `loop`           | [`SimLoop`](./core.md#simloop)               | read       | The solver underneath. Available after `start()`. You can change `loop.substeps` while running. |
 
 ### Methods
 
-All `add*` methods must be called before the first `start()` or `step()`. Positions are world space, in metres.
+Call the `add` methods before the first `start()` or `step()`. All positions are in world space, in metres.
 
 #### `addFluid(options)`
 
@@ -115,7 +109,7 @@ Fills a box or a closed mesh with liquid. See [Fluid](./fluid.md).
 addSoftbody(options: SoftbodyOptions): Softbody
 ```
 
-Replaces a closed mesh with a deformable copy. See [Softbody](./softbody.md).
+Turns a closed mesh into a soft body. See [Softbody](./softbody.md).
 
 #### `addCloth(options)`
 
@@ -131,7 +125,7 @@ Adds a rectangular cloth. See [Cloth](./cloth.md).
 addSmoke(options?: SmokeOptions): Smoke
 ```
 
-Adds a heated smoke source. Requires `container`. See [Smoke](./smoke.md).
+Adds a heated source that releases smoke. The simulation needs a `container`. See [Smoke](./smoke.md).
 
 #### `addFloor(options?)`
 
@@ -139,10 +133,10 @@ Adds a heated smoke source. Requires `container`. See [Smoke](./smoke.md).
 addFloor(options?: { height?: number; friction?: number }): void
 ```
 
-| Option     | Type     | Default | Description                    |
-| ---------- | -------- | ------- | ------------------------------ |
-| `height`   | `number` | `0`     | Floor height, m.               |
-| `friction` | `number` | `0.5`   | 0 (slick) to about 1 (sticky). |
+| Option     | Type     | Default | Description                            |
+| ---------- | -------- | ------- | -------------------------------------- |
+| `height`   | `number` | `0`     | Floor height, m.                       |
+| `friction` | `number` | `0.5`   | From 0 (slippery) to about 1 (sticky). |
 
 #### `addSphere(options)`
 
@@ -150,12 +144,12 @@ addFloor(options?: { height?: number; friction?: number }): void
 addSphere(options: { radius: number; center?: Vector3; follow?: Object3D; friction?: number }): void
 ```
 
-| Option     | Type       | Default     | Description                                           |
-| ---------- | ---------- | ----------- | ----------------------------------------------------- |
-| `radius`   | `number`   | required    | m.                                                    |
-| `center`   | `Vector3`  | `(0, 0, 0)` | Ignored when `follow` is set.                         |
-| `follow`   | `Object3D` | none        | Center tracks the object's world position every step. |
-| `friction` | `number`   | `0.5`       |                                                       |
+| Option     | Type       | Default     | Description                                              |
+| ---------- | ---------- | ----------- | -------------------------------------------------------- |
+| `radius`   | `number`   | required    | Radius, m.                                               |
+| `center`   | `Vector3`  | `(0, 0, 0)` | Ignored when `follow` is set.                            |
+| `follow`   | `Object3D` | none        | An object to move with. The sphere stays centered on it. |
+| `friction` | `number`   | `0.5`       |                                                          |
 
 #### `addBox(options)`
 
@@ -163,13 +157,13 @@ addSphere(options: { radius: number; center?: Vector3; follow?: Object3D; fricti
 addBox(options: { size: Vector3; center?: Vector3; rotation?: Euler; follow?: Object3D; friction?: number }): void
 ```
 
-| Option     | Type       | Default     | Description                                                        |
-| ---------- | ---------- | ----------- | ------------------------------------------------------------------ |
-| `size`     | `Vector3`  | required    | Full edge lengths, m.                                              |
-| `center`   | `Vector3`  | `(0, 0, 0)` | Ignored when `follow` is set.                                      |
-| `rotation` | `Euler`    | none        | Ignored when `follow` is set.                                      |
-| `follow`   | `Object3D` | none        | Center and rotation track the object's world transform every step. |
-| `friction` | `number`   | `0.5`       |                                                                    |
+| Option     | Type       | Default     | Description                                                      |
+| ---------- | ---------- | ----------- | ---------------------------------------------------------------- |
+| `size`     | `Vector3`  | required    | Full edge lengths, m.                                            |
+| `center`   | `Vector3`  | `(0, 0, 0)` | Ignored when `follow` is set.                                    |
+| `rotation` | `Euler`    | none        | Ignored when `follow` is set.                                    |
+| `follow`   | `Object3D` | none        | An object to move with. The box takes its position and rotation. |
+| `friction` | `number`   | `0.5`       |                                                                  |
 
 #### `addCapsule(options)`
 
@@ -181,8 +175,8 @@ addCapsule(options: { start: Vector3; end: Vector3; radius: number; follow?: Obj
 | ---------- | ---------- | -------- | ------------------------------------------------------------------------------------------- |
 | `start`    | `Vector3`  | required | First end point, m.                                                                         |
 | `end`      | `Vector3`  | required | Second end point, m.                                                                        |
-| `radius`   | `number`   | required | m.                                                                                          |
-| `follow`   | `Object3D` | none     | Segment midpoint tracks the object's world position; the capsule turns as the object turns. |
+| `radius`   | `number`   | required | Radius, m.                                                                                  |
+| `follow`   | `Object3D` | none     | An object to move with. The capsule's middle stays on it, and it turns as the object turns. |
 | `friction` | `number`   | `0.5`    |                                                                                             |
 
 #### `addMesh(options)`
@@ -191,13 +185,13 @@ addCapsule(options: { start: Vector3; end: Vector3; radius: number; follow?: Obj
 addMesh(options: { mesh: Mesh; resolution?: number; friction?: number }): void
 ```
 
-Makes a closed mesh solid by baking a signed distance field on the CPU when the simulation starts. The collider follows the mesh's world transform every step.
+Makes a closed mesh into a solid obstacle. It moves and turns with the mesh. The shape is prepared on the CPU when the simulation starts, which takes longer for detailed meshes.
 
-| Option       | Type     | Default  | Description                                  |
-| ------------ | -------- | -------- | -------------------------------------------- |
-| `mesh`       | `Mesh`   | required | Closed, watertight geometry.                 |
-| `resolution` | `number` | `64`     | Distance field cells along the longest axis. |
-| `friction`   | `number` | `0.5`    |                                              |
+| Option       | Type     | Default  | Description                                                                             |
+| ------------ | -------- | -------- | --------------------------------------------------------------------------------------- |
+| `mesh`       | `Mesh`   | required | A closed mesh with no holes.                                                            |
+| `resolution` | `number` | `64`     | Detail of the shape along its longest side. Higher is more exact but slower to prepare. |
+| `friction`   | `number` | `0.5`    |                                                                                         |
 
 #### `start()`
 
@@ -205,7 +199,7 @@ Makes a closed mesh solid by baking a signed distance field on the CPU when the 
 start(): Promise<void>
 ```
 
-Builds particles, systems, colliders, and renderers. Called by the first `step()` if not called earlier. Runs synchronously on the main thread (voxelizing and SDF baking), so show any loading UI before calling it. If it throws, source meshes are shown again and `start()` can be retried.
+Builds everything you've added. The first `step()` calls it for you, so you only need it to control when the work happens. It blocks the page while it runs, so show any loading screen before you call it. If it throws, your meshes are shown again and you can fix the problem and call it again.
 
 #### `step(dt?)`
 
@@ -213,14 +207,14 @@ Builds particles, systems, colliders, and renderers. Called by the first `step()
 step(dt?: number): Promise<void>
 ```
 
-Advances the simulation and updates the rendered surfaces. Await it before `renderer.render()`.
+Moves the simulation forward and updates what it draws. Await it before each `renderer.render()`.
 
-| `dt`     | Behavior                                                                                                                                                                                                           |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| omitted  | Runs fixed 1/60 s steps to match wall-clock time: at most 4 per call, excess time dropped. The first call only starts the clock. After more than 250 ms without a call, the clock restarts instead of catching up. |
-| `number` | Advances exactly `dt` seconds in one step. Use a constant, e.g. `1 / 60`, not the frame delta.                                                                                                                     |
+| `dt`     | Behavior                                                                                                                                              |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| omitted  | Keeps the simulation in step with real time by running up to four 1/60 s steps. After a pause of more than 250 ms, it carries on without catching up. |
+| `number` | Advances exactly `dt` seconds. Pass a constant such as `1 / 60`, not the time since the last frame.                                                   |
 
-Calling `step()` while a step is running returns the running step's promise.
+If you call `step()` while a step is still running, you get the running step's promise back.
 
 #### `dispose()`
 
@@ -228,42 +222,41 @@ Calling `step()` while a step is running returns the running step's promise.
 dispose(): void
 ```
 
-Removes everything the simulation added to the scene, disposes its renderers, geometries, and default materials, and shows source meshes again. A `material` passed to `addCloth` is not disposed. The simulation can't be used afterwards.
+Removes everything the simulation added to your scene, frees its GPU memory, and shows your original meshes again. A `material` you passed to `addCloth` is left for you to dispose. The simulation can't be used afterwards.
 
 ---
 
 ## Errors
 
-| Message                                                                           | Cause                                                                                                  |
-| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `Simulation: give exactly one of `particles`or`particleRadius``                   | Both or neither given.                                                                                 |
-| `Simulation: particles must be a positive integer, …`                             | Invalid `particles`.                                                                                   |
-| `Simulation: particleRadius must be a positive number of metres, …`               | Invalid `particleRadius`.                                                                              |
-| `Simulation: <call> must happen before the first step() or start()`               | An `add*` call after the simulation started.                                                           |
-| `Simulation: add a fluid, smoke, soft body, or cloth before stepping`             | Only obstacles were added.                                                                             |
-| `addFluid: give either `box`or`mesh``                                             | Both or neither given.                                                                                 |
-| `addFluid: the fluid has no room; check its box and the container`                | The box is outside the container or fully occupied.                                                    |
-| `addSoftbody: the mesh is too small for the particle size`                        | The mesh voxelizes to zero particles. Raise `particles`, lower `particleRadius`, or scale the mesh up. |
-| `addSmoke: smoke needs a `container` for the air to fill`                         | No `container`.                                                                                        |
-| `addSmoke: a simulation can have one smoke source`                                | `addSmoke` called twice.                                                                               |
-| `<call>: gas and liquid can’t be simulated together, …`                           | Smoke mixed with fluid, soft bodies, or cloth.                                                         |
-| `Simulation.particleSystem is created on the first step` (also `Simulation.loop`) | Accessed before `start()`.                                                                             |
-| `bakeMeshToSdf: mesh appears non-watertight — …`                                  | `addMesh` mesh has holes.                                                                              |
-| `SDFCollider.setTransform: scale must be uniform`                                 | `addMesh` mesh has non-uniform scale.                                                                  |
+| Message                                                               | When                                                                                                    |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| ``Simulation: give exactly one of `particles` or `particleRadius` ``  | You passed both options, or neither.                                                                    |
+| `Simulation: particles must be a positive integer, …`                 | `particles` isn't a whole number above 0.                                                               |
+| `Simulation: particleRadius must be a positive number of metres, …`   | `particleRadius` isn't a number above 0.                                                                |
+| `Simulation: <call> must happen before the first step() or start()`   | You called an `add` method after the simulation started.                                                |
+| `Simulation: add a fluid, smoke, soft body, or cloth before stepping` | You added only obstacles.                                                                               |
+| ``addFluid: give either `box` or `mesh` ``                            | You passed both options, or neither.                                                                    |
+| `addFluid: the fluid has no room; check its box and the container`    | The box is outside the container, or obstacles and solids fill it.                                      |
+| `addSoftbody: the mesh is too small for the particle size`            | Not one particle fits inside the mesh. Raise `particles`, lower `particleRadius`, or scale the mesh up. |
+| ``addSmoke: smoke needs a `container` for the air to fill``           | The simulation has no `container`.                                                                      |
+| `addSmoke: a simulation can have one smoke source`                    | You called `addSmoke` twice.                                                                            |
+| `<call>: gas and liquid can’t be simulated together, …`               | You mixed smoke with liquid, soft bodies, or cloth.                                                     |
+| `Simulation.particleSystem is created on the first step`              | You read `particleSystem` or `loop` before `start()`.                                                   |
+| `bakeMeshToSdf: mesh appears non-watertight — …`                      | A mesh passed to `addMesh` has holes.                                                                   |
+| `SDFCollider.setTransform: scale must be uniform`                     | A mesh passed to `addMesh` is scaled differently along different axes.                                  |
 
-Errors thrown during the build reject the promise returned by `start()` or `step()`.
+Errors from building the simulation reject the promise that `start()` or `step()` returns.
 
 ---
 
 ## Limitations
 
-- Everything must be added before the first `start()` or `step()`. Nothing can be added or removed afterwards; build a new `Simulation` instead.
-- One particle radius for the whole simulation. Small soft bodies in a large pool get few particles.
-- Smoke can't share a simulation with fluid, soft bodies, or cloth. Use a second `Simulation`.
-- One smoke source per simulation.
-- The container can't move. Tilt `gravity` or use moving `addBox` obstacles instead.
-- `follow` ignores the followed object's scale.
-- `addMesh` shapes are rigid and baked once. The mesh can move and rotate, but deforming it has no effect.
-- Custom [materials](./extending.md) can't be added to a `Simulation`. Build the scene with the [low-level API](./core.md) instead.
-- Solid-to-solid contact friction is fixed at `muS 0.3, muK 0.2`. Cloth drag, lift, and damping are fixed at construction; change them on [`cloth.clothSystem`](./cloth-system.md) after `start()`.
-- Without a `container`, the liquid surface is only drawn inside a box around the starting particles, and a warning is logged.
+- You can't add or remove anything after the simulation starts. To change what's in the scene, build a new `Simulation`.
+- All particles share one size, so small objects next to a lot of liquid get few particles.
+- Smoke can't share a simulation with liquid, soft bodies, or cloth, and each simulation has one smoke source. Use a second `Simulation` for smoke.
+- The container can't move. To slosh liquid around, tilt `gravity` or move a box obstacle with `follow`.
+- `follow` ignores the object's scale.
+- An `addMesh` obstacle keeps the shape the mesh had when the simulation started. It can move and turn, but not bend.
+- You can't add your own [materials](./extending.md) to a `Simulation`. Build the scene with the [low-level API](./core.md) instead.
+- Friction between soft bodies and cloth is fixed. So are cloth air drag and damping, but you can change those on [`cloth.clothSystem`](./cloth-system.md) after `start()`.
+- Without a `container`, liquid is only drawn near where it started, and the console warns you.

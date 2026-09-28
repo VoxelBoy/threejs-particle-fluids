@@ -2,7 +2,7 @@
 
 # Colliders
 
-Shapes that particles cannot enter. `PrimitiveSet` holds analytic planes, spheres, boxes, and capsules; `SDFCollider` collides with any closed mesh through a baked signed distance field. Pass colliders to [`SimLoop`](./core.md#simloop)'s `colliders` option.
+Colliders are shapes that particles can't enter. Use `PrimitiveSet` for planes, spheres, boxes, and capsules, and `SDFCollider` for any closed mesh. Pass them to [`SimLoop`](./core.md#simloop)'s `colliders` option.
 
 ```ts
 import {
@@ -29,7 +29,7 @@ import {
 
 ## Collider
 
-Interface implemented by `PrimitiveSet` and `SDFCollider`, and only by them. It is exported as a type for typing collider arrays; `SimLoop` throws `SimLoop: every collider must be built for the same ParticleSystem` if `particles` differs from its own.
+The interface that `PrimitiveSet` and `SDFCollider` implement. It's exported so you can type an array of colliders. Every collider must be built for the same `ParticleSystem` as the `SimLoop` you pass it to. Otherwise the `SimLoop` constructor throws `SimLoop: every collider must be built for the same ParticleSystem`.
 
 ```ts
 interface Collider {
@@ -42,14 +42,14 @@ interface Collider {
 | Member       | Type                                         | Description                                                           |
 | ------------ | -------------------------------------------- | --------------------------------------------------------------------- |
 | `particles`  | [`ParticleSystem`](./core.md#particlesystem) | Particles this collider acts on.                                      |
-| `update(dt)` | `(dt: number) => void`                       | Called by `SimLoop.step` before every step with the step length in s. |
+| `update(dt)` | `(dt: number) => void`                       | Called by `SimLoop.step` before each step, with the step length in s. |
 | `dispose()`  | `() => void`                                 | Releases the collider's resources.                                    |
 
-The interface also has an internal `buildKernels` method whose parameter and return types are not exported. Custom colliders are not supported.
+You can't write your own collider. The interface also has an internal `buildKernels` method, and its types aren't exported.
 
 ## PrimitiveSet
 
-Planes, spheres, boxes, and capsules in one collider. Each shape occupies a slot; the `add*` methods return the slot index. A particle is in contact when its center is closer than `particleRadius` to a shape's surface.
+A collider made of simple shapes: planes, spheres, boxes, and capsules. Use it for floors, walls, containers, and paddles. Each shape takes a slot, and each `add*` method returns its slot index. A particle touches a shape when its center is closer than `particleRadius` to the shape's surface.
 
 ```ts
 const walls = new PrimitiveSet(particles);
@@ -65,24 +65,24 @@ const loop = new SimLoop(particles, { colliders: [walls] }); // GPU slots alloca
 new PrimitiveSet(particles: ParticleSystem, options?: { capacity?: number })
 ```
 
-| Parameter          | Type                                         | Default                                                          | Description                                                                                                              |
-| ------------------ | -------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `particles`        | [`ParticleSystem`](./core.md#particlesystem) | —                                                                | Particles to collide.                                                                                                    |
-| `options.capacity` | `number`                                     | primitives added before the GPU buffers are allocated, minimum 1 | GPU slots. Buffers are allocated when a `SimLoop` is built with this set; `add*` throws once this many primitives exist. |
+| Parameter          | Type                                         | Default                                                    | Description                                                                                                       |
+| ------------------ | -------------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `particles`        | [`ParticleSystem`](./core.md#particlesystem) | —                                                          | Particles to collide.                                                                                             |
+| `options.capacity` | `number`                                     | the number added before the `SimLoop` is built, at least 1 | Slots to reserve. They're allocated when a `SimLoop` is built with this set, and `add*` throws once they're full. |
 
-| Throws                                              | When                                               |
-| --------------------------------------------------- | -------------------------------------------------- |
-| `PrimitiveSet: capacity must be a positive integer` | `capacity` is given and is not a positive integer. |
+| Throws                                              | When                                                   |
+| --------------------------------------------------- | ------------------------------------------------------ |
+| `PrimitiveSet: capacity must be a positive integer` | You passed a `capacity` that isn't a positive integer. |
 
 ### PrimitiveOptions
 
 Accepted by every `add*` method.
 
-| Option     | Type      | Default     | Description                                                                                                                 |
-| ---------- | --------- | ----------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `muS`      | `number`  | `0.5`       | Static friction coefficient.                                                                                                |
-| `muK`      | `number`  | `0.4`       | Kinetic friction coefficient.                                                                                               |
-| `velocity` | `Vector3` | `(0, 0, 0)` | Surface velocity for friction, m/s (a conveyor belt). The primitive stays put. Replaced every step for attached primitives. |
+| Option     | Type      | Default     | Description                                                                                                                                |
+| ---------- | --------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `muS`      | `number`  | `0.5`       | Static friction coefficient.                                                                                                               |
+| `muK`      | `number`  | `0.4`       | Kinetic friction coefficient.                                                                                                              |
+| `velocity` | `Vector3` | `(0, 0, 0)` | Surface velocity for friction, m/s, as on a conveyor belt. The primitive itself doesn't move. Attached primitives overwrite it every step. |
 
 ### SolidPrimitiveOptions
 
@@ -116,7 +116,7 @@ Extends [`SolidPrimitiveOptions`](#solidprimitiveoptions). Accepted by `addBox`.
 addPlane(normal: Vector3, point: Vector3, options?: PrimitiveOptions): number
 ```
 
-Adds an infinite plane through `point`. Particles stay on the side `normal` points to. `normal` is normalized. Returns the slot.
+Adds an infinite plane through `point`. Particles stay on the side that `normal` points to. `normal` doesn't need to be normalized. Returns the slot.
 
 #### `addSphere(center, radius, options?)`
 
@@ -124,7 +124,7 @@ Adds an infinite plane through `point`. Particles stay on the side `normal` poin
 addSphere(center: Vector3, radius: number, options?: SolidPrimitiveOptions): number
 ```
 
-Adds a sphere. `radius` in m. Returns the slot.
+Adds a sphere with `radius` in metres. Returns the slot.
 
 #### `addBox(center, halfExtents, options?)`
 
@@ -132,7 +132,7 @@ Adds a sphere. `radius` in m. Returns the slot.
 addBox(center: Vector3, halfExtents: Vector3, options?: BoxOptions): number
 ```
 
-Adds an oriented box. `halfExtents` in m. Returns the slot.
+Adds a box. `halfExtents` is half its size along each axis, in metres. Returns the slot.
 
 #### `addCapsule(a, b, radius, options?)`
 
@@ -140,20 +140,20 @@ Adds an oriented box. `halfExtents` in m. Returns the slot.
 addCapsule(a: Vector3, b: Vector3, radius: number, options?: PrimitiveOptions): number
 ```
 
-Adds a capsule around segment `a`–`b`. `radius` in m. Returns the slot. Cannot be inverted.
+Adds a capsule around the segment from `a` to `b`, with `radius` in metres. Returns the slot. Capsules can't be inverted.
 
 Errors thrown by the `add*` methods:
 
-| Throws                                                                | When                                                                                                 |
-| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `PrimitiveSet.addPlane: normal must be non-zero`                      | `normal` has zero length.                                                                            |
-| `PrimitiveSet.addSphere: radius must be positive`                     | `radius` is not a finite number > 0.                                                                 |
-| `PrimitiveSet.addBox: halfExtents must be positive`                   | Any component of `halfExtents` is not > 0.                                                           |
-| `PrimitiveSet.addBox: rotation must be a finite, non-zero quaternion` | `rotation` has zero length or is not finite.                                                         |
-| `PrimitiveSet.addCapsule: radius must be positive`                    | `radius` is not a finite number > 0.                                                                 |
-| `PrimitiveSet: friction coefficients must be non-negative`            | `muS` or `muK` is negative or `NaN`.                                                                 |
-| `PrimitiveSet: capacity N is full`                                    | Every slot is used: `capacity` primitives were added, or, without `capacity`, the GPU buffers exist. |
-| `PrimitiveSet has been disposed`                                      | Called after `dispose()`.                                                                            |
+| Throws                                                                | When                                                                                                                    |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `PrimitiveSet.addPlane: normal must be non-zero`                      | You passed a zero-length `normal`.                                                                                      |
+| `PrimitiveSet.addSphere: radius must be positive`                     | `radius` is zero, negative, or not finite.                                                                              |
+| `PrimitiveSet.addBox: halfExtents must be positive`                   | A component of `halfExtents` is zero or negative.                                                                       |
+| `PrimitiveSet.addBox: rotation must be a finite, non-zero quaternion` | `rotation` is all zeros or has a non-finite component.                                                                  |
+| `PrimitiveSet.addCapsule: radius must be positive`                    | `radius` is zero, negative, or not finite.                                                                              |
+| `PrimitiveSet: friction coefficients must be non-negative`            | `muS` or `muK` is negative or `NaN`.                                                                                    |
+| `PrimitiveSet: capacity N is full`                                    | Every slot is taken. You added `capacity` primitives, or you didn't pass `capacity` and the `SimLoop` is already built. |
+| `PrimitiveSet has been disposed`                                      | You called it after `dispose()`.                                                                                        |
 
 #### `attach(slot, object)`
 
@@ -161,14 +161,16 @@ Errors thrown by the `add*` methods:
 attach(slot: number, object: Object3D): void
 ```
 
-Makes the primitive follow `object`'s world position and orientation. Immediately moves the primitive's reference point (plane point, sphere or box center, capsule midpoint) to the object's world position, discarding the one passed to `add*`. A box takes the object's world orientation, replacing its `rotation` option. A plane's normal and a capsule's axis keep their current direction and turn with the object from then on. Object scale is ignored. Attaching an already-attached slot replaces the previous object.
+Makes the primitive follow `object` as it moves and turns.
 
-On every `update`, the primitive's velocity is set to its displacement divided by `dt`, and its angular velocity (about the reference point) to its turn since the last update divided by `dt`. Friction uses the surface velocity `v + ω × r`. Within a frame, the solver sweeps the primitive from its previous placement to the new one at that constant velocity and angular velocity.
+The primitive's reference point (the plane's point, the sphere's or box's center, or the capsule's midpoint) jumps to the object's world position right away, replacing the one you passed to `add*`. A box takes the object's world orientation, which replaces its `rotation` option. A plane's normal and a capsule's axis keep their current direction, then turn with the object from there. Object scale is ignored. If the slot is already attached, the new object replaces the old one.
 
-| Throws                               | When                      |
-| ------------------------------------ | ------------------------- |
-| `PrimitiveSet: no primitive in slot` | `slot` does not exist.    |
-| `PrimitiveSet has been disposed`     | Called after `dispose()`. |
+On each `update`, the primitive's velocity and angular velocity are how far it moved and turned since the last update, divided by `dt`. Friction uses the surface's velocity at each contact, including the spin, so a turning paddle drags particles with it. Within a frame, the solver sweeps the primitive from its old placement to its new one at those rates.
+
+| Throws                               | When                                |
+| ------------------------------------ | ----------------------------------- |
+| `PrimitiveSet: no primitive in slot` | No primitive has that `slot` index. |
+| `PrimitiveSet has been disposed`     | You called it after `dispose()`.    |
 
 #### `setSphere(slot, center, radius, velocity?)`
 
@@ -176,14 +178,14 @@ On every `update`, the primitive's velocity is set to its displacement divided b
 setSphere(slot: number, center: Vector3, radius: number, velocity?: Vector3): void
 ```
 
-Moves and resizes a sphere. `velocity` (m/s, default `(0, 0, 0)`) is used for friction and for sweeping the sphere across the frame's substeps. Friction coefficients and `invert` are kept. Uploaded on the next `update`.
+Moves and resizes a sphere. `velocity` is in m/s and defaults to `(0, 0, 0)`. Friction uses it, and so does the solver when it sweeps the sphere across the frame's substeps. The friction coefficients and `invert` stay as they were. The change is uploaded on the next `update`.
 
-| Throws                                            | When                                 |
-| ------------------------------------------------- | ------------------------------------ |
-| `PrimitiveSet: no primitive in slot`              | `slot` does not exist.               |
-| `PrimitiveSet.setSphere: slot N is not a sphere`  | The slot holds another kind.         |
-| `PrimitiveSet.setSphere: radius must be positive` | `radius` is not a finite number > 0. |
-| `PrimitiveSet has been disposed`                  | Called after `dispose()`.            |
+| Throws                                            | When                                       |
+| ------------------------------------------------- | ------------------------------------------ |
+| `PrimitiveSet: no primitive in slot`              | No primitive has that `slot` index.        |
+| `PrimitiveSet.setSphere: slot N is not a sphere`  | The slot holds a different kind of shape.  |
+| `PrimitiveSet.setSphere: radius must be positive` | `radius` is zero, negative, or not finite. |
+| `PrimitiveSet has been disposed`                  | You called it after `dispose()`.           |
 
 #### `update(dt)`
 
@@ -191,7 +193,7 @@ Moves and resizes a sphere. `velocity` (m/s, default `(0, 0, 0)`) is used for fr
 update(dt: number): void
 ```
 
-Reads attached objects' world transforms (skipped when `dt ≤ 0`) and uploads changed primitives to the GPU. `SimLoop.step` calls it with the step length in s. Does nothing after `dispose()`.
+Moves attached primitives to their objects, then uploads any changed primitives to the GPU. `SimLoop.step` calls it for you. When `dt` is 0 or negative, attached objects aren't read. After `dispose()`, it does nothing.
 
 #### `dispose()`
 
@@ -199,11 +201,11 @@ Reads attached objects' world transforms (skipped when `dt ≤ 0`) and uploads c
 dispose(): void
 ```
 
-Removes all attachments, releases the kernels' pipelines and bind groups, and drops the GPU buffers. three.js has no call to free a storage buffer, so their memory is reclaimed when they are garbage-collected, after the `SimLoop` using the set is gone. Later calls other than `update` and `dispose` throw `PrimitiveSet has been disposed`.
+Removes all attachments, releases the kernels' pipelines and bind groups, and drops the GPU buffers. three.js has no call to free a storage buffer, so their memory comes back when they're garbage-collected, after the `SimLoop` using the set is gone. After this, every method except `update` and `dispose` throws `PrimitiveSet has been disposed`.
 
 ## SDFCollider
 
-Collision with a mesh through a signed distance field ([`SDFData`](#sdfdata)). The field is uploaded as a half-float 3D texture and sampled with trilinear filtering. A particle is in contact when its center is closer than `particleRadius + thickness` to the surface.
+A collider shaped like any closed mesh. You first bake the mesh into a signed distance field ([`SDFData`](#sdfdata)), which the collider uploads to the GPU as a half-float 3D texture. A particle touches the mesh when its center is closer than `particleRadius + thickness` to the surface.
 
 ```ts
 const sdf = bakeMeshToSdf(mesh.geometry, { resolution: 64, padding: 0.05 }); // geometry-local space
@@ -217,20 +219,20 @@ collider.setTransform(mesh.matrixWorld); // place in the world
 new SDFCollider(particles: ParticleSystem, sdf: SDFData, options?: SDFColliderOptions)
 ```
 
-| Parameter   | Type                                         | Description                                                              |
-| ----------- | -------------------------------------------- | ------------------------------------------------------------------------ |
-| `particles` | [`ParticleSystem`](./core.md#particlesystem) | Particles to collide.                                                    |
-| `sdf`       | [`SDFData`](#sdfdata)                        | Field in the mesh's local space. Converted to half floats; not retained. |
-| `options`   | [`SDFColliderOptions`](#sdfcollideroptions)  | See below.                                                               |
+| Parameter   | Type                                         | Description                                                               |
+| ----------- | -------------------------------------------- | ------------------------------------------------------------------------- |
+| `particles` | [`ParticleSystem`](./core.md#particlesystem) | Particles to collide.                                                     |
+| `sdf`       | [`SDFData`](#sdfdata)                        | Field in the mesh's local space. It's copied as half floats and not kept. |
+| `options`   | [`SDFColliderOptions`](#sdfcollideroptions)  | See below.                                                                |
 
-| Throws                                                                    | When                                                  |
-| ------------------------------------------------------------------------- | ----------------------------------------------------- |
-| `SDFCollider: resolution must be integers ≥ 4`                            | Any `sdf.resolution` component is not an integer ≥ 4. |
-| `SDFCollider: N values do not match resolution`                           | `sdf.data.length` ≠ `resX × resY × resZ`.             |
-| `SDFCollider: thickness must be non-negative`                             | `thickness` is negative or not finite.                |
-| `SDFCollider: friction coefficients must be non-negative`                 | `muS` or `muK` is negative or `NaN`.                  |
-| `SDFCollider.setRotation: rotation must be a finite, non-zero quaternion` | `rotation` has zero length or is not finite.          |
-| `SDFCollider.setScale: scale must be positive`                            | `scale` is not a finite number > 0.                   |
+| Throws                                                                    | When                                                              |
+| ------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `SDFCollider: resolution must be integers ≥ 4`                            | A component of `sdf.resolution` isn't an integer of at least 4.   |
+| `SDFCollider: N values do not match resolution`                           | `sdf.data` doesn't hold exactly one value per voxel.              |
+| `SDFCollider: thickness must be non-negative`                             | `thickness` is negative or not finite.                            |
+| `SDFCollider: friction coefficients must be non-negative`                 | `muS` or `muK` is negative or `NaN`.                              |
+| `SDFCollider.setRotation: rotation must be a finite, non-zero quaternion` | The `rotation` option is all zeros or has a non-finite component. |
+| `SDFCollider.setScale: scale must be positive`                            | The `scale` option is zero, negative, or not finite.              |
 
 ### SDFColliderOptions
 
@@ -245,17 +247,17 @@ new SDFCollider(particles: ParticleSystem, sdf: SDFData, options?: SDFColliderOp
 
 ### Properties
 
-| Property    | Type                                         | Access     | Description                                                                                                                                                                              |
-| ----------- | -------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `particles` | [`ParticleSystem`](./core.md#particlesystem) | read-only  | Particles this collider acts on.                                                                                                                                                         |
-| `texture`   | `Data3DTexture`                              | read-only  | The field: `RedFormat`, `HalfFloatType`, linear filtering, clamp-to-edge wrapping.                                                                                                       |
-| `muS`       | `number`                                     | read/write | Static friction coefficient. Setter throws `SDFCollider: friction coefficients must be non-negative`.                                                                                    |
-| `muK`       | `number`                                     | read/write | Kinetic friction coefficient. Setter throws `SDFCollider: friction coefficients must be non-negative`.                                                                                   |
-| `thickness` | `number`                                     | read/write | Contact distance added to `particleRadius`, m. Takes effect on the next step. Not scaled by `scale`. Setter throws `SDFCollider: thickness must be non-negative`.                        |
-| `version`   | `number`                                     | read-only  | Incremented whenever position, rotation, or scale changes value, so renderers can refresh anything cached against the placement. Setting the same placement again does not increment it. |
-| `position`  | `Vector3`                                    | read-only  | World position of the local origin, m. Returns a copy; use `setPosition`.                                                                                                                |
-| `rotation`  | `Quaternion`                                 | read-only  | Orientation. Returns a copy; use `setRotation`.                                                                                                                                          |
-| `scale`     | `number`                                     | read-only  | Uniform scale. Use `setScale`.                                                                                                                                                           |
+| Property    | Type                                         | Access     | Description                                                                                                                                                                        |
+| ----------- | -------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `particles` | [`ParticleSystem`](./core.md#particlesystem) | read-only  | Particles this collider acts on.                                                                                                                                                   |
+| `texture`   | `Data3DTexture`                              | read-only  | The field: `RedFormat`, `HalfFloatType`, linear filtering, clamp-to-edge wrapping.                                                                                                 |
+| `muS`       | `number`                                     | read/write | Static friction coefficient. Setter throws `SDFCollider: friction coefficients must be non-negative`.                                                                              |
+| `muK`       | `number`                                     | read/write | Kinetic friction coefficient. Setter throws `SDFCollider: friction coefficients must be non-negative`.                                                                             |
+| `thickness` | `number`                                     | read/write | Contact distance added to `particleRadius`, m. Takes effect on the next step. Not scaled by `scale`. Setter throws `SDFCollider: thickness must be non-negative`.                  |
+| `version`   | `number`                                     | read-only  | Goes up whenever the position, rotation, or scale changes, so renderers know to refresh anything cached against the placement. Setting the same placement again doesn't change it. |
+| `position`  | `Vector3`                                    | read-only  | World position of the local origin, m. Returns a copy, so use `setPosition` to change it.                                                                                          |
+| `rotation`  | `Quaternion`                                 | read-only  | Orientation. Returns a copy, so use `setRotation` to change it.                                                                                                                    |
+| `scale`     | `number`                                     | read-only  | Uniform scale. Use `setScale` to change it.                                                                                                                                        |
 
 ### Methods
 
@@ -265,7 +267,7 @@ new SDFCollider(particles: ParticleSystem, sdf: SDFData, options?: SDFColliderOp
 setPosition(position: Vector3): void
 ```
 
-Sets the world position of the local origin, m. Takes effect on the next step.
+Sets the world position of the local origin, in metres. It takes effect on the next step.
 
 #### `setRotation(rotation)`
 
@@ -273,11 +275,11 @@ Sets the world position of the local origin, m. Takes effect on the next step.
 setRotation(rotation: Quaternion): void
 ```
 
-Sets the orientation. `rotation` is normalized.
+Sets the orientation. You don't need to normalize `rotation`.
 
-| Throws                                                                    | When                                         |
-| ------------------------------------------------------------------------- | -------------------------------------------- |
-| `SDFCollider.setRotation: rotation must be a finite, non-zero quaternion` | `rotation` has zero length or is not finite. |
+| Throws                                                                    | When                                                   |
+| ------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `SDFCollider.setRotation: rotation must be a finite, non-zero quaternion` | `rotation` is all zeros or has a non-finite component. |
 
 #### `setScale(scale)`
 
@@ -285,11 +287,11 @@ Sets the orientation. `rotation` is normalized.
 setScale(scale: number): void
 ```
 
-Sets the uniform scale. Distances scale with it; `thickness` does not, since it belongs to the particles.
+Sets the uniform scale. The field's distances scale with it. `thickness` doesn't, because it belongs to the particles rather than the mesh.
 
-| Throws                                         | When                                |
-| ---------------------------------------------- | ----------------------------------- |
-| `SDFCollider.setScale: scale must be positive` | `scale` is not a finite number > 0. |
+| Throws                                         | When                                      |
+| ---------------------------------------------- | ----------------------------------------- |
+| `SDFCollider.setScale: scale must be positive` | `scale` is zero, negative, or not finite. |
 
 #### `setTransform(transform)`
 
@@ -297,13 +299,12 @@ Sets the uniform scale. Distances scale with it; `thickness` does not, since it 
 setTransform(transform: Matrix4): void
 ```
 
-Sets position, rotation, and scale from a matrix, e.g. `mesh.matrixWorld`.
+Sets position, rotation, and scale from a matrix, such as `mesh.matrixWorld`. A matrix with zero scale doesn't throw. It places the collider at the matrix's position with a scale of 1 and no rotation.
 
-| Throws                                                                    | When                                                     |
-| ------------------------------------------------------------------------- | -------------------------------------------------------- |
-| `SDFCollider.setTransform: scale must be uniform`                         | Scale axes differ by more than 1e-4 relative to x.       |
-| `SDFCollider.setScale: scale must be positive`                            | The decomposed scale is not > 0, e.g. a mirrored matrix. |
-| `SDFCollider.setRotation: rotation must be a finite, non-zero quaternion` | The matrix is degenerate (zero scale).                   |
+| Throws                                                                    | When                                                                                                    |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `SDFCollider.setTransform: scale must be uniform`                         | The matrix scales the axes by different amounts (more than 1e-4 relative to x), or it mirrors the mesh. |
+| `SDFCollider.setRotation: rotation must be a finite, non-zero quaternion` | The matrix contains `NaN` or infinite values.                                                           |
 
 #### `update()`
 
@@ -311,7 +312,7 @@ Sets position, rotation, and scale from a matrix, e.g. `mesh.matrixWorld`.
 update(): void
 ```
 
-No-op. Placement changes are written straight to uniforms.
+Does nothing, because placement changes go straight to the GPU.
 
 #### `dispose()`
 
@@ -323,7 +324,7 @@ Disposes `texture` and releases the kernels' pipelines and bind groups.
 
 ## SDFData
 
-A signed distance field on a regular grid, in the mesh's local space. Negative inside. Produced by [`bakeMeshToSdf`](#bakemeshtosdf) and [`decodeSdfBinary`](#decodesdfbinary); consumed by `SDFCollider`, `sampleSdf`, `encodeSdfBinary`, and [`voxelize`](./softbody-system.md#voxelize).
+A grid of distances to a mesh's surface, in the mesh's local space. Distances are negative inside the mesh. You get one from [`bakeMeshToSdf`](#bakemeshtosdf) or [`decodeSdfBinary`](#decodesdfbinary). `SDFCollider`, `sampleSdf`, `encodeSdfBinary`, and [`voxelize`](./softbody-system.md#voxelize) take one.
 
 ```ts
 interface SDFData {
@@ -334,12 +335,12 @@ interface SDFData {
 }
 ```
 
-| Field        | Type                       | Description                                                                                                                             |
-| ------------ | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `data`       | `Float32Array`             | Signed distance per voxel, m. Index `x + y·resX + z·resX·resY`.                                                                         |
-| `resolution` | `[number, number, number]` | Voxel count per axis.                                                                                                                   |
-| `origin`     | `[number, number, number]` | Outer corner of voxel `(0, 0, 0)`, local space, m. Voxel `(i, j, k)` is centered at `origin + (i + 0.5, j + 0.5, k + 0.5) · voxelSize`. |
-| `voxelSize`  | `[number, number, number]` | Voxel edge length per axis, m.                                                                                                          |
+| Field        | Type                       | Description                                                                                                                               |
+| ------------ | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `data`       | `Float32Array`             | Signed distance per voxel, m. Voxel `(x, y, z)` is at index `x + y·resX + z·resX·resY`.                                                   |
+| `resolution` | `[number, number, number]` | Voxel count per axis.                                                                                                                     |
+| `origin`     | `[number, number, number]` | Outer corner of voxel `(0, 0, 0)` in local space, m. Voxel `(i, j, k)` is centered at `origin + (i + 0.5, j + 0.5, k + 0.5) · voxelSize`. |
+| `voxelSize`  | `[number, number, number]` | Voxel edge length per axis, m.                                                                                                            |
 
 ## bakeMeshToSdf
 
@@ -347,9 +348,9 @@ interface SDFData {
 bakeMeshToSdf(mesh: BufferGeometry | TriangleMesh, options: BakeOptions): SDFData
 ```
 
-Bakes a closed triangle mesh into an [`SDFData`](#sdfdata) on the CPU, synchronously. Uses the geometry's local vertex positions; object transforms are not applied. A `BufferGeometry` is read from its `position` attribute and index (non-indexed geometry is a triangle soup; `drawRange` and groups are ignored).
+Turns a closed triangle mesh into an [`SDFData`](#sdfdata) on the CPU, blocking until it's done. It uses the geometry's own vertex positions, so the object's transform isn't applied. A `BufferGeometry` is read from its `position` attribute and index. Without an index, every three vertices make a triangle. `drawRange` and groups are ignored.
 
-The grid is cubic: `resolution³` voxels, side length equal to the longest axis of the mesh bounds plus `2 × padding`, centered on the bounds. Each voxel stores the distance from its center to the nearest triangle, signed by a majority vote of ray casts along +X, +Y, and +Z (started a 10⁻⁴-voxel sideways offset from the center, so they don't run along the edges of meshes symmetric about the grid).
+The grid is a cube with `resolution` voxels along each side. It's centered on the mesh's bounding box, and each side is the box's longest axis plus `padding` at both ends. Each voxel stores the distance from its center to the nearest triangle. Whether it's inside is decided by a majority vote of rays cast along +X, +Y, and +Z. The rays start 10⁻⁴ voxel to the side of the center, so they don't run along the edges of meshes that are symmetric about the grid.
 
 | Parameter | Type                                                              | Description                     |
 | --------- | ----------------------------------------------------------------- | ------------------------------- |
@@ -358,20 +359,19 @@ The grid is cubic: `resolution³` voxels, side length equal to the longest axis 
 
 ### BakeOptions
 
-| Option       | Type     | Default                             | Description                                                                                                                                                                      |
-| ------------ | -------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `resolution` | `number` | required                            | Voxels per axis. Integer ≥ 4.                                                                                                                                                    |
-| `padding`    | `number` | two voxels (one below resolution 8) | Space added around the mesh bounds on every side, m. Outside the grid the field reads its edge voxels, so keep this above the contact distance (`particleRadius` + `thickness`). |
+| Option       | Type     | Default                             | Description                                                                                                                                                                            |
+| ------------ | -------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `resolution` | `number` | required                            | Voxels per axis. Integer ≥ 4.                                                                                                                                                          |
+| `padding`    | `number` | two voxels (one below resolution 8) | Space added around the mesh bounds on every side, m. Outside the grid the field reads its edge voxels, so keep this larger than the contact distance (`particleRadius` + `thickness`). |
 
-| Throws                                                        | When                                                                    |
-| ------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `bakeMeshToSdf: resolution must be an integer ≥ 4`            | Invalid `resolution`.                                                   |
-| `bakeMeshToSdf: padding must be a non-negative finite number` | Invalid `padding`.                                                      |
-| `bakeMeshToSdf: indices.length must be a multiple of 3`       | Non-indexed geometry whose vertex count is not a multiple of 3.         |
-| `bakeMeshToSdf: mesh has zero triangles`                      | No triangles.                                                           |
-| `bakeMeshToSdf: index N out of range`                         | A geometry index exceeds the vertex count.                              |
-| `TriangleMesh: ...`                                           | A `TriangleMesh` argument has malformed arrays or out-of-range indices. |
-| `bakeMeshToSdf: mesh appears non-watertight`                  | More than 1% of voxels got disagreeing axis votes.                      |
+| Throws                                                        | When                                                                                                                    |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `bakeMeshToSdf: resolution must be an integer ≥ 4`            | `resolution` isn't an integer of at least 4.                                                                            |
+| `bakeMeshToSdf: padding must be a non-negative finite number` | `padding` is negative or not finite.                                                                                    |
+| `bakeMeshToSdf: mesh has zero triangles`                      | The mesh has no triangles.                                                                                              |
+| `toTriangleMesh: ...`                                         | `mesh` isn't a `BufferGeometry` or `TriangleMesh`, or the geometry has no `position` attribute with 3 components.       |
+| `TriangleMesh: ...`                                           | An array length isn't a multiple of 3, or an index points past the last vertex. This applies to a `BufferGeometry` too. |
+| `bakeMeshToSdf: mesh appears non-watertight`                  | More than 1% of voxels got conflicting votes, usually because the mesh has holes.                                       |
 
 ## sampleSdf
 
@@ -379,11 +379,11 @@ The grid is cubic: `resolution³` voxels, side length equal to the longest axis 
 sampleSdf(sdf: SDFData, x: number, y: number, z: number): number
 ```
 
-Trilinearly interpolated distance at `(x, y, z)` in the field's local space, m. Uses the same voxel-center convention as the GPU. Points outside the grid read the nearest edge values. Reads the `Float32Array` directly, so results differ from the GPU's half-float texture by rounding.
+Returns the trilinearly interpolated distance at `(x, y, z)` in the field's local space, in metres. It places voxel centers the same way the GPU does, and points outside the grid read the nearest edge values. Results differ slightly from the GPU, which reads half floats instead of the `Float32Array`.
 
-| Throws                                       | When                                                  |
-| -------------------------------------------- | ----------------------------------------------------- |
-| `sampleSdf: resolution must be integers ≥ 2` | Any `sdf.resolution` component is not an integer ≥ 2. |
+| Throws                                       | When                                                            |
+| -------------------------------------------- | --------------------------------------------------------------- |
+| `sampleSdf: resolution must be integers ≥ 2` | A component of `sdf.resolution` isn't an integer of at least 2. |
 
 ## sampleSdfGradient
 
@@ -391,7 +391,7 @@ Trilinearly interpolated distance at `(x, y, z)` in the field's local space, m. 
 sampleSdfGradient(sdf: SDFData, x: number, y: number, z: number): [number, number, number]
 ```
 
-Central-difference gradient at `(x, y, z)` in local space, with a step of one voxel per axis (six `sampleSdf` calls, the GPU's pattern). Not normalized; `|∇φ| ≈ 1` away from the medial axis and grid edges.
+Returns the field's gradient at `(x, y, z)` in local space. It compares samples one voxel to either side on each axis, which takes six `sampleSdf` calls, as on the GPU. The result isn't normalized. Its length is close to 1, except near the grid edges and at points equally close to two parts of the surface.
 
 ## encodeSdfBinary
 
@@ -399,7 +399,7 @@ Central-difference gradient at `(x, y, z)` in local space, with a step of one vo
 encodeSdfBinary(sdf: SDFData): ArrayBuffer
 ```
 
-Serializes a field to the `.sdf.bin` format (little-endian, 48-byte header followed by `resX·resY·resZ` float32 values in `data` order):
+Serializes a field to the `.sdf.bin` format. The format is little-endian, with a 48-byte header followed by the `resX·resY·resZ` float32 values in `data` order.
 
 | Offset | Size       | Field                 |
 | ------ | ---------- | --------------------- |
@@ -411,9 +411,9 @@ Serializes a field to the `.sdf.bin` format (little-endian, 48-byte header follo
 | 36     | 12         | `voxelSize`, 3 × f32  |
 | 48     | 4 × voxels | `data`, f32           |
 
-| Throws                                                       | When                                  |
-| ------------------------------------------------------------ | ------------------------------------- |
-| `encodeSdfBinary: resolution ... does not match data length` | `data.length` ≠ `resX × resY × resZ`. |
+| Throws                                                       | When                                                 |
+| ------------------------------------------------------------ | ---------------------------------------------------- |
+| `encodeSdfBinary: resolution ... does not match data length` | `sdf.data` doesn't hold exactly one value per voxel. |
 
 ## decodeSdfBinary
 
@@ -421,37 +421,36 @@ Serializes a field to the `.sdf.bin` format (little-endian, 48-byte header follo
 decodeSdfBinary(buffer: ArrayBuffer): SDFData
 ```
 
-Parses a `.sdf.bin` buffer. Voxel data is copied out of `buffer`. Trailing bytes are ignored. `SDFCollider` additionally requires each resolution ≥ 4.
+Parses a `.sdf.bin` buffer. The voxel data is copied out of `buffer`, and trailing bytes are ignored. This accepts resolutions as low as 2, but `SDFCollider` needs at least 4.
 
 ```ts
 const sdf = decodeSdfBinary(await(await fetch('/bunny.sdf.bin')).arrayBuffer());
 ```
 
-| Throws                                         | When                                                   |
-| ---------------------------------------------- | ------------------------------------------------------ |
-| `decodeSdfBinary: buffer too small for header` | Fewer than 48 bytes.                                   |
-| `decodeSdfBinary: bad magic`                   | First 4 bytes are not `"PSDF"`.                        |
-| `decodeSdfBinary: unsupported version`         | Version is not `1`.                                    |
-| `decodeSdfBinary: resolution must be ≥ 2`      | Any resolution component is below 2.                   |
-| `decodeSdfBinary: voxelSize must be positive`  | Any voxel size is not a finite number > 0.             |
-| `decodeSdfBinary: buffer too small (`          | Fewer bytes than the header plus `4 × resX·resY·resZ`. |
+| Throws                                         | When                                                                                 |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `decodeSdfBinary: buffer too small for header` | The buffer is shorter than the 48-byte header.                                       |
+| `decodeSdfBinary: bad magic`                   | The first 4 bytes aren't `"PSDF"`.                                                   |
+| `decodeSdfBinary: unsupported version`         | The version isn't `1`.                                                               |
+| `decodeSdfBinary: resolution must be ≥ 2`      | A resolution component is below 2.                                                   |
+| `decodeSdfBinary: voxelSize must be positive`  | A voxel size is zero, negative, or not finite.                                       |
+| `decodeSdfBinary: buffer too small (`          | The buffer is shorter than the header plus `4 × resX·resY·resZ` bytes of voxel data. |
 
 ## Limitations
 
-- Every collider acts on every particle in its `ParticleSystem` with inverse mass > 0; there is no per-range or per-material filtering.
-- Colliders are fixed when the `SimLoop` is constructed; none can be added or removed afterwards.
-- `PrimitiveSet` tests every particle against every primitive in each solver iteration and again in the friction pass.
-- `PrimitiveSet` capacity is fixed when the `SimLoop` is built; `add*` throws once it is full. No other maximum is enforced in code.
-- `PrimitiveSet`'s contact buffer is `8 × particles.capacity × capacity` bytes, and its orientations and angular velocities take `16 × capacity` bytes of uniform memory each, bounded by the device's `maxStorageBufferBindingSize` and `maxUniformBufferBindingSize`.
-- `PrimitiveSet` has no remove, detach, or friction setter; only spheres can be reshaped (`setSphere`); planes, boxes, and capsules move only through `attach`.
-- `attach` ignores object scale. Between updates an attached primitive is assumed to move at constant velocity and turn at constant angular velocity; a turn of more than half a revolution per step is read as the shorter turn the other way.
-- Only spheres and boxes can be inverted.
-- `SDFCollider` supports uniform scale only; `setTransform` throws on non-uniform or mirrored scale.
-- `SDFCollider` friction treats the collider as static, and placement changes are applied instantly, not swept; particles left inside are pushed toward the nearest surface, which for thin parts can be the far side.
-- After construction an `SDFCollider`'s field, resolution, origin, and voxel size are fixed; position, rotation, scale, `thickness`, `muS`, and `muK` can change every step.
-- Each `SDFCollider` builds its own kernels and takes 7 texture samples per particle per solver iteration, plus 7 per contacting particle in the friction pass.
-- Fields are stored on the GPU as half floats: about 3 significant digits, magnitudes clamped to 65504.
-- Outside its grid the field reads the edge voxels, so edge voxels closer than the contact distance cause contacts beyond the grid. The default `padding` of two voxels keeps edge voxels about 1.5 voxels out; pass a larger `padding` when the contact distance is larger than that.
-- `bakeMeshToSdf` is brute force: time is O(`resolution³` × triangles), runs on the calling thread, and allocates `4 × resolution³` bytes.
-- `bakeMeshToSdf` always produces a cubic grid, so short axes of an elongated mesh get the same voxel size as the longest.
-- The bake's sign test requires a closed, manifold mesh; up to 1% of voxels with disagreeing votes are accepted silently.
+- A collider acts on every particle in its `ParticleSystem` with an inverse mass above 0. You can't limit it to some objects or materials.
+- You can't add or remove colliders after the `SimLoop` is constructed. To take an obstacle out of play, move it out of the way.
+- `PrimitiveSet` tests every particle against every primitive in each solver iteration, and again in the friction pass.
+- A `PrimitiveSet`'s capacity can't grow after the `SimLoop` is built. Beyond that, only the device limits it. The contact buffer takes `8 × particles.capacity × capacity` bytes and must fit in `maxStorageBufferBindingSize`. Orientations and angular velocities each take `16 × capacity` bytes and must fit in `maxUniformBufferBindingSize`.
+- You can't remove a primitive, detach it, or change its friction. Only spheres can be reshaped, with `setSphere`. Planes, boxes, and capsules can only move through `attach`.
+- Between updates, an attached primitive is assumed to move and turn at a steady rate. A turn of more than half a revolution in one step is read as the shorter turn the other way.
+- You can't invert a plane or a capsule, only spheres and boxes. To keep particles on the other side of a plane, flip its normal.
+- `SDFCollider` supports only uniform scale, so `setTransform` throws on a stretched or mirrored matrix.
+- `SDFCollider` friction treats the mesh as still, and a moved mesh jumps to its new placement instead of sweeping across substeps. Particles left inside are pushed toward the nearest surface, which for a thin part can be the far side. Keep each step's movement small compared with the thinnest part.
+- You can't change an `SDFCollider`'s field after construction, including its resolution, origin, and voxel size. Position, rotation, scale, `thickness`, `muS`, and `muK` can change every step.
+- Each `SDFCollider` builds its own kernels and takes 7 texture samples per particle per solver iteration, plus 7 for each touching particle in the friction pass.
+- Fields are stored on the GPU as half floats, which keep about 3 significant digits and clamp magnitudes to 65504.
+- Outside its grid, the field reads the edge voxels. If they're closer to the surface than the contact distance, particles beyond the grid hit an invisible wall. The default `padding` of two voxels puts edge voxel centers about 1.5 voxels from the mesh bounds, so pass a larger `padding` if the contact distance is bigger.
+- `bakeMeshToSdf` checks every triangle for every voxel, so its time grows with `resolution³` times the triangle count. It runs on the calling thread and allocates `4 × resolution³` bytes. To skip it at load time, bake ahead with `encodeSdfBinary` and load the file with `decodeSdfBinary`.
+- `bakeMeshToSdf` always makes a cubic grid, so an elongated mesh gets the same voxel size on its short axes as on its longest.
+- The bake's inside test needs a closed, manifold mesh. If up to 1% of voxels get conflicting votes, the bake still succeeds without an error.

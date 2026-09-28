@@ -2,7 +2,7 @@
 
 # Fluid
 
-Liquid added with [`Simulation.addFluid`](./simulation.md#addfluidoptions). The returned `Fluid` handle changes settings live.
+A liquid added with [`Simulation.addFluid`](./simulation.md#addfluidoptions). The `Fluid` it returns lets you change the liquid's settings while it runs.
 
 ```ts
 const water = sim.addFluid({
@@ -14,35 +14,37 @@ water.viscosity = 0.05;
 
 ## FluidOptions
 
-| Option           | Type                                                                | Default                        | Description                                                                                                                                            |
-| ---------------- | ------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `box`            | `Box3`                                                              | —                              | Fill this box, clipped one particle radius inside the container. Give `box` or `mesh`, not both.                                                       |
-| `mesh`           | `Mesh`                                                              | —                              | Fill this closed mesh at its current world transform. The mesh is hidden until `dispose()`.                                                            |
-| `viscosity`      | `number`                                                            | `0.01`                         | XSPH velocity smoothing. About 0.01 for water, up to 0.3 for syrup.                                                                                    |
-| `surfaceTension` | `number`                                                            | `0.1`                          | Cohesion. Above about 0.25, streams break into drops.                                                                                                  |
-| `vorticity`      | `number`                                                            | `0.02`                         | Vorticity confinement strength.                                                                                                                        |
-| `adhesion`       | `number`                                                            | `0.1`                          | Attraction to soft body and cloth particles.                                                                                                           |
-| `thickness`      | `number`                                                            | not set                        | Implicit viscosity for honey-like liquids, about 20 for honey. Setting it (even to `0`) adds a [`ViscositySolver`](./fluid-system.md#viscositysolver). |
-| `color`          | `number`                                                            | `0x3a9fcf`                     | Shorthand for `appearance.color`.                                                                                                                      |
-| `appearance`     | `Partial<`[`FluidAppearance`](./fluid-system.md#fluidappearance)`>` | `{ attenuationDistance: 0.6 }` | Surface look. `color` overrides `appearance.color`.                                                                                                    |
+| Option           | Type                                                                | Default                        | Description                                                                                                  |
+| ---------------- | ------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `box`            | `Box3`                                                              | —                              | A box to fill with liquid. Only the part inside the container is filled. Give `box` or `mesh`, not both.     |
+| `mesh`           | `Mesh`                                                              | —                              | A closed mesh to fill with liquid, where it sits in the scene. The mesh is hidden while the simulation runs. |
+| `viscosity`      | `number`                                                            | `0.01`                         | How much the liquid resists flowing. About 0.01 for water, up to 0.3 for syrup.                              |
+| `surfaceTension` | `number`                                                            | `0.1`                          | Pulls the liquid into round drops and smooth sheets. Above about 0.25, streams break into drops.             |
+| `vorticity`      | `number`                                                            | `0.02`                         | Keeps swirls from dying out.                                                                                 |
+| `adhesion`       | `number`                                                            | `0.1`                          | How much the liquid clings to soft bodies and cloth.                                                         |
+| `thickness`      | `number`                                                            | not set                        | Extra thickness for honey-like liquids, about 20 for honey. See the note below.                              |
+| `color`          | `number`                                                            | `0x3a9fcf`                     | Tint of the liquid. Same as `appearance.color`, and wins if you give both.                                   |
+| `appearance`     | `Partial<`[`FluidAppearance`](./fluid-system.md#fluidappearance)`>` | `{ attenuationDistance: 0.6 }` | How the liquid looks: color, clarity, roughness, and more.                                                   |
 
-Particles are placed on a `2 × particleRadius` grid, skipping positions inside obstacles, soft bodies, and cloth.
+`viscosity` can't make a liquid much thicker than syrup without becoming unstable. For honey and other very thick liquids, use `thickness`, which runs a [second, slower solver](./fluid-system.md#viscositysolver) that stays stable at high values. Passing `thickness`, even as `0`, is also what lets you change it later.
+
+The liquid starts as particles on a grid that fills the box or mesh, skipping space that obstacles, soft bodies, or cloth already take up.
 
 ## Fluid
 
 ### Properties
 
-| Property         | Type                                                             | Access     | Description                                                    |
-| ---------------- | ---------------------------------------------------------------- | ---------- | -------------------------------------------------------------- |
-| `particleCount`  | `number`                                                         | read       | Particles in this liquid. `0` until the simulation starts.     |
-| `viscosity`      | `number`                                                         | read/write | See [FluidOptions](#fluidoptions).                             |
-| `surfaceTension` | `number`                                                         | read/write |                                                                |
-| `vorticity`      | `number`                                                         | read/write |                                                                |
-| `adhesion`       | `number`                                                         | read/write |                                                                |
-| `thickness`      | `number`                                                         | read/write | Setting it throws unless `thickness` was passed to `addFluid`. |
-| `fluidSystem`    | [`FluidSystem`](./fluid-system.md#fluidsystem-1)                 | read       | Underlying solver. Throws before start.                        |
-| `surface`        | [`FluidSurfaceRenderer`](./fluid-system.md#fluidsurfacerenderer) | read       | Surface renderer. Throws before start.                         |
-| `mesh`           | `Mesh`                                                           | read       | Surface mesh in the scene. Throws before start.                |
+| Property         | Type                                                             | Access     | Description                                                         |
+| ---------------- | ---------------------------------------------------------------- | ---------- | ------------------------------------------------------------------- |
+| `particleCount`  | `number`                                                         | read       | Particles in this liquid. `0` until the simulation starts.          |
+| `viscosity`      | `number`                                                         | read/write | See [FluidOptions](#fluidoptions).                                  |
+| `surfaceTension` | `number`                                                         | read/write | See [FluidOptions](#fluidoptions).                                  |
+| `vorticity`      | `number`                                                         | read/write | See [FluidOptions](#fluidoptions).                                  |
+| `adhesion`       | `number`                                                         | read/write | See [FluidOptions](#fluidoptions).                                  |
+| `thickness`      | `number`                                                         | read/write | Throws when set unless you passed `thickness` to `addFluid`.        |
+| `fluidSystem`    | [`FluidSystem`](./fluid-system.md#fluidsystem-1)                 | read       | The solver underneath. Available after `start()`.                   |
+| `surface`        | [`FluidSurfaceRenderer`](./fluid-system.md#fluidsurfacerenderer) | read       | The renderer that draws the liquid. Available after `start()`.      |
+| `mesh`           | `Mesh`                                                           | read       | The liquid's surface mesh in your scene. Available after `start()`. |
 
 ### Methods
 
@@ -52,12 +54,12 @@ Particles are placed on a `2 × particleRadius` grid, skipping positions inside 
 setAppearance(appearance: Partial<FluidAppearance>): void
 ```
 
-Merges into the current appearance. Works before and after start.
+Changes how the liquid looks. Fields you leave out keep their current values. You can call it before or after the simulation starts.
 
 ## Limitations
 
-- Fixed volume: fluid can't be emitted or removed after start. For pouring, use [`FluidSystem`](./fluid-system.md#emitting) directly.
-- All fluids share the simulation's particle radius.
-- `thickness` adds a second solver pass every substep, even when set to `0`.
-- Setting a value on `fluidSystem` directly doesn't update the handle's getter.
-- The surface is drawn only inside `container` (padded by 3 cm horizontally and 2 cm vertically). Without a container, only inside a box around the starting particles.
+- The amount of liquid is fixed once the simulation starts. To pour liquid in over time, use [`FluidSystem`](./fluid-system.md#emitting) directly.
+- Every liquid in a simulation has the same particle size.
+- `thickness` makes each step slower, even when it's set to `0`.
+- If you change a setting on `fluidSystem` directly, the matching property on the `Fluid` still shows the old value.
+- The liquid is only drawn inside the container, plus a few centimetres of margin. Without a container, it's only drawn in a box around where it started.

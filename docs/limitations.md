@@ -2,47 +2,48 @@
 
 # Limitations
 
-Known constraints of the library as of 0.1. Per-class limits are listed at the bottom of each [API page](README.md#api-reference).
+What the library can't do yet, and where it's slow. Each [API page](README.md#api-reference) also ends with the limits of its own classes.
 
 ## Platform
 
-- WebGPU only. No WebGL fallback. [`createParticleRenderer`](api/simulation.md#createparticlerenderer) throws without it.
-- Requires `three` r184 exactly (`>=0.184.0 <0.185.0`).
-- Requires the device limits listed under [`createParticleRenderer`](api/simulation.md#createparticlerenderer).
-- The API may change before 1.0.
+- The library needs WebGPU. There's no WebGL fallback, so [`createParticleRenderer`](api/simulation.md#createparticlerenderer) throws in browsers without it.
+- It works with three.js r184 only.
+- The GPU has to support the limits listed under [`createParticleRenderer`](api/simulation.md#createparticlerenderer).
+- The API may change before version 1.0.
 
 ## Performance
 
-- Cost scales with particle count, substeps, and screen resolution (liquid and smoke are ray-marched per pixel).
-- Laptop GPUs, including Apple M1 Pro, can struggle at 10,000 particles. Measure on your target hardware.
-- Fluid boundaries on moving soft bodies and cloth are recomputed every substep and are the largest cost in coupled scenes.
-- `thickness` (implicit viscosity) adds a second solver pass per substep.
-- Voxelizing meshes and baking distance fields run on the CPU, on the main thread, during `start()`.
-- `readback()` stalls the GPU. Keep it out of the frame loop.
+- Frame time grows with the particle count, the number of substeps, and the screen size. Liquid and smoke are drawn per pixel, so high-resolution screens cost more.
+- Laptop GPUs can struggle at 10,000 particles, including an Apple M1 Pro. Measure on the hardware you plan to support.
+- Liquid touching moving soft bodies or cloth is the most expensive combination, because the solids' boundaries are rebuilt every substep.
+- A liquid with `thickness` adds a second solver pass to every substep.
+- Filling meshes with particles and preparing `addMesh` obstacles happen on the CPU during `start()`, and they block the page while they run.
+- Reading particle data back to the CPU with `readback()` stalls the GPU. Keep it out of the frame loop.
 
 ## Accuracy
 
-- Position-based dynamics (PBF, XPBD, shape matching). Built for real-time visuals, not engineering analysis.
-- Results depend on substeps and particle radius. Stiffness and bending are scaled with resolution but don't match exactly across resolutions.
-- Stiff bodies colliding fast at low substep counts can stick together.
-- Fast or thin obstacles can be tunneled through. Raise substeps.
-- Each particle tracks at most 64 neighbors. Extra neighbors are dropped silently.
+- The solvers are built for real-time visuals, not engineering. They use position-based methods that trade physical accuracy for speed and stability.
+- Results change somewhat with the number of substeps and the particle size. Soft body and cloth stiffness are adjusted for particle count, but not perfectly.
+- Stiff bodies that hit each other fast can stick together. Raising substeps helps.
+- Fast or thin obstacles can let particles pass through. Raising substeps helps here too.
+- Each particle looks at no more than 64 neighbors. In very dense spots, extra neighbors are ignored. [`FluidSystem.readbackOverflow()`](api/fluid-system.md) tells you when that happens.
 
 ## Simulation API
 
-- Everything is added before the first step. Nothing can be added or removed afterwards.
-- One particle radius per simulation.
-- Smoke can't share a simulation with liquid, soft bodies, or cloth. One smoke source per simulation.
-- The container is fixed.
-- Fluids can't be emitted after start.
-- Cloth is rectangular only.
-- Custom materials can't be added.
+- You can't add or remove anything after the simulation starts.
+- Every particle in a simulation is the same size.
+- Smoke needs its own simulation, and each simulation has one smoke source.
+- The container can't move.
+- The amount of liquid is fixed once the simulation starts.
+- Cloth can only be a rectangle.
+- You can't add your own materials.
+
+The [low-level API](api/core.md) removes most of these limits.
 
 ## Low-level API
 
-- A [`ParticleSystem`](api/core.md#particlesystem)'s capacity is fixed at construction.
-- Materials, colliders, and fluid boundaries are fixed once a [`SimLoop`](api/core.md#simloop) is built.
-- Material order in `SimLoop` matters: `ViscositySolver` after its `FluidSystem`, `GasSystem` before its `FluidSystem`.
-- [`PrimitiveSet`](api/colliders.md#primitiveset) primitives can't be removed.
-- [`SDFCollider`](api/colliders.md#sdfcollider) needs uniform scale and a watertight mesh.
-- `dispose()` methods don't free every GPU buffer.
+- A [`ParticleSystem`](api/core.md#particlesystem) has a fixed number of slots, set when you create it.
+- Once a [`SimLoop`](api/core.md#simloop) is built, you can't add materials, colliders, or liquid boundaries to it.
+- The order of materials in a `SimLoop` matters. A `ViscositySolver` must come after its `FluidSystem`, and a `GasSystem` must come before its `FluidSystem`.
+- You can't remove a shape from a [`PrimitiveSet`](api/colliders.md#primitiveset).
+- An [`SDFCollider`](api/colliders.md#sdfcollider) needs a closed mesh, scaled equally along every axis.

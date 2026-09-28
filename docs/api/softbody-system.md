@@ -2,7 +2,7 @@
 
 # SoftbodySystem
 
-Soft and rigid bodies made of particles, solved with shape matching (Müller et al. 2005; Müller & Chentanez 2011) as XPBD constraints. `voxelize` fills a closed shape with particles; `SoftbodyMesh` draws a mesh that deforms with them.
+`SoftbodySystem` simulates soft and rigid bodies made of particles. It uses shape matching (Müller et al. 2005; Müller & Chentanez 2011), solved as XPBD constraints. `voxelize` fills a closed shape with particles, and `SoftbodyMesh` draws a mesh that bends with them.
 
 ```ts
 import { SoftbodySystem, SoftbodyMesh, voxelize } from 'threejs-particle-fluids';
@@ -14,16 +14,17 @@ import { SoftbodySystem, SoftbodyMesh, voxelize } from 'threejs-particle-fluids'
 
 ## SoftbodySystem
 
-A [`Material`](./extending.md#material) that holds one or more bodies over the same [`ParticleSystem`](./core.md#particlesystem). Add it to a [`SimLoop`](./core.md#simloop)'s `materials`; bodies touch each other only when the loop's `contact` option is on. There is no separate rigid body class: a rigid body is a body with `compliance: 0` under `'global'` shape matching.
+A [`Material`](./extending.md#material) that holds one or more bodies in the same [`ParticleSystem`](./core.md#particlesystem). Add it to a [`SimLoop`](./core.md#simloop)'s `materials`. Bodies only touch each other when the loop's `contact` option is on. For a rigid body, use `compliance: 0` with `'global'` shape matching.
 
 ```ts
 const shape = voxelize(geometry, { particleRadius: 0.015 });
 const particles = new ParticleSystem(renderer, shape.count, 0.015);
+// Upload first, because the rest shape defaults to these positions.
 particles.uploadParticles(
   Array.from({ length: shape.count }, (_, i) => ({
     position: [shape.positions[i * 3]!, shape.positions[i * 3 + 1]!, shape.positions[i * 3 + 2]!],
   })),
-); // before the system: rest shape defaults to these positions
+);
 const bodies = new SoftbodySystem(particles, {
   bodies: [
     { range: { start: 0, count: shape.count }, surfaceCount: shape.surfaceCount, compliance: 1e-6 },
@@ -48,18 +49,18 @@ new SoftbodySystem(particles: ParticleSystem, options: SoftbodySystemOptions)
 | Option          | Type                                       | Default    | Description                                                                                         |
 | --------------- | ------------------------------------------ | ---------- | --------------------------------------------------------------------------------------------------- |
 | `bodies`        | readonly [`SoftbodyDef`](#softbodydef)`[]` | required   | The bodies. At least one.                                                                           |
-| `shapeMatching` | `'global' \| 'local'`                      | `'global'` | Shape-matching mode; see [Shape matching](#shape-matching).                                         |
+| `shapeMatching` | `'global' \| 'local'`                      | `'global'` | Shape-matching mode. See [Shape matching](#shape-matching).                                         |
 | `selfCollision` | `boolean`                                  | `false`    | Let a body's particles contact each other. When `false`, see [Collision groups](#collision-groups). |
 
 ### SoftbodyDef
 
-| Field           | Type                                       | Default                       | Description                                                                                                                                                             |
-| --------------- | ------------------------------------------ | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `range`         | [`ParticleRange`](./core.md#particlerange) | required                      | The body's particles, surface particles first. Must not overlap another body.                                                                                           |
-| `surfaceCount`  | `number`                                   | `range.count`                 | Number of leading particles on the surface. Returned by [`surfaceRange`](#surfacerangeindex).                                                                           |
-| `compliance`    | `number`                                   | `0`                           | Shape-matching compliance, s²/kg. 0 is rigid; see [Compliance](#compliance).                                                                                            |
-| `restPositions` | `Float32Array`                             | positions uploaded to `range` | Rest shape, xyz per particle (`3 × range.count` values), m.                                                                                                             |
-| `edges`         | `Uint32Array`                              | `undefined`                   | Neighbor pairs `[i0, j0, i1, j1, …]`, indices local to the body. Required for `'local'`; also used by `SoftbodyMesh` binding. Checked by the constructor in both modes. |
+| Field           | Type                                       | Default                       | Description                                                                                                                                          |
+| --------------- | ------------------------------------------ | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `range`         | [`ParticleRange`](./core.md#particlerange) | required                      | The body's particles, surface particles first. Must not overlap another body.                                                                        |
+| `surfaceCount`  | `number`                                   | `range.count`                 | Number of leading particles on the surface. Returned by [`surfaceRange`](#surfacerangeindex).                                                        |
+| `compliance`    | `number`                                   | `0`                           | Shape-matching compliance, s²/kg. `0` is rigid. See [Compliance](#compliance).                                                                       |
+| `restPositions` | `Float32Array`                             | positions uploaded to `range` | Rest shape, xyz per particle (`3 × range.count` values), m.                                                                                          |
+| `edges`         | `Uint32Array`                              | `undefined`                   | Neighbor pairs `[i0, j0, i1, j1, …]`, indexed within the body. Required for `'local'`. `SoftbodyMesh` also uses them when binding. Always validated. |
 
 ### SoftbodyBody
 
@@ -75,43 +76,43 @@ A body's settings after defaults are applied, as stored in [`bodies`](#propertie
 
 ### Shape matching
 
-- `'global'`: each body fits one rotation and center to all its particles and pulls them toward the rotated rest shape. Particles are weighted by their mass at construction. Stiff; bodies wobble but bend little.
-- `'local'`: each particle fits a rotation to itself and its `edges` neighbors (Müller & Chentanez 2011, §5.1), so bodies bend and fold. Tracks a per-particle orientation in `particles.rotation`. Every body needs `edges`.
+- `'global'` fits one mass-weighted rotation and center to the whole body and pulls every particle toward the rotated rest shape. Bodies wobble but bend very little.
+- `'local'` fits a rotation to each particle and its `edges` neighbors, so bodies can bend and fold. Every body needs `edges`. Each particle's orientation is stored in `particles.rotation`.
 
-Both modes write `bodyCenters` and `bodyRotations` every substep. Under `'local'` they are the best fit to the whole body, computed after the solve and not used by it.
+Both modes update `bodyCenters` and `bodyRotations` every substep. Under `'local'`, they're a best fit to the whole body and don't affect the solve.
 
-Mass weights and rest centers are read from `invMass` at construction. A later [`setInvMass`](./core.md#setinvmassrange-invmass) changes how particles move, but not the weights used by `'global'` matching or `bodyCenters`.
+The mass weights and rest centers come from `invMass` at construction. A later [`setInvMass`](./core.md#setinvmassrange-invmass) changes how particles move, but `'global'` matching and `bodyCenters` keep the original weights.
 
 ### Compliance
 
-Each particle carries its own constraint, so at a fixed compliance a body with more particles is stiffer. Scale compliance with the particle count to keep the same feel.
+Every particle carries its own constraint, so at the same compliance a body with more particles is stiffer. To keep the same feel at a different particle count, scale compliance with the count.
 
-- `'global'`: stays nearly rigid at any compliance; compliance mostly sets how much the body wobbles. Try `1e-7` to `1e-5`.
-- `'local'`: compliance sets the material. [`Simulation.addSoftbody`](./simulation.md) uses:
+- `'global'`: the body stays nearly rigid at any compliance, which mostly sets how much it wobbles. Try values from `1e-7` to `1e-5`.
+- `'local'`: compliance sets what the material feels like. [`Simulation.addSoftbody`](./simulation.md) uses this formula:
 
 ```ts
-compliance = 10 ** (-6 + 3 * softness) * (count / 200); // softness in [0, 1]: 0 firm rubber, 1 loose jelly
+compliance = 10 ** (-6 + 3 * softness) * (count / 200); // softness from 0 (firm rubber) to 1 (loose jelly)
 ```
 
 ### Collision groups
 
-With `selfCollision: false`, [`build`](#buildcontext) keeps each body's particles from contacting each other through collision groups ([`ParticleInit.collisionGroup`](./core.md#particleinit)):
+When `selfCollision` is `false`, [`build`](#buildcontext) uses collision groups ([`ParticleInit.collisionGroup`](./core.md#particleinit)) to keep a body's particles from contacting each other:
 
-- All of the body's particles in group 0 (the default): the body gets a new group of its own.
-- All in one non-zero group: kept, so bodies you put in the same group also skip each other.
-- Mixed groups: throws.
+- If all of a body's particles are in group 0, the default, the body gets a new group of its own.
+- If they share one non-zero group, it's kept, so bodies you put in the same group also skip each other.
+- If they're in different groups, `build` throws.
 
-With `selfCollision: true`, groups are left as uploaded.
+When `selfCollision` is `true`, groups are left as you uploaded them.
 
 ### Properties
 
-| Property        | Type                                         | Access    | Description                                                                                                                                      |
-| --------------- | -------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `particles`     | [`ParticleSystem`](./core.md#particlesystem) | read-only | Particle storage passed to the constructor.                                                                                                      |
-| `bodies`        | readonly [`SoftbodyBody`](#softbodybody)`[]` | read-only | Resolved bodies, in `options.bodies` order.                                                                                                      |
-| `shapeMatching` | `'global' \| 'local'`                        | read-only | Shape-matching mode.                                                                                                                             |
-| `bodyCenters`   | `StorageBufferNode<'vec4'>`                  | read-only | Current mass-weighted center of body `b` in `.xyz` of element `b`, m. Zero until the first step.                                                 |
-| `bodyRotations` | `StorageBufferNode<'vec4'>`                  | read-only | Best-fit rotation of body `b` from its rest shape, as row vectors in `.xyz` of elements `3b`, `3b + 1`, `3b + 2`. Identity until the first step. |
+| Property        | Type                                         | Access    | Description                                                                                                                                        |
+| --------------- | -------------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `particles`     | [`ParticleSystem`](./core.md#particlesystem) | read-only | Particle storage passed to the constructor.                                                                                                        |
+| `bodies`        | readonly [`SoftbodyBody`](#softbodybody)`[]` | read-only | Resolved bodies, in `options.bodies` order.                                                                                                        |
+| `shapeMatching` | `'global' \| 'local'`                        | read-only | Shape-matching mode.                                                                                                                               |
+| `bodyCenters`   | `StorageBufferNode<'vec4'>`                  | read-only | Current mass-weighted center of body `b` in `.xyz` of element `b`, m. Zero until the first step.                                                   |
+| `bodyRotations` | `StorageBufferNode<'vec4'>`                  | read-only | Best-fit rotation of body `b` from its rest shape. Its rows are in `.xyz` of elements `3b`, `3b + 1`, and `3b + 2`. Identity until the first step. |
 
 ### Methods
 
@@ -121,7 +122,7 @@ With `selfCollision: true`, groups are left as uploaded.
 particleRange(index: number): ParticleRange
 ```
 
-The particles of body `index`.
+Returns the particles of body `index`.
 
 #### `surfaceRange(index)`
 
@@ -129,7 +130,7 @@ The particles of body `index`.
 surfaceRange(index: number): ParticleRange
 ```
 
-The first `surfaceCount` particles of body `index`, e.g. for [`FluidSystem.addBoundary`](./fluid-system.md#addboundaryrange-options).
+Returns the first `surfaceCount` particles of body `index`, for example to pass to [`FluidSystem.addBoundary`](./fluid-system.md#addboundaryrange-options).
 
 #### `setCompliance(index, compliance)`
 
@@ -137,7 +138,7 @@ The first `surfaceCount` particles of body `index`, e.g. for [`FluidSystem.addBo
 setCompliance(index: number, compliance: number): void
 ```
 
-Set body `index`'s compliance, s²/kg. Takes effect on the next step.
+Sets body `index`'s compliance, in s²/kg. The change takes effect on the next step.
 
 #### `build(context)`
 
@@ -145,29 +146,29 @@ Set body `index`'s compliance, s²/kg. Takes effect on the next step.
 build(context: SolverContext): MaterialKernels
 ```
 
-[`Material`](./extending.md#material) hook, called once by the `SimLoop` constructor. Assigns [collision groups](#collision-groups) and compiles the shape-matching kernels.
+The [`Material`](./extending.md#material) hook, which the `SimLoop` constructor calls once. It assigns [collision groups](#collision-groups) and compiles the shape-matching kernels.
 
 ### Errors
 
-| Throws                                                          | When                                                                                        |
-| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `SoftbodySystem: at least one body is required`                 | `bodies` is empty.                                                                          |
-| `SoftbodySystem: body <b> has no particles`                     | `range.count` is 0, e.g. from a `voxelize` result with `count` 0.                           |
-| `SoftbodySystem body <b>: invalid particle range`               | `range` is not integer, has `count` < 0, or exceeds capacity.                               |
-| `SoftbodySystem: particle <i> belongs to two bodies`            | Two ranges overlap.                                                                         |
-| `SoftbodySystem: body <b> needs <n> rest coordinates`           | `restPositions.length` ≠ `3 × range.count`.                                                 |
-| `SoftbodySystem: body <b> surfaceCount <n> is out of range`     | `surfaceCount` is not an integer in `[0, range.count]`.                                     |
-| `SoftbodySystem: body <b> is flat`                              | Rest shape is planar or collinear.                                                          |
-| `SoftbodySystem: compliance must be ≥ 0`                        | Compliance is negative, `NaN`, or infinite (constructor or `setCompliance`).                |
-| `SoftbodySystem: no body <index>`                               | `particleRange`, `surfaceRange`, or `setCompliance` with an index out of range.             |
-| `SoftbodySystem: body <b> needs edges for local shape matching` | `'local'` and a body has no `edges`.                                                        |
-| `SoftbodySystem: body <b> has an odd number of edge indices`    | `edges.length` is odd.                                                                      |
-| `SoftbodySystem: body <b> has an invalid edge`                  | An edge index ≥ `range.count`, or `i === j`.                                                |
-| `SoftbodySystem: body <b> has mixed collision groups`           | `selfCollision: false` and the body's particles are in different groups; thrown by `build`. |
+| Throws                                                          | When                                                                                                            |
+| --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `SoftbodySystem: at least one body is required`                 | `bodies` is empty.                                                                                              |
+| `SoftbodySystem: body <b> has no particles`                     | A body's `range.count` is 0, for example from a `voxelize` result with no particles.                            |
+| `SoftbodySystem body <b>: invalid particle range`               | A range's `start` or `count` isn't an integer, `start` or `count` is negative, or the range runs past capacity. |
+| `SoftbodySystem: particle <i> belongs to two bodies`            | Two bodies' ranges overlap.                                                                                     |
+| `SoftbodySystem: body <b> needs <n> rest coordinates`           | `restPositions` doesn't hold 3 values per particle in the range.                                                |
+| `SoftbodySystem: body <b> surfaceCount <n> is out of range`     | `surfaceCount` isn't a whole number from 0 to `range.count`.                                                    |
+| `SoftbodySystem: body <b> is flat`                              | The rest shape is flat or a single line.                                                                        |
+| `SoftbodySystem: compliance must be ≥ 0`                        | A compliance passed to the constructor or `setCompliance` is negative, `NaN`, or infinite.                      |
+| `SoftbodySystem: no body <index>`                               | `particleRange`, `surfaceRange`, or `setCompliance` got an index with no body.                                  |
+| `SoftbodySystem: body <b> needs edges for local shape matching` | `shapeMatching` is `'local'` and a body has no `edges`.                                                         |
+| `SoftbodySystem: body <b> has an odd number of edge indices`    | `edges` has an odd length.                                                                                      |
+| `SoftbodySystem: body <b> has an invalid edge`                  | An edge refers to a particle outside the body, or joins a particle to itself.                                   |
+| `SoftbodySystem: body <b> has mixed collision groups`           | `selfCollision` is `false` and a body's particles are in different collision groups. `build` throws this one.   |
 
 ## SoftbodyMesh
 
-A `Mesh` whose vertices follow one body. Each vertex binds to its four nearest rest particles with inverse-distance weights; the vertex shader blends their rotations by dual quaternions.
+A `Mesh` whose vertices follow one body as it bends. Each vertex follows its four nearest rest particles, weighted by inverse distance and blended with dual quaternions. If the body has `edges`, particles on one-particle-thick chains are skipped so thin parts don't tear.
 
 ```ts
 import { SoftbodyMesh } from 'threejs-particle-fluids';
@@ -179,14 +180,14 @@ import { SoftbodyMesh } from 'threejs-particle-fluids';
 new SoftbodyMesh(softbody: SoftbodySystem, bodyIndex: number, geometry: BufferGeometry, material?: MeshStandardMaterial)
 ```
 
-| Parameter   | Type                                  | Description                                                                                                                                                                                        |
-| ----------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `softbody`  | [`SoftbodySystem`](#softbodysystem-1) | System that owns the body.                                                                                                                                                                         |
-| `bodyIndex` | `number`                              | Body to follow.                                                                                                                                                                                    |
-| `geometry`  | `BufferGeometry`                      | World-space geometry positioned exactly on the body's rest shape. Gains `influences` and `weights` attributes.                                                                                     |
-| `material`  | `MeshStandardMaterial`                | Source of `color`, `emissive`, `roughness`, `metalness`, `side`, texture maps, and `normalScale`, copied onto a `MeshStandardNodeMaterial`. Default: color `0xd07030`, roughness 0.6, metalness 0. |
+| Parameter   | Type                                  | Description                                                                                                                                                                              |
+| ----------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `softbody`  | [`SoftbodySystem`](#softbodysystem-1) | System that owns the body.                                                                                                                                                               |
+| `bodyIndex` | `number`                              | Body to follow.                                                                                                                                                                          |
+| `geometry`  | `BufferGeometry`                      | Geometry in world space, placed exactly over the body's rest shape. The constructor adds `influences` and `weights` attributes to it.                                                    |
+| `material`  | `MeshStandardMaterial`                | Copied onto a `MeshStandardNodeMaterial`: `color`, `emissive`, `roughness`, `metalness`, `side`, texture maps, and `normalScale`. Default: color `0xd07030`, roughness 0.6, metalness 0. |
 
-Sets `frustumCulled = false`, `castShadow = true`, `receiveShadow = true`.
+The constructor sets `frustumCulled` to `false`, and `castShadow` and `receiveShadow` to `true`.
 
 ### Properties
 
@@ -197,10 +198,10 @@ Sets `frustumCulled = false`, `castShadow = true`, `receiveShadow = true`.
 
 ### Errors
 
-| Throws                                             | When                          |
-| -------------------------------------------------- | ----------------------------- |
-| `SoftbodyMesh: no body <index>`                    | `bodyIndex` is out of range.  |
-| `SoftbodyMesh: geometry has no position attribute` | `geometry` has no `position`. |
+| Throws                                             | When                                           |
+| -------------------------------------------------- | ---------------------------------------------- |
+| `SoftbodyMesh: no body <index>`                    | `bodyIndex` doesn't name a body in the system. |
+| `SoftbodyMesh: geometry has no position attribute` | `geometry` has no `position` attribute.        |
 
 ## voxelize
 
@@ -208,26 +209,26 @@ Sets `frustumCulled = false`, `castShadow = true`, `receiveShadow = true`.
 voxelize(shape: BufferGeometry | TriangleMesh | SDFData, options: VoxelizeOptions): VoxelizeResult
 ```
 
-Fill a closed shape with particles on a cubic grid of spacing `2 × particleRadius`, surface particles first. The grid spans the shape's bounding box (mesh) or the field's full extent (`SDFData`). A point is inside a mesh by ray-cast parity, and inside a field where the sampled distance is below `dilation`. Surface particles are those with fewer than six face-adjacent occupied neighbors.
+Fills a closed shape with particles on a cubic grid with spacing `2 × particleRadius`, ready to become a soft body. The grid covers a mesh's bounding box or a field's full extent. A field point is inside where its distance is below `dilation`. Surface particles, those missing at least one of their six grid neighbors, come first.
 
-Positions come out in the shape's own space, not world space: a mesh's vertex coordinates (no object transform applied), or the field's coordinates (the space of its `origin`). Transform them before uploading. A shape smaller than the grid gives `count` 0 without throwing; check it before building a body.
+Positions are in the shape's own space, not world space. That means a mesh's vertex coordinates without its object transform, or the space of a field's `origin`. Transform them before uploading. A shape smaller than the grid gives `count` 0 without throwing, so check `count` first.
 
 ```ts
 import { voxelize } from 'threejs-particle-fluids';
 ```
 
-| Parameter | Type                                                                                                     | Description                                                                   |
-| --------- | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `shape`   | `BufferGeometry \| `[`TriangleMesh`](./extending.md#trianglemesh)`\|`[`SDFData`](./colliders.md#sdfdata) | Closed mesh or baked signed distance field. Read in its own space; see above. |
-| `options` | [`VoxelizeOptions`](#voxelizeoptions)                                                                    | See below.                                                                    |
+| Parameter | Type                                                                                                     | Description                                                            |
+| --------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `shape`   | `BufferGeometry \| `[`TriangleMesh`](./extending.md#trianglemesh)`\|`[`SDFData`](./colliders.md#sdfdata) | A closed mesh or a baked signed distance field, read in its own space. |
+| `options` | [`VoxelizeOptions`](#voxelizeoptions)                                                                    | See below.                                                             |
 
 ### VoxelizeOptions
 
-| Option           | Type      | Default  | Description                                                                                     |
-| ---------------- | --------- | -------- | ----------------------------------------------------------------------------------------------- |
-| `particleRadius` | `number`  | required | Particle radius, m. Grid spacing is `2 × particleRadius`.                                       |
-| `largestPiece`   | `boolean` | `false`  | Keep only the largest face-connected piece.                                                     |
-| `dilation`       | `number`  | `0`      | `SDFData` only: also fill points up to this distance outside the surface, m. Throws for meshes. |
+| Option           | Type      | Default  | Description                                                                                       |
+| ---------------- | --------- | -------- | ------------------------------------------------------------------------------------------------- |
+| `particleRadius` | `number`  | required | Particle radius, m. Grid spacing is `2 × particleRadius`.                                         |
+| `largestPiece`   | `boolean` | `false`  | Keep only the largest face-connected piece.                                                       |
+| `dilation`       | `number`  | `0`      | `SDFData` only. Also fills grid points up to this far outside the surface, m. Throws with a mesh. |
 
 ### VoxelizeResult
 
@@ -240,23 +241,21 @@ import { voxelize } from 'threejs-particle-fluids';
 
 ### Errors
 
-| Throws                                             | When                                                        |
-| -------------------------------------------------- | ----------------------------------------------------------- |
-| `voxelize: particleRadius must be positive`        | `particleRadius` is ≤ 0, `NaN`, or infinite.                |
-| `voxelize: mesh has no vertices`                   | Mesh input is empty.                                        |
-| `voxelize: dilation applies only to SDFData input` | `dilation` given with mesh input.                           |
-| `voxelize: dilation must be a finite number`       | `dilation` is `NaN` or infinite.                            |
-| `TriangleMesh: …`                                  | `TriangleMesh` input has malformed `vertices` or `indices`. |
+| Throws                                             | When                                                          |
+| -------------------------------------------------- | ------------------------------------------------------------- |
+| `voxelize: particleRadius must be positive`        | `particleRadius` isn't a positive finite number.              |
+| `voxelize: mesh has no vertices`                   | The mesh is empty.                                            |
+| `voxelize: dilation applies only to SDFData input` | You passed `dilation` with a mesh.                            |
+| `voxelize: dilation must be a finite number`       | `dilation` is `NaN` or infinite.                              |
+| `TriangleMesh: …`                                  | A `TriangleMesh` input has malformed `vertices` or `indices`. |
 
 ## Limitations
 
-- Upload particle positions and `invMass` before constructing `SoftbodySystem`; the rest shape, rest centers, and mass weights are read then and not refreshed by `setInvMass`.
-- Bodies, rest shapes, edges, and `shapeMatching` are fixed after construction; only compliance can change.
-- Rest shapes must be 3D; flat or single-line particle sets are rejected.
-- `'local'` ignores mass differences within a body: its neighborhood fits assume uniform mass.
-- `'local'` damps rigid spin: a body set spinning freely loses most of its angular velocity within a fraction of a second. `'global'` keeps it.
-- `SoftbodyMesh` requires an identity transform; the skinning writes world positions.
-- `SoftbodyMesh` binding is a CPU search costing vertices × body particles.
-- Mesh input to `voxelize` must be closed; the inside test costs grid cells × triangles on the CPU.
-- `voxelize` output for `SDFData` is in the field's space, not world space.
-- All particles share one radius, so a body's resolution is set by `ParticleSystem.particleRadius`.
+- Upload particle positions and `invMass` before you construct `SoftbodySystem`, because they're only read then.
+- You can't change bodies, rest shapes, edges, or `shapeMatching` after construction. Only compliance can change.
+- A body's rest shape must be 3D. It can't be flat or a single line.
+- `'local'` matching treats every particle in a body as the same mass.
+- You can't transform a `SoftbodyMesh`, because it writes world positions. Keep it at the identity.
+- Binding a `SoftbodyMesh` runs on the CPU and costs vertices times body particles.
+- `voxelize` can't fill a mesh with holes, because it tests each point by ray-cast parity. The test runs on the CPU and costs grid cells times triangles.
+- All particles share one radius, so you can't give one body finer particles than another.

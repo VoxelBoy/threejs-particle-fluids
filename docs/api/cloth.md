@@ -2,7 +2,7 @@
 
 # Cloth
 
-Rectangular cloth added with [`Simulation.addCloth`](./simulation.md#addclothoptions).
+A rectangle of cloth added with [`Simulation.addCloth`](./simulation.md#addclothoptions). The `Cloth` it returns lets you change the wind and softness while it runs.
 
 ```ts
 const curtain = sim.addCloth({
@@ -16,46 +16,42 @@ curtain.wind.set(0, 0, 2);
 
 ## ClothOptions
 
-| Option     | Type                                            | Default      | Description                                                                                          |
-| ---------- | ----------------------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------- |
-| `width`    | `number`                                        | required     | m.                                                                                                   |
-| `height`   | `number`                                        | required     | m.                                                                                                   |
-| `position` | `Vector3`                                       | `(0, 1, 0)`  | Center.                                                                                              |
-| `rotation` | `Euler`                                         | none         | Starts upright in the XY plane facing +z. `new Euler(-Math.PI / 2, 0, 0)` lays it flat.              |
-| `pin`      | `'top' \| 'top-corners' \| 'corners' \| 'none'` | `'top'`      | Fixed particles.                                                                                     |
-| `softness` | `number`                                        | `0.75`       | 0 is stiff canvas, 1 drapes like silk.                                                               |
-| `weight`   | `number`                                        | `0.1`        | Mass per area, kg/m². Heavier cloth holds liquid with less leaking.                                  |
-| `wind`     | `Vector3`                                       | `(0, 0, 0)`  | m/s.                                                                                                 |
-| `color`    | `number`                                        | `0x870b21`   | Color of the default sheen material.                                                                 |
-| `material` | `MeshPhysicalNodeMaterial`                      | sheen fabric | Replaces the default. Its position and normal nodes are overwritten. Not disposed by the simulation. |
+| Option     | Type                                            | Default      | Description                                                                                                             |
+| ---------- | ----------------------------------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `width`    | `number`                                        | required     | Width, m.                                                                                                               |
+| `height`   | `number`                                        | required     | Height, m.                                                                                                              |
+| `position` | `Vector3`                                       | `(0, 1, 0)`  | Center of the cloth.                                                                                                    |
+| `rotation` | `Euler`                                         | none         | The cloth starts upright, facing +z. `new Euler(-Math.PI / 2, 0, 0)` lays it flat.                                      |
+| `pin`      | `'top' \| 'top-corners' \| 'corners' \| 'none'` | `'top'`      | Which part of the cloth is held in place.                                                                               |
+| `softness` | `number`                                        | `0.75`       | From 0 for stiff canvas to 1 for silk that drapes.                                                                      |
+| `weight`   | `number`                                        | `0.1`        | Weight per area, kg/m². Heavier cloth holds liquid with less leaking.                                                   |
+| `wind`     | `Vector3`                                       | `(0, 0, 0)`  | Wind speed and direction, m/s.                                                                                          |
+| `color`    | `number`                                        | `0x870b21`   | Color of the default fabric material.                                                                                   |
+| `material` | `MeshPhysicalNodeMaterial`                      | sheen fabric | Your own material in place of the default. Its position and normal nodes are replaced. You dispose it when you're done. |
 
-Particles are spaced `2.2 × particleRadius` apart, so a `w × h` cloth uses `(round(w / 2.2r) + 1) × (round(h / 2.2r) + 1)` particles.
+Cloth particles sit a little more than one particle width apart, so the cloth can fold onto itself without its neighbors colliding. A 1.2 m square cloth with a particle radius of 0.01 m uses about 3,100 particles.
 
-Softness maps to bending compliance as:
+Like `softness` on soft bodies, `softness` here accounts for the particle count, so a cloth drapes about the same way at any particle budget. The [formula](./cloth-system.md#bend-compliance-and-resolution) is on the `ClothSystem` page.
 
-```
-bendCompliance = 10^(-1 + 5 × softness) × (columns / 30)^4 × (0.35 / weight)
-```
-
-Set at construction: stretch tolerance `0.06` (fixed), drag `0.18`, lift `0.02`, damping `0.1`. Change drag, lift, and damping on `clothSystem` after start.
+The simulation also gives the cloth some air drag, lift, and damping. You can change these on `clothSystem` after `start()`.
 
 ## Cloth
 
 ### Properties
 
-| Property        | Type                               | Access     | Description                                                               |
-| --------------- | ---------------------------------- | ---------- | ------------------------------------------------------------------------- |
-| `particleCount` | `number`                           | read       | Particles in this cloth. `0` until the simulation starts.                 |
-| `wind`          | `Vector3`                          | read       | Live wind, m/s. Mutate in place. Copied to `clothSystem.wind` every step. |
-| `softness`      | `number`                           | read/write | Live. Setting it overwrites `clothSystem.bendCompliance`.                 |
-| `mesh`          | `Mesh`                             | read       | Cloth surface in the scene. Throws before start.                          |
-| `clothSystem`   | [`ClothSystem`](./cloth-system.md) | read       | Underlying solver. Throws before start.                                   |
+| Property        | Type                               | Access     | Description                                                             |
+| --------------- | ---------------------------------- | ---------- | ----------------------------------------------------------------------- |
+| `particleCount` | `number`                           | read       | Particles in this cloth. `0` until the simulation starts.               |
+| `wind`          | `Vector3`                          | read       | Wind, m/s. Change it in place, for example `curtain.wind.set(0, 0, 2)`. |
+| `softness`      | `number`                           | read/write | Can be changed while the simulation runs.                               |
+| `mesh`          | `Mesh`                             | read       | The cloth surface in your scene. Available after `start()`.             |
+| `clothSystem`   | [`ClothSystem`](./cloth-system.md) | read       | The solver underneath. Available after `start()`.                       |
 
 ## Limitations
 
-- Rectangles only. For other shapes, use [`createClothGraph`](./cloth-system.md) with any geometry.
-- Pins are fixed in place; pinned particles can't be moved through this API.
-- `weight` can't change after creation.
-- Writing `clothSystem.wind` directly has no effect: the handle overwrites it every step.
-- Liquid can leak through light cloth. Raise `weight` or lower `particleRadius`.
-- Thin, sharp obstacle features can pass between cloth particles.
+- Only rectangles are supported here. For other shapes, build the cloth from any geometry with [`createClothGraph`](./cloth-system.md).
+- Pinned points stay where they started. To move them, use [`ClothSystem`](./cloth-system.md) directly.
+- You can't change `weight` after adding the cloth.
+- Set wind on the `Cloth`, not on `clothSystem`. The `Cloth` copies its wind into `clothSystem` every step, which overwrites any change made there.
+- Liquid can leak through light cloth. Raise `weight`, or raise `particles` so the cloth has more of them.
+- Thin, sharp parts of an obstacle can poke through the gaps between cloth particles.

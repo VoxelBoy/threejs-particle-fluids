@@ -2,7 +2,7 @@
 
 # FluidSystem
 
-Low-level liquid classes: the Position Based Fluids solver (Macklin & Müller 2013), an implicit viscosity pass for thick liquids, and a ray-marched surface renderer. [`Simulation.addFluid`](./fluid.md) builds these for you (`ViscositySolver` only when `thickness` is given); this page is for building them directly.
+These are the low-level liquid classes. `FluidSystem` is the Position Based Fluids solver (Macklin & Müller 2013), `ViscositySolver` adds implicit viscosity for thick liquids, and `FluidSurfaceRenderer` draws the liquid as a ray-marched surface. [`Simulation.addFluid`](./fluid.md) builds these for you, and adds a `ViscositySolver` only when you give `thickness`. This page is for building them yourself.
 
 ```ts
 import { FluidSystem, ViscositySolver, FluidSurfaceRenderer } from 'threejs-particle-fluids';
@@ -12,7 +12,7 @@ import { FluidSystem, ViscositySolver, FluidSurfaceRenderer } from 'threejs-part
 
 ## FluidSystem
 
-A [`Material`](./extending.md#material) that keeps the particles in `range` at rest density. Add it to a [`SimLoop`](./core.md#simloop)'s `materials`. Optional effects (`viscosity`, `vorticity`, `surfaceTension`, `adhesion`) are compiled into the solver only when given at construction.
+A [`Material`](./extending.md#material) that keeps the particles in `range` at rest density. Add it to a [`SimLoop`](./core.md#simloop)'s `materials`. The optional effects `viscosity`, `vorticity`, `surfaceTension`, and `adhesion` are compiled into the solver only if you give them at construction.
 
 ```ts
 particles.uploadParticles(points); // spaced particleSpacing apart
@@ -33,7 +33,7 @@ new FluidSystem(particles: ParticleSystem, options?: FluidSystemOptions)
 | `particles` | [`ParticleSystem`](./core.md#particlesystem) | Particle storage.        |
 | `options`   | [`FluidSystemOptions`](#fluidsystemoptions)  | See below. Default `{}`. |
 
-Sets the inverse mass of every particle in `range` to `1 / mass`, and fills `density` over `range` with `restDensity`. `ParticleSystem.uploadParticles` sets inverse masses too (default `1`), so upload before constructing the fluid, or call `particles.setInvMass(fluid.range, 1 / fluid.mass)` after.
+The constructor sets the inverse mass of every particle in `range` to `1 / mass` and fills `density` over `range` with `restDensity`. `ParticleSystem.uploadParticles` resets inverse masses to `1` by default, so upload first, or call `particles.setInvMass(fluid.range, 1 / fluid.mass)` afterwards.
 
 #### FluidSystemOptions
 
@@ -42,43 +42,43 @@ Sets the inverse mass of every particle in `range` to `1 / mass`, and fills `den
 | `range`           | [`ParticleRange`](./core.md#particlerange) | `{ start: 0, count: particles.capacity }` | Particles that make up the fluid.                                                                                    |
 | `restDensity`     | `number`                                   | `1000`                                    | Rest density, kg/m³.                                                                                                 |
 | `particleSpacing` | `number`                                   | `2 × particles.particleRadius`            | Distance between particles at rest, m. Sets `mass`.                                                                  |
-| `smoothingRadius` | `number`                                   | `2 × particleSpacing`                     | SPH smoothing length, m.                                                                                             |
-| `compliance`      | `number`                                   | `1e-4`                                    | XPBD compliance of the density constraint. `0` is incompressible. Fixed after construction.                          |
-| `viscosity`       | `number`                                   | off                                       | XSPH velocity blending coefficient.                                                                                  |
-| `vorticity`       | `number`                                   | off                                       | Vorticity confinement strength.                                                                                      |
-| `surfaceTension`  | `number`                                   | off                                       | Surface tension coefficient (Akinci et al. 2013). Acts between fluid particles only.                                 |
+| `smoothingRadius` | `number`                                   | `2 × particleSpacing`                     | Distance within which particles affect each other, m.                                                                |
+| `compliance`      | `number`                                   | `1e-4`                                    | How much the fluid can compress. `0` is incompressible. Fixed after construction.                                    |
+| `viscosity`       | `number`                                   | off                                       | How strongly each particle's velocity is blended with its neighbors' (XSPH viscosity).                               |
+| `vorticity`       | `number`                                   | off                                       | Strength of vorticity confinement, which restores swirls the solver damps out.                                       |
+| `surfaceTension`  | `number`                                   | off                                       | Pulls the fluid into drops and smooth sheets. Acts between fluid particles only.                                     |
 | `adhesion`        | `number`                                   | off                                       | Attraction toward boundary particles (see [`addBoundary`](#addboundaryrange-options)). No effect without boundaries. |
 
 #### Errors
 
-| Throws                                      | When                                                                            |
-| ------------------------------------------- | ------------------------------------------------------------------------------- |
-| `FluidSystem: invalid particle range`       | `range` is not integer, is empty, or exceeds `particles.capacity`.              |
-| `FluidSystem: restDensity must be positive` | `restDensity` ≤ 0 or not finite. Same for `particleSpacing`, `smoothingRadius`. |
-| `FluidSystem: compliance must be ≥ 0`       | `compliance` < 0 or `NaN`.                                                      |
-| `FluidSystem: <option> must be finite`      | `viscosity`, `vorticity`, `surfaceTension`, or `adhesion` is `NaN` or infinite. |
+| Throws                                      | When                                                                                                        |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `FluidSystem: invalid particle range`       | `range` has a negative or non-integer value, is empty, or runs past `particles.capacity`.                   |
+| `FluidSystem: restDensity must be positive` | `restDensity` is zero, negative, or not finite. `particleSpacing` and `smoothingRadius` throw the same way. |
+| `FluidSystem: compliance must be ≥ 0`       | `compliance` is negative or `NaN`.                                                                          |
+| `FluidSystem: <option> must be finite`      | `viscosity`, `vorticity`, `surfaceTension`, or `adhesion` is `NaN` or infinite.                             |
 
 ### Properties
 
-| Property          | Type                                         | Access     | Description                                                                                                                 |
-| ----------------- | -------------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `particles`       | [`ParticleSystem`](./core.md#particlesystem) | read-only  | Particle storage.                                                                                                           |
-| `range`           | [`ParticleRange`](./core.md#particlerange)   | read-only  | Particles that make up the fluid.                                                                                           |
-| `restDensity`     | `number`                                     | read-only  | Rest density, kg/m³.                                                                                                        |
-| `particleSpacing` | `number`                                     | read-only  | Rest spacing, m.                                                                                                            |
-| `smoothingRadius` | `number`                                     | read-only  | SPH smoothing length, m.                                                                                                    |
-| `neighborRadius`  | `number`                                     | read-only  | Equals `smoothingRadius`. `SimLoop` sizes its hash grid from the largest `neighborRadius`.                                  |
-| `mass`            | `number`                                     | read-only  | Mass of one particle, kg: `restDensity × particleSpacing³`.                                                                 |
-| `density`         | `StorageBufferNode<'float'>`                 | read-only  | Per-particle density, kg/m³, one entry per particle in the system. Written every solver iteration for particles in `range`. |
-| `viscosity`       | `number`                                     | read/write | XSPH coefficient. Requires `viscosity` at construction.                                                                     |
-| `vorticity`       | `number`                                     | read/write | Vorticity confinement strength. Requires `vorticity` at construction.                                                       |
-| `surfaceTension`  | `number`                                     | read/write | Surface tension coefficient. Requires `surfaceTension` at construction.                                                     |
-| `adhesion`        | `number`                                     | read/write | Adhesion coefficient. Requires `adhesion` at construction.                                                                  |
+| Property          | Type                                         | Access     | Description                                                                                                             |
+| ----------------- | -------------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `particles`       | [`ParticleSystem`](./core.md#particlesystem) | read-only  | Particle storage.                                                                                                       |
+| `range`           | [`ParticleRange`](./core.md#particlerange)   | read-only  | Particles that make up the fluid.                                                                                       |
+| `restDensity`     | `number`                                     | read-only  | Rest density, kg/m³.                                                                                                    |
+| `particleSpacing` | `number`                                     | read-only  | Rest spacing, m.                                                                                                        |
+| `smoothingRadius` | `number`                                     | read-only  | Interaction distance, m.                                                                                                |
+| `neighborRadius`  | `number`                                     | read-only  | Equals `smoothingRadius`. `SimLoop` sizes its hash grid from the largest `neighborRadius`.                              |
+| `mass`            | `number`                                     | read-only  | Mass of one particle, kg. Equals `restDensity × particleSpacing³`.                                                      |
+| `density`         | `StorageBufferNode<'float'>`                 | read-only  | Density of each particle, kg/m³, with one entry per particle in the system. Updated every solver iteration for `range`. |
+| `viscosity`       | `number`                                     | read/write | XSPH viscosity. Requires `viscosity` at construction.                                                                   |
+| `vorticity`       | `number`                                     | read/write | Vorticity confinement strength. Requires `vorticity` at construction.                                                   |
+| `surfaceTension`  | `number`                                     | read/write | Surface tension strength. Requires `surfaceTension` at construction.                                                    |
+| `adhesion`        | `number`                                     | read/write | Adhesion strength. Requires `adhesion` at construction.                                                                 |
 
-| Throws                                                                        | When                                                                                                         |
-| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| ``FluidSystem: pass `<name>` in the options to enable it before changing it`` | Reading or writing `viscosity`, `vorticity`, `surfaceTension`, or `adhesion` when that option was not given. |
-| `FluidSystem: <name> must be finite`                                          | Writing `NaN` or an infinite value to one of those properties.                                               |
+| Throws                                                                        | When                                                                                                  |
+| ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| ``FluidSystem: pass `<name>` in the options to enable it before changing it`` | You read or set `viscosity`, `vorticity`, `surfaceTension`, or `adhesion` without giving that option. |
+| `FluidSystem: <name> must be finite`                                          | You set one of those properties to `NaN` or an infinite value.                                        |
 
 ### Methods
 
@@ -88,23 +88,23 @@ Sets the inverse mass of every particle in `range` to `1 / mass`, and fills `den
 addBoundary(range: ParticleRange, options?: { readonly dynamic?: boolean }): void
 ```
 
-Treat the particles in `range` as a solid boundary (Akinci et al. 2012): the fluid cannot pass through them, pushes them (buoyancy), and is attracted to them when `adhesion` is set. Intended for the surface particles of a soft body or cloth. Call before creating the `SimLoop`.
+Makes the particles in `range` a solid boundary (Akinci et al. 2012). The fluid can't pass through them, and it pushes on them, which gives them buoyancy. It also clings to them when `adhesion` is set. Use it for the surface particles of a soft body or cloth, and call it before you create the `SimLoop`.
 
-| Parameter         | Type                                       | Description                                                                                                                                                   |
-| ----------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `range`           | [`ParticleRange`](./core.md#particlerange) | Boundary particles. Must not overlap the fluid's `range`.                                                                                                     |
-| `options.dynamic` | `boolean`                                  | Recompute boundary volumes every substep from predicted positions. Default `true`. `false` computes them once, before the first step, from current positions. |
+| Parameter         | Type                                       | Description                                                                                                                                                          |
+| ----------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `range`           | [`ParticleRange`](./core.md#particlerange) | Boundary particles. Must not overlap the fluid's `range`.                                                                                                            |
+| `options.dynamic` | `boolean`                                  | Default `true`, which recomputes boundary volumes every substep from predicted positions. `false` computes them once, before the first step, from current positions. |
 
-- Each boundary particle gets a volume `1 / Σ W` summed over particles of the same `addBoundary` range only.
-- The fluid's push is applied only to particles in its own boundary ranges with `invMass > 0`.
-- Boundary volumes are stored in the shared `ParticleSystem.boundaryVolume`. See [Limitations](#limitations) for what that means with several fluids.
+- A boundary particle's volume is computed from its neighbors in the same `addBoundary` range only.
+- The fluid pushes only on particles in its own boundary ranges, and only on those with `invMass > 0`.
+- Boundary volumes are stored in the shared `ParticleSystem.boundaryVolume`, which matters when you have several fluids. See [Limitations](#limitations).
 
-| Throws                                                                | When                                                   |
-| --------------------------------------------------------------------- | ------------------------------------------------------ |
-| `FluidSystem.addBoundary: add boundaries before creating the SimLoop` | The fluid was already built by a `SimLoop`.            |
-| `FluidSystem.addBoundary: invalid particle range`                     | `range` is not integer, is empty, or exceeds capacity. |
-| `FluidSystem.addBoundary: a boundary cannot overlap the fluid`        | `range` intersects the fluid's `range`.                |
-| `FluidSystem.addBoundary: boundaries cannot overlap each other`       | `range` intersects a range added earlier.              |
+| Throws                                                                | When                                                                              |
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `FluidSystem.addBoundary: add boundaries before creating the SimLoop` | You called it after a `SimLoop` was created with this fluid.                      |
+| `FluidSystem.addBoundary: invalid particle range`                     | `range` has a negative or non-integer value, is empty, or runs past the capacity. |
+| `FluidSystem.addBoundary: a boundary cannot overlap the fluid`        | `range` overlaps the fluid's own `range`.                                         |
+| `FluidSystem.addBoundary: boundaries cannot overlap each other`       | `range` overlaps a boundary you added earlier.                                    |
 
 #### `readbackOverflow()`
 
@@ -112,11 +112,11 @@ Treat the particles in `range` as a solid boundary (Akinci et al. 2012): the flu
 readbackOverflow(): Promise<boolean>
 ```
 
-`true` if, at the last neighbor rebuild, some fluid particle had more than 64 neighbors within `smoothingRadius` and the extras were dropped. Reads back from the GPU; for debugging and tests. [`SimLoop.readbackOverflow()`](./core.md#simloop) does not include it.
+Resolves to `true` if, at the last neighbor rebuild, some fluid particle had more than 64 neighbors within `smoothingRadius` and lost the extras. It reads back from the GPU, so use it for debugging and tests. [`SimLoop.readbackOverflow()`](./core.md#simloop) doesn't include this check.
 
-| Throws                                          | When                              |
-| ----------------------------------------------- | --------------------------------- |
-| `FluidSystem: add the fluid to a SimLoop first` | The fluid has not been built yet. |
+| Throws                                          | When                                              |
+| ----------------------------------------------- | ------------------------------------------------- |
+| `FluidSystem: add the fluid to a SimLoop first` | You called it before a `SimLoop` built the fluid. |
 
 #### `build(context)`
 
@@ -124,11 +124,11 @@ readbackOverflow(): Promise<boolean>
 build(context: SolverContext): MaterialKernels
 ```
 
-Called once by `SimLoop`. Returns the fluid's kernels. See [`Material`](./extending.md#material).
+`SimLoop` calls this once and runs the kernels it returns. See [`Material`](./extending.md#material).
 
 ## ViscositySolver
 
-Implicit viscosity for thick liquids. Each substep solves `(I − dt·ν·L) v = v₀` for the fluid's velocities with Jacobi sweeps, which stays stable at viscosities where `FluidSystem`'s XSPH `viscosity` does not. A [`Material`](./extending.md#material); list it after its fluid in `materials`.
+Adds implicit viscosity for thick liquids like honey. It stays stable at viscosities where `FluidSystem`'s `viscosity` option would blow up. It's a [`Material`](./extending.md#material), so list it after its fluid in `materials`.
 
 ```ts
 const honey = new FluidSystem(particles, { viscosity: 0.03 });
@@ -149,25 +149,25 @@ new ViscositySolver(fluid: FluidSystem, options: ViscositySolverOptions)
 
 #### ViscositySolverOptions
 
-| Option       | Type     | Default  | Description                                                                                                                                                                                                                                                               |
-| ------------ | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `viscosity`  | `number` | required | Kinematic viscosity ν, m²/s, as the discrete solve sees it: `L` is the difference from the neighbors' weighted mean velocity times `10 / smoothingRadius²`, so tune by eye (honey ≈ 20). Must be ≥ 0. Not on the same scale as `FluidSystem`'s unitless XSPH `viscosity`. |
-| `iterations` | `number` | `12`     | Jacobi sweeps per substep. Integer, 1–64. Fixed after construction.                                                                                                                                                                                                       |
+| Option       | Type     | Default  | Description                                                                                                                                                                                                      |
+| ------------ | -------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `viscosity`  | `number` | required | Kinematic viscosity, m²/s. Its effect scales with `1 / smoothingRadius²`, so values don't match real liquids. Tune it by eye; honey is about 20. Unrelated to `FluidSystem`'s unitless `viscosity`. Must be ≥ 0. |
+| `iterations` | `number` | `12`     | Jacobi sweeps per substep. Integer, 1–64. Fixed after construction.                                                                                                                                              |
 
 #### Errors
 
-| Throws                                                             | When                                                                                                     |
-| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
-| `ViscositySolver: viscosity must be ≥ 0`                           | `viscosity` < 0 or not finite, at construction or when set later.                                        |
-| `ViscositySolver: iterations must be an integer from 1 to 64`      | `iterations` out of range or not an integer.                                                             |
-| ``ViscositySolver: list it after its FluidSystem in `materials` `` | Thrown by `SimLoop` construction when `fluid` was not built first (listed after the solver, or missing). |
+| Throws                                                             | When                                                                                                    |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| `ViscositySolver: viscosity must be ≥ 0`                           | `viscosity` is negative or not finite, in the options or when you set it later.                         |
+| `ViscositySolver: iterations must be an integer from 1 to 64`      | `iterations` isn't an integer from 1 to 64.                                                             |
+| ``ViscositySolver: list it after its FluidSystem in `materials` `` | Thrown by the `SimLoop` constructor when you listed the solver before its fluid, or left the fluid out. |
 
 ### Properties
 
-| Property    | Type                            | Access     | Description                        |
-| ----------- | ------------------------------- | ---------- | ---------------------------------- |
-| `fluid`     | [`FluidSystem`](#fluidsystem-1) | read-only  | Fluid whose velocities are solved. |
-| `viscosity` | `number`                        | read/write | ν, m²/s. Must be ≥ 0 and finite.   |
+| Property    | Type                            | Access     | Description                                        |
+| ----------- | ------------------------------- | ---------- | -------------------------------------------------- |
+| `fluid`     | [`FluidSystem`](#fluidsystem-1) | read-only  | Fluid whose velocities are solved.                 |
+| `viscosity` | `number`                        | read/write | Kinematic viscosity, m²/s. Must be ≥ 0 and finite. |
 
 ### Methods
 
@@ -177,11 +177,11 @@ new ViscositySolver(fluid: FluidSystem, options: ViscositySolverOptions)
 build(): MaterialKernels
 ```
 
-Called once by `SimLoop`. Returns `iterations + 2` post-solve dispatches over the fluid's range.
+`SimLoop` calls this once. It returns `iterations + 2` dispatches over the fluid's range, which run after the solve.
 
 ## FluidSurfaceRenderer
 
-Draws a `FluidSystem` as a smooth liquid surface. Each `update()` splats the particles into a voxel field; the mesh's fragment shader sphere-traces that field, refracts the opaque scene behind it with Beer–Lambert absorption, and adds Fresnel-weighted environment reflection, screen-space reflections, and a GGX highlight from the scene's key light. It writes depth.
+Draws a `FluidSystem` as a smooth liquid surface. Each `update()` splats the particles into a voxel field, and the mesh's shader ray-marches that field when drawn. The liquid refracts the opaque scene behind it with Beer–Lambert absorption. It adds Fresnel-weighted environment and screen-space reflections, plus a GGX highlight from the scene's [key light](#key-light). It writes depth.
 
 ```ts
 const surface = new FluidSurfaceRenderer(water, {
@@ -212,48 +212,46 @@ new FluidSurfaceRenderer(fluid: FluidSystem, options: FluidSurfaceRendererOption
 
 #### FluidSurfaceRendererOptions
 
-Every option is fixed after construction unless a property below says otherwise.
+| Option          | Type                                               | Default                                                      | Description                                                                                                                                                                                               |
+| --------------- | -------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `renderer`      | `WebGPURenderer`                                   | required                                                     | Runs the field kernels and `pick()`.                                                                                                                                                                      |
+| `scene`         | `Scene`                                            | required                                                     | `scene.environment`, `scene.environmentIntensity`, and the key light are read every `update()`.                                                                                                           |
+| `camera`        | `Camera`                                           | required                                                     | Used only by `pick()`, which casts rays from it. Drawing uses whichever camera renders the mesh.                                                                                                          |
+| `bounds`        | `Box3`                                             | required                                                     | World box the liquid can occupy, m. Particles outside are ignored.                                                                                                                                        |
+| `colliders`     | `readonly (PrimitiveSet \| SDFCollider)[]`         | `[]`                                                         | Colliders the surface is cut against. The liquid curves up where it meets them. See [`PrimitiveSet`](./colliders.md#primitiveset), [`SDFCollider`](./colliders.md#sdfcollider).                           |
+| `carve`         | [`PrimitiveSet`](./colliders.md#primitiveset)      | none                                                         | Shapes cut out of the surface every frame. The liquid doesn't curve up against them.                                                                                                                      |
+| `solids`        | [`ParticleRange`](./core.md#particlerange)         | none                                                         | Non-fluid particles, such as floating bodies, that the liquid curves up against.                                                                                                                          |
+| `motionStretch` | `number`                                           | `0`                                                          | Stretches each fluid particle back along its velocity by this many seconds of travel, up to `3 × particleSpacing`. `0` turns it off. Must be ≥ 0.                                                         |
+| `voxelBudget`   | `number`                                           | `FluidSurfaceRenderer.defaultVoxelBudget(fluid.range.count)` | Upper bound on voxels in the field, about 76 bytes each. Must be ≥ 1.                                                                                                                                     |
+| `appearance`    | `Partial<`[`FluidAppearance`](#fluidappearance)`>` | all defaults                                                 | Initial look.                                                                                                                                                                                             |
+| `cavities`      | `{ smokeColor: number; smokeDensity: number }`     | none                                                         | Draws pockets cut by `carve` with a reflective rim, filled with smoke. `smokeColor` is sRGB hex. `smokeDensity` is how quickly the smoke blocks light, 1/m, ≥ 0. Adds 16 steps to the transmission march. |
+| `refraction`    | `boolean`                                          | `true`                                                       | Bend transmitted light. `false` samples the scene behind without bending it.                                                                                                                              |
 
-| Option          | Type                                               | Default                                                      | Description                                                                                                                                                                              |
-| --------------- | -------------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `renderer`      | `WebGPURenderer`                                   | required                                                     | Runs the field kernels and `pick()`.                                                                                                                                                     |
-| `scene`         | `Scene`                                            | required                                                     | `scene.environment`, `scene.environmentIntensity`, and the key light are read every `update()`.                                                                                          |
-| `camera`        | `Camera`                                           | required                                                     | Used only by `pick()`, which casts rays from it. Drawing uses whichever camera renders the mesh.                                                                                         |
-| `bounds`        | `Box3`                                             | required                                                     | World box the liquid can occupy, m. Particles outside are ignored.                                                                                                                       |
-| `colliders`     | `readonly (PrimitiveSet \| SDFCollider)[]`         | `[]`                                                         | Colliders the surface is cut against and climbs into a meniscus. See [`PrimitiveSet`](./colliders.md#primitiveset), [`SDFCollider`](./colliders.md#sdfcollider).                         |
-| `carve`         | [`PrimitiveSet`](./colliders.md#primitiveset)      | none                                                         | Shapes cut out of the surface every frame. Not wetted.                                                                                                                                   |
-| `solids`        | [`ParticleRange`](./core.md#particlerange)         | none                                                         | Non-fluid particles (floating bodies) the surface climbs.                                                                                                                                |
-| `motionStretch` | `number`                                           | `0`                                                          | Smear each fluid particle back along its velocity over this time, s, capped at `3 × particleSpacing`. `0` disables it. Must be ≥ 0.                                                      |
-| `voxelBudget`   | `number`                                           | `FluidSurfaceRenderer.defaultVoxelBudget(fluid.range.count)` | Upper bound on voxels in the field, about 76 bytes each. Must be ≥ 1.                                                                                                                    |
-| `appearance`    | `Partial<`[`FluidAppearance`](#fluidappearance)`>` | all defaults                                                 | Initial look.                                                                                                                                                                            |
-| `cavities`      | `{ smokeColor: number; smokeDensity: number }`     | none                                                         | Draw pockets cut by `carve` with a reflective rim and a smoke fill. `smokeColor` is sRGB hex; `smokeDensity` is extinction per metre, 1/m, ≥ 0. Adds 16 steps to the transmission march. |
-| `refraction`    | `boolean`                                          | `true`                                                       | Bend transmitted light. `false` samples the scene behind unbent.                                                                                                                         |
-
-Voxel edge length is `max(particles.particleRadius, ∛(bounds volume / voxelBudget))`.
+Each voxel is as large as it needs to be for `bounds` to fit within `voxelBudget`, but never smaller than `particles.particleRadius`.
 
 #### Errors
 
-| Throws                                                    | When                                            |
-| --------------------------------------------------------- | ----------------------------------------------- |
-| `FluidSurfaceRenderer: bounds must have positive extent`  | `bounds` has zero or negative size on any axis. |
-| `FluidSurfaceRenderer: motionStretch must be ≥ 0`         | `motionStretch` < 0 or not finite.              |
-| `FluidSurfaceRenderer: voxelBudget must be ≥ 1`           | `voxelBudget` < 1 or not finite.                |
-| `FluidSurfaceRenderer: smokeDensity must be ≥ 0`          | `cavities.smokeDensity` < 0 or not finite.      |
-| `FluidSurfaceRenderer: appearance.<field> must be finite` | A field of `appearance` is `NaN` or infinite.   |
+| Throws                                                    | When                                               |
+| --------------------------------------------------------- | -------------------------------------------------- |
+| `FluidSurfaceRenderer: bounds must have positive extent`  | `bounds` has zero or negative size on some axis.   |
+| `FluidSurfaceRenderer: motionStretch must be ≥ 0`         | `motionStretch` is negative or not finite.         |
+| `FluidSurfaceRenderer: voxelBudget must be ≥ 1`           | `voxelBudget` is less than 1 or not finite.        |
+| `FluidSurfaceRenderer: smokeDensity must be ≥ 0`          | `cavities.smokeDensity` is negative or not finite. |
+| `FluidSurfaceRenderer: appearance.<field> must be finite` | A field of `appearance` is `NaN` or infinite.      |
 
 ### Properties
 
-| Property       | Type                            | Access     | Description                                                                                                              |
-| -------------- | ------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `mesh`         | `Mesh`                          | read-only  | Back-faced box over the field, named `'FluidSurface'`, `renderOrder = -1`, `frustumCulled = false`. Add it to the scene. |
-| `fluid`        | [`FluidSystem`](#fluidsystem-1) | read-only  | Fluid being drawn.                                                                                                       |
-| `reflections`  | `boolean`                       | read/write | Screen-space reflections. Default `true`. When `false`, reflects only the environment.                                   |
-| `smokeDensity` | `number`                        | read/write | Cavity smoke extinction, 1/m, ≥ 0. Initial value `cavities.smokeDensity`. Requires `cavities` at construction.           |
+| Property       | Type                            | Access     | Description                                                                                                                                        |
+| -------------- | ------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mesh`         | `Mesh`                          | read-only  | Box around the field, drawn from its back faces. Named `'FluidSurface'`, with `renderOrder = -1` and `frustumCulled = false`. Add it to the scene. |
+| `fluid`        | [`FluidSystem`](#fluidsystem-1) | read-only  | Fluid being drawn.                                                                                                                                 |
+| `reflections`  | `boolean`                       | read/write | Screen-space reflections. Default `true`. When `false`, the surface reflects only the environment.                                                 |
+| `smokeDensity` | `number`                        | read/write | How quickly cavity smoke blocks light, 1/m, ≥ 0. Starts at `cavities.smokeDensity`. Requires `cavities` at construction.                           |
 
-| Throws                                                                                             | When                                                  |
-| -------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| ``FluidSurfaceRenderer: pass `cavities` in the options to enable smokeDensity before changing it`` | Reading or writing `smokeDensity` without `cavities`. |
-| `FluidSurfaceRenderer: smokeDensity must be ≥ 0`                                                   | Writing a negative, `NaN`, or infinite value.         |
+| Throws                                                                                             | When                                                            |
+| -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| ``FluidSurfaceRenderer: pass `cavities` in the options to enable smokeDensity before changing it`` | You read or set `smokeDensity` without passing `cavities`.      |
+| `FluidSurfaceRenderer: smokeDensity must be ≥ 0`                                                   | You set `smokeDensity` to a negative, `NaN`, or infinite value. |
 
 ### Methods
 
@@ -263,13 +261,13 @@ Voxel edge length is `max(particles.particleRadius, ∛(bounds volume / voxelBud
 update(): Promise<void>
 ```
 
-Rebuild the surface field from the current particle positions. Call once per frame, after stepping and before rendering. Also:
+Rebuilds the surface field from the current particle positions. Call it once per frame, after stepping and before rendering. Each call also picks up changes to the scene:
 
-- re-reads the key light and `scene.environmentIntensity`;
-- follows `scene.environment`: a new map replaces the old one in place, and gaining or losing a map rebuilds the surface shader once;
-- computes collider wetting on the first call, and again whenever a `PrimitiveSet` or `SDFCollider` in `colliders` has changed `version` (they move or change).
+- It re-reads the key light and `scene.environmentIntensity`.
+- It follows `scene.environment`. A new map replaces the old one in place, and gaining or losing a map rebuilds the surface shader once.
+- It computes where the liquid meets `colliders` on the first call, and again whenever one of them changes its `version` by moving or changing shape.
 
-Throws `FluidSurfaceRenderer: already disposed` after `dispose()`.
+Throws `FluidSurfaceRenderer: already disposed` if you call it after `dispose()`.
 
 #### `setAppearance(appearance)`
 
@@ -277,7 +275,7 @@ Throws `FluidSurfaceRenderer: already disposed` after `dispose()`.
 setAppearance(appearance: Partial<FluidAppearance>): void
 ```
 
-Change any [`FluidAppearance`](#fluidappearance) fields. Omitted or `undefined` fields keep their value. Throws `FluidSurfaceRenderer: appearance.<field> must be finite` for a `NaN` or infinite field, before changing anything.
+Changes any [`FluidAppearance`](#fluidappearance) fields. Fields you leave out or set to `undefined` keep their value. A `NaN` or infinite field throws `FluidSurfaceRenderer: appearance.<field> must be finite`, and changes nothing.
 
 #### `pick(uv)`
 
@@ -285,7 +283,7 @@ Change any [`FluidAppearance`](#fluidappearance) fields. Omitted or `undefined` 
 pick(uv: Vector2): Promise<Vector3 | null>
 ```
 
-World-space point where the ray through viewport coordinate `uv` (`[0, 1]`, y down) from `options.camera` meets the liquid, or `null`. Traces the field from the last `update()`. Reads back from the GPU. Throws `FluidSurfaceRenderer: already disposed` after `dispose()`.
+Finds the liquid under a point on screen. It casts a ray from `options.camera` through viewport coordinate `uv`, which runs from 0 to 1 with y pointing down. It resolves to the world-space hit point, or `null` on a miss. It traces the field from the last `update()` and reads back from the GPU. Throws `FluidSurfaceRenderer: already disposed` after `dispose()`.
 
 #### `dispose()`
 
@@ -293,7 +291,7 @@ World-space point where the ray through viewport coordinate `uv` (`[0, 1]`, y do
 dispose(): void
 ```
 
-Remove `mesh` from its parent and free its geometry and material, the field texture, the field's GPU buffers, and the compiled kernels. Safe to call twice; `update()` and `pick()` throw afterwards.
+Removes `mesh` from its parent and frees its geometry and material, the field texture, the field's GPU buffers, and the compiled kernels. Calling it twice is safe. After it, `update()` and `pick()` throw.
 
 #### `FluidSurfaceRenderer.defaultVoxelBudget(particleCount)`
 
@@ -301,52 +299,47 @@ Remove `mesh` from its parent and free its geometry and material, the field text
 static defaultVoxelBudget(particleCount: number): number
 ```
 
-Default `voxelBudget`: `1_200_000` for ≥ 50 000 particles, `900_000` for ≥ 20 000, else `600_000`.
+The default `voxelBudget` is `1_200_000` for 50 000 particles or more, `900_000` for 20 000 or more, and `600_000` otherwise.
 
 ### Key light
 
-The key light is a `DirectionalLight` in `scene`: the last one in traversal order with `castShadow`, else the first one found. It is looked up at construction and on each `update()` until one is found, then kept. Its direction and `color × intensity` are read every `update()`. With no directional light there is no specular highlight.
+The key light gives the liquid its specular highlight, and there's none without one. It's the last `DirectionalLight` in `scene`, in traversal order, that has `castShadow` set. If no directional light casts shadows, it's the first one found. The renderer looks for it at construction and on each `update()` until it finds one, then keeps it. Its direction and `color × intensity` are read every `update()`.
 
 ## FluidAppearance
 
-Look of the liquid. Pass as `options.appearance` or to `setAppearance()`. All fields are live and must be finite.
+Controls how the liquid looks. Pass it as `options.appearance` or to `setAppearance()`. Every field can change at any time and must be finite.
 
-| Field                 | Type     | Default    | Description                                                                                                        |
-| --------------------- | -------- | ---------- | ------------------------------------------------------------------------------------------------------------------ |
-| `color`               | `number` | `0x2a8fb0` | sRGB hex. Colour white light takes on after crossing `attenuationDistance` of liquid. Channels clamped to ≥ 0.001. |
-| `attenuationDistance` | `number` | `0.6`      | Path length at which transmitted light reaches `color`, m. Clamped to ≥ 1e-4.                                      |
-| `scattering`          | `number` | `0.08`     | Light scattered back out of the body. `0` clear, `1` milky.                                                        |
-| `ior`                 | `number` | `1.333`    | Index of refraction. Also sets Fresnel reflectance.                                                                |
-| `roughness`           | `number` | `0.04`     | Blurs reflections and widens the highlight. Clamped to 0.02–1.                                                     |
-| `envIntensity`        | `number` | `1`        | Multiplier on environment reflection.                                                                              |
-| `metalness`           | `number` | `0`        | Blend from dielectric (`0`) to metal (`1`).                                                                        |
-| `metalColor`          | `number` | `0xc8d2da` | sRGB hex. Reflectance tint at `metalness: 1`.                                                                      |
+| Field                 | Type     | Default    | Description                                                                                                                    |
+| --------------------- | -------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `color`               | `number` | `0x2a8fb0` | sRGB hex. The colour white light turns after passing through `attenuationDistance` of liquid. Channels are clamped to ≥ 0.001. |
+| `attenuationDistance` | `number` | `0.6`      | Path length at which transmitted light reaches `color`, m. Clamped to ≥ 1e-4.                                                  |
+| `scattering`          | `number` | `0.08`     | Light scattered back out of the body. `0` is clear, `1` is milky.                                                              |
+| `ior`                 | `number` | `1.333`    | Index of refraction. Also sets Fresnel reflectance.                                                                            |
+| `roughness`           | `number` | `0.04`     | Blurs reflections and widens the highlight. Clamped to 0.02–1.                                                                 |
+| `envIntensity`        | `number` | `1`        | Multiplier on environment reflection.                                                                                          |
+| `metalness`           | `number` | `0`        | Blend from dielectric (`0`) to metal (`1`).                                                                                    |
+| `metalColor`          | `number` | `0xc8d2da` | sRGB hex. Reflectance tint at `metalness: 1`.                                                                                  |
 
 ## Emitting
 
-`FluidSystem` has no emit method; the particle count is fixed by `range`. To pour, park the fluid's particles pinned out of view, then release a batch per frame from a compute kernel:
+`FluidSystem` has no emit method, because `range` fixes its particle count. To pour liquid, park the fluid's particles out of view and pin them in place. Then release a batch each frame from a compute kernel:
 
-1. After constructing the fluid, call `particles.setInvMass(fluid.range, 0)`. The constructor sets masses, so this must come after it.
-2. For each released particle `i`, write `particles.positions[i]` and `particles.predictedPositions[i]` (nozzle position), `particles.velocities[i]`, `particles.invMass[i] = 1 / fluid.mass`, and `fluid.density[i] = fluid.restDensity`.
-3. Release the next batch only after the stream has advanced one `particleSpacing`, so new particles do not overlap.
+1. Call `particles.setInvMass(fluid.range, 0)` to pin them. Do this after constructing the fluid, because the constructor sets masses.
+2. For each particle `i` you release, write the nozzle position to `particles.positions[i]` and `particles.predictedPositions[i]`, and set `particles.velocities[i]`. Then set `particles.invMass[i]` to `1 / fluid.mass` and `fluid.density[i]` to `fluid.restDensity`.
+3. Release the next batch only once the stream has moved one `particleSpacing`, so new particles don't overlap.
 
-[`demo/presets/honey.ts`](../../demo/presets/honey.ts) implements this.
+[`demo/presets/honey.ts`](../../demo/presets/honey.ts) does this.
 
 ## Limitations
 
-- `viscosity`, `vorticity`, `surfaceTension`, and `adhesion` can be changed later only if given at construction; otherwise their properties throw.
-- `compliance`, `restDensity`, `particleSpacing`, `smoothingRadius`, and `range` are fixed after construction.
-- `ParticleSystem.uploadParticles` resets `invMass` (default `1`); upload before constructing the fluid, or call `setInvMass(fluid.range, 1 / fluid.mass)` after.
-- `addBoundary` must be called before the `SimLoop` is created; boundaries cannot overlap the fluid or each other.
-- Each dynamic boundary adds one dispatch over its particles per substep; static ones run once, before the first step, and are not updated if they move.
-- Any boundary adds a reaction accumulator (3 × `capacity` int32) with a reset per substep and an apply every solver iteration over the span from the first boundary particle to the last.
-- Boundary volumes live in the shared `ParticleSystem`. With several fluids on one particle system, give every fluid the same boundaries, as `Simulation` does. Otherwise:
-  - every `FluidSystem` treats a boundary added to any of them as a boundary, but pushes back only on its own;
-  - a range added to fluids with different `smoothingRadius` gets the volume of whichever fluid ran last.
-- Non-fluid particles within `smoothingRadius` that are not boundaries (another fluid's particles, a soft body's interior) enter the density sum with their own mass and push the fluid in the pressure solve without receiving a reaction. This is what keeps two fluids on one particle system apart. Surface tension ignores them.
-- The neighbor list stores at most 64 neighbors per fluid particle; extras are dropped. Check with [`readbackOverflow()`](#readbackoverflow).
-- `ViscositySolver` must be listed after its `FluidSystem` in `materials`; it runs `iterations + 2` dispatches per substep.
-- `FluidSurfaceRenderer` options are fixed after construction; only `appearance`, `reflections`, and `smokeDensity` change later.
-- Gaining or losing `scene.environment` recompiles the surface shader on the next `update()`.
-- `update()` cost scales with voxel count (about 76 bytes each; four full-grid dispatches per call) and with fluid particle count (splatted 3 times with `motionStretch > 0`).
-- `carve` is evaluated for every primitive at every voxel on every `update()`.
+- You can't change `compliance`, `restDensity`, `particleSpacing`, `smoothingRadius`, or `range` after construction. You can change `viscosity`, `vorticity`, `surfaceTension`, and `adhesion` only if you gave them in the options.
+- A static boundary (`dynamic: false`) isn't updated if it moves, because its volumes are computed once before the first step. Each dynamic boundary costs one dispatch over its particles per substep.
+- Any boundary adds a buffer of three 32-bit integers per particle in the system, which collects the fluid's push on boundaries. It's cleared every substep and applied every solver iteration, over the span from the first boundary particle to the last.
+- Boundary volumes are stored in the shared `ParticleSystem`, so when several fluids share one particle system, give them all the same boundaries, as `Simulation` does. If you don't:
+  - every `FluidSystem` treats a boundary added to any of them as a boundary, but pushes only on its own;
+  - a range added to fluids with different `smoothingRadius` gets the volume from whichever fluid ran last.
+- The fluid can't push back on nearby particles that aren't its boundaries, such as another fluid's particles or a soft body's interior. They still count toward its density with their own mass and push the fluid away, which keeps two fluids on one particle system apart. Surface tension ignores them.
+- Each fluid particle can have at most 64 neighbors. Extras are dropped, which [`readbackOverflow()`](#readbackoverflow) reports.
+- You can't change `FluidSurfaceRenderer` options after construction, except through `appearance`, `reflections`, and `smokeDensity`.
+- `FluidSurfaceRenderer.update()` runs four dispatches over the full voxel grid, so its cost grows with voxel count. It also grows with fluid particle count, and particles are splatted three times when `motionStretch` is above 0.
+- Every `carve` primitive is evaluated at every voxel on every `update()`.

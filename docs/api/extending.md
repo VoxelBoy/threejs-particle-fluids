@@ -2,7 +2,7 @@
 
 # Extending
 
-The extension surface: the `Material` interface that adds kernels to a [`SimLoop`](./core.md#simloop), and the building blocks the built-in materials use (neighbor search, SPH kernels, XPBD constraints, atomic accumulation). Kernels are TSL compute nodes. [`Simulation`](./simulation.md) doesn't accept custom materials; build a `ParticleSystem` and `SimLoop` directly.
+How to add your own physics to a [`SimLoop`](./core.md#simloop). A custom material implements `Material` and returns TSL compute kernels. This page also covers the building blocks the built-in materials use: neighbor search, SPH kernels, XPBD constraints, and atomic sums. [`Simulation`](./simulation.md) doesn't accept custom materials, so build a `ParticleSystem` and `SimLoop` yourself.
 
 ```ts
 import {
@@ -38,7 +38,7 @@ import {
 
 ## Material
 
-Physics that runs inside a `SimLoop`. Any object with a `build` method. The loop calls `build` once, in its constructor, in the order of `SimLoopOptions.materials`, and dispatches the returned kernels every step.
+Physics that runs inside a `SimLoop`. Any object with a `build` method is a material. The loop calls `build` once from its constructor, in the order of `SimLoopOptions.materials`, then dispatches the returned kernels every step.
 
 ```ts
 interface Material {
@@ -54,7 +54,7 @@ interface Material {
 | Property         | Type                                                        | Access    | Description                                                                                                                                                          |
 | ---------------- | ----------------------------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `neighborRadius` | `number \| undefined`                                       | read-only | Farthest neighbor distance queried through the grid, in m. Finite and ≥ 0. The loop creates a grid only when some material sets a positive value or contacts are on. |
-| `particles`      | [`ParticleSystem`](./core.md#particlesystem) `\| undefined` | read-only | Particles the material was built for. When set, `SimLoop` throws unless it is the loop's own.                                                                        |
+| `particles`      | [`ParticleSystem`](./core.md#particlesystem) `\| undefined` | read-only | Particles the material was built for. If this is set, `SimLoop` throws unless they're the loop's own particles.                                                      |
 
 ### Methods
 
@@ -64,7 +64,7 @@ interface Material {
 build(context: SolverContext): MaterialKernels
 ```
 
-Create buffers and kernels. Called once from the `SimLoop` constructor.
+Create the material's buffers and kernels. The `SimLoop` constructor calls it once.
 
 | Parameter | Type                              | Description          |
 | --------- | --------------------------------- | -------------------- |
@@ -76,11 +76,11 @@ Create buffers and kernels. Called once from the `SimLoop` constructor.
 update?(dt: number): void
 ```
 
-Optional CPU hook. `SimLoop.step` calls it for every material, in order, before colliders update and before any GPU work. `dt` is the full step length in s, not the substep.
+An optional CPU hook. `SimLoop.step` calls it on every material, in order, before colliders update and before any GPU work. `dt` is the full step length in s, not the substep length.
 
 ### Example
 
-Velocity damping on one range. Kernels over a range dispatch `range.count` threads and offset by `range.start`.
+This material damps the velocity of one range. Its kernel dispatches `range.count` threads and offsets each index by `range.start`.
 
 ```ts
 import { Fn, instanceIndex, uint, uniform, vec4 } from 'three/tsl';
@@ -105,48 +105,48 @@ const loop = new SimLoop(particles, { materials: [fluid, createDamping(fluid.ran
 
 ## MaterialKernels
 
-Kernels returned by [`Material.build`](#buildcontext). Every field is optional. Within a stage, kernels run in material order, then in array order.
+The kernels returned by [`Material.build`](#buildcontext). Every field is optional. Within a stage, kernels run in material order, then in array order.
 
-| Field            | Type                                       | When `SimLoop` dispatches it                                                                                                                       |
-| ---------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `init`           | `readonly ComputeNode[]`                   | Once, on the first `step`, before `beforeStep`. Preceded by a grid rebuild when a grid exists.                                                     |
-| `beforeStep`     | `readonly ComputeNode[]`                   | Every step, before the first substep, after colliders' frame-start kernels.                                                                        |
-| `preSolve`       | `readonly ComputeNode[]`                   | Every substep, after prediction, grid rebuild, contact generation, and colliders' pre-solve kernels.                                               |
-| `solve`          | `readonly ComputeNode[]`                   | Every solver iteration, before contacts and colliders.                                                                                             |
-| `postSolve`      | `readonly ComputeNode[]`                   | Every substep, after velocities are derived from solved positions, before friction.                                                                |
-| `noSelfContacts` | [`ParticleRange`](./core.md#particlerange) | Particles in this range get no particle–particle contacts with each other; they still contact all other particles. Only used when contacts are on. |
+| Field            | Type                                       | When `SimLoop` dispatches it                                                                                                             |
+| ---------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `init`           | `readonly ComputeNode[]`                   | Once, on the first `step`, before `beforeStep`. A grid rebuild runs first when there is a grid.                                          |
+| `beforeStep`     | `readonly ComputeNode[]`                   | Every step, before the first substep and after the colliders' frame-start kernels.                                                       |
+| `preSolve`       | `readonly ComputeNode[]`                   | Every substep, after prediction, the grid rebuild, contact generation, and the colliders' pre-solve kernels.                             |
+| `solve`          | `readonly ComputeNode[]`                   | Every solver iteration, before contacts and colliders.                                                                                   |
+| `postSolve`      | `readonly ComputeNode[]`                   | Every substep, after velocities are updated from the solved positions and before friction.                                               |
+| `noSelfContacts` | [`ParticleRange`](./core.md#particlerange) | Particles in this range don't get contacts with each other, but they still contact every other particle. Only used when contacts are on. |
 
 ## SolverContext
 
-Passed to [`Material.build`](#buildcontext).
+The shared solver state passed to [`Material.build`](#buildcontext).
 
-| Property                   | Type                                         | Description                                                                                                                                                                                                                                                                                                            |
-| -------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `particles`                | [`ParticleSystem`](./core.md#particlesystem) | Particle storage the loop advances.                                                                                                                                                                                                                                                                                    |
-| `dt`                       | `UniformNode<'float', number>`               | Substep length in s. Set by `SimLoop.step` to `dt / substeps` before dispatch.                                                                                                                                                                                                                                         |
-| `hashGrid`                 | [`HashGrid`](#hashgrid)                      | The loop's neighbor grid, rebuilt from `predictedPositions` each substep. Cell size is the largest `neighborRadius` of any material, or `2 × particleRadius × 1.1` with contacts on, whichever is larger. Without a grid it is a placeholder that throws when any of its properties is read; destructuring it is safe. |
-| `allocateCollisionGroup()` | `() => number`                               | Reserve a collision group unused by other allocations and by particles uploaded before the `SimLoop` was constructed. Assign it with `particles.setCollisionGroup`. Groups written to particles after the loop was constructed can clash with it.                                                                      |
+| Property                   | Type                                         | Description                                                                                                                                                                                                                                                                                                                          |
+| -------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `particles`                | [`ParticleSystem`](./core.md#particlesystem) | Particle storage the loop advances.                                                                                                                                                                                                                                                                                                  |
+| `dt`                       | `UniformNode<'float', number>`               | Substep length in s. Set by `SimLoop.step` to `dt / substeps` before dispatch.                                                                                                                                                                                                                                                       |
+| `hashGrid`                 | [`HashGrid`](#hashgrid)                      | The loop's neighbor grid, rebuilt from `predictedPositions` every substep. Its cell size is the largest `neighborRadius` of any material, or `2.2 × particleRadius` if contacts are on and that is larger. If the loop has no grid, this is a placeholder that throws when you read any of its properties. Destructuring it is safe. |
+| `allocateCollisionGroup()` | `() => number`                               | Reserve a collision group that no other material has and no particle uploaded before the `SimLoop` was constructed uses. Assign it with `particles.setCollisionGroup`. Groups written to particles after the loop was constructed can clash with it.                                                                                 |
 
-| Throws                                                                          | When                                                                                         |
-| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `SimLoop: a material used the neighbor grid without declaring a neighborRadius` | A property of `hashGrid` is read when no material set `neighborRadius` and contacts are off. |
+| Throws                                                                          | When                                                                                             |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `SimLoop: a material used the neighbor grid without declaring a neighborRadius` | You read a property of `hashGrid`, but no material sets a `neighborRadius` and contacts are off. |
 
 ## Dispatch order
 
-One `SimLoop.step(dt)`:
+What one `SimLoop.step(dt)` runs, from a material's point of view. [Step order](./core.md#step-order) on the Core page has every detail.
 
-1. CPU: `update(dt)` on every material, then every collider; `dt` uniform set to `dt / substeps`.
-2. First step only: grid rebuild (if a grid exists and any `init` kernels were returned), then all `init` kernels.
-3. Colliders' frame-start kernels, then all `beforeStep` kernels.
-4. `substeps` times:
-   1. Predict: add gravity to velocity, `x* = x + v·dt`, for particles with `invMass > 0`.
-   2. Reset shared position sums (if contacts or colliders); grid rebuild; contact generation and stabilization; colliders' pre-solve; all `preSolve` kernels.
-   3. `iterations` times: all `solve` kernels, then contact and collider corrections, then apply them to `predictedPositions`.
-   4. Advect: `v = (x* − x) / dt`, `x = x*`, for particles with `invMass > 0`.
+1. On the CPU, `update(dt)` on every material, then every collider. The `dt` uniform is set to `dt / substeps`.
+2. First step only: a grid rebuild if there is a grid and any `init` kernels, then all `init` kernels.
+3. The colliders' frame-start kernels, then all `beforeStep` kernels.
+4. Then, `substeps` times:
+   1. **Predict.** Unpinned particles get gravity and move by their velocity into `predictedPositions`.
+   2. The grid is rebuilt and, with contacts on, contacts are found and separated. Then the colliders' pre-solve kernels, then all `preSolve` kernels.
+   3. `iterations` times: all `solve` kernels, then the contact and collider corrections.
+   4. **Advect.** Unpinned particles get a velocity from how far they moved, and move to their predicted positions.
    5. All `postSolve` kernels.
-   6. Contact and collider friction; colliders' substep-end kernels.
+   6. Contact and collider friction, then the colliders' substep-end kernels.
 
-The whole step is submitted in one `computeAsync` call. Velocity changes made in `postSolve` take effect at the next prediction.
+The whole step is sent to the GPU in one `computeAsync` call. A velocity change you make in `postSolve` takes effect at the next prediction.
 
 ## emitForEachNeighbor
 
@@ -158,17 +158,17 @@ emitForEachNeighbor(
 ): void
 ```
 
-Emit TSL that visits every particle in the 27 grid cells around `position`. Call inside an `Fn` body. Candidates include particles beyond the query radius and, through hash collisions, distant cells; filter by distance. A particle querying at its own predicted position is its own candidate.
+Emit TSL that visits every particle in the 27 grid cells around `position`. Call it inside an `Fn` body. Candidates can include particles beyond your query radius or, through hash collisions, in distant cells, so filter by distance. A particle that queries at its own predicted position finds itself as a candidate.
 
-| Parameter     | Type                                  | Description                                                                                                                                                                                                                                                    |
-| ------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `grid`        | [`HashGrid`](#hashgrid)               | Grid to walk. Reflects `predictedPositions` at its last rebuild.                                                                                                                                                                                               |
-| `position`    | TSL `vec3` node                       | Query point, in m.                                                                                                                                                                                                                                             |
-| `onCandidate` | `(neighborIndex, sortedSlot) => void` | Runs at shader-build time and must emit TSL. `neighborIndex`: particle index (`uint`). `sortedSlot`: index into `grid.sortedIndices` and `grid.sortedPredictedPositions` (`uint`). Use `Continue()` to skip a candidate; `Return()` ends the whole invocation. |
+| Parameter     | Type                                  | Description                                                                                                                                                                                                                                                                |
+| ------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `grid`        | [`HashGrid`](#hashgrid)               | Grid to walk. Reflects `predictedPositions` at its last rebuild.                                                                                                                                                                                                           |
+| `position`    | TSL `vec3` node                       | Query point, in m.                                                                                                                                                                                                                                                         |
+| `onCandidate` | `(neighborIndex, sortedSlot) => void` | Runs at shader-build time and must emit TSL. `neighborIndex` is the particle index (`uint`). `sortedSlot` is an index into `grid.sortedIndices` and `grid.sortedPredictedPositions` (`uint`). Call `Continue()` to skip a candidate. `Return()` ends the whole invocation. |
 
 ## HashGrid
 
-Spatial hash over every particle of a `ParticleSystem`, rebuilt on the GPU with a counting sort. Bins `predictedPositions`. `SimLoop` owns one and rebuilds it every substep; construct one directly only for standalone tools.
+Finds nearby particles by sorting every particle of a `ParticleSystem` into grid cells by its predicted position, on the GPU. `SimLoop` owns one and rebuilds it every substep, so construct one yourself only for standalone tools.
 
 ### Constructor
 
@@ -183,40 +183,40 @@ new HashGrid(particles: ParticleSystem, options: HashGridOptions)
 
 #### HashGridOptions
 
-| Option          | Type      | Default                                               | Description                                                                                                             |
-| --------------- | --------- | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `cellSize`      | `number`  | required                                              | Cell edge length, in m. Must be ≥ the largest query radius.                                                             |
-| `hashTableSize` | `number`  | next power of two ≥ `2 × capacity`, at most 1,048,576 | Bucket count. A power of two, at most 1,048,576.                                                                        |
-| `hashOrigin`    | `Vector3` | `(0, 0, 0)`                                           | Subtracted from positions before quantizing to cells, in m. Copied. Lookups stay local within 512 cells of it per axis. |
+| Option          | Type      | Default                                               | Description                                                                                 |
+| --------------- | --------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `cellSize`      | `number`  | required                                              | Cell edge length, in m. Must be at least the largest query radius.                          |
+| `hashTableSize` | `number`  | next power of two ≥ `2 × capacity`, at most 1,048,576 | Bucket count. A power of two, at most 1,048,576.                                            |
+| `hashOrigin`    | `Vector3` | `(0, 0, 0)`                                           | Where the cells start, in m. Copied. Lookups stay fast within 512 cells of it on each axis. |
 
-| Throws                                                                                       | When                                                                |
-| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `HashGrid: cellSize must be a positive finite number`                                        | `cellSize` is ≤ 0, `NaN`, or infinite.                              |
-| `HashGrid: hashTableSize must be a positive power of two`                                    | `hashTableSize` is not an integer, is < 1, or isn't a power of two. |
-| `HashGrid: hashTableSize=… (capacity …) exceeds the 1048576-bucket limit of the prefix scan` | `hashTableSize` exceeds 1,048,576.                                  |
+| Throws                                                                                       | When                                                  |
+| -------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `HashGrid: cellSize must be a positive finite number`                                        | `cellSize` is zero, negative, `NaN`, or infinite.     |
+| `HashGrid: hashTableSize must be a positive power of two`                                    | `hashTableSize` isn't a power of two (1, 2, 4, 8, …). |
+| `HashGrid: hashTableSize=… (capacity …) exceeds the 1048576-bucket limit of the prefix scan` | `hashTableSize` is more than 1,048,576.               |
 
 ### Properties
 
 All read-only.
 
-| Property                   | Type                                         | Description                                                                                                                                                                                        |
-| -------------------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `renderer`                 | `WebGPURenderer`                             | From `particles`.                                                                                                                                                                                  |
-| `particles`                | [`ParticleSystem`](./core.md#particlesystem) | Binned particles.                                                                                                                                                                                  |
-| `cellSize`                 | `number`                                     | Cell edge length at construction, in m.                                                                                                                                                            |
-| `hashOrigin`               | `Vector3`                                    | Origin of the cells, in m: the value of `hashOriginUniform`. Mutate it in place to move the grid, right before a rebuild; queries read it too.                                                     |
-| `hashTableSize`            | `number`                                     | Bucket count, a power of two.                                                                                                                                                                      |
-| `hashTableSizePadded`      | `number`                                     | `hashTableSize` rounded up to a multiple of 1024.                                                                                                                                                  |
-| `cellIndex`                | `StorageBufferNode<'uint'>`                  | Bucket index per particle.                                                                                                                                                                         |
-| `counts`                   | `StorageBufferNode<'uint'>`                  | Atomic particle count per bucket.                                                                                                                                                                  |
-| `cellStart`                | `StorageBufferNode<'uint'>`                  | First slot in `sortedIndices` per bucket.                                                                                                                                                          |
-| `cellEnd`                  | `StorageBufferNode<'uint'>`                  | One past the last slot per bucket.                                                                                                                                                                 |
-| `sortedIndices`            | `StorageBufferNode<'uint'>`                  | Particle indices in bucket order.                                                                                                                                                                  |
-| `sortedPredictedPositions` | `StorageBufferNode<'vec4'>`                  | `predictedPositions` in bucket order, refreshed each rebuild.                                                                                                                                      |
-| `overflowFlag`             | `StorageBufferNode<'uint'>`                  | Atomic; 1 when a particle's cell coordinate fell outside ±512 cells of `hashOrigin` during the last rebuild. Such particles still find their neighbors, through buckets shared with distant cells. |
-| `hashOriginUniform`        | `UniformNode<'vec3', Vector3>`               | Origin used by the kernels.                                                                                                                                                                        |
-| `cellSizeUniform`          | `UniformNode<'float', number>`               | Cell size used by the kernels, in m.                                                                                                                                                               |
-| `rebuildPipeline`          | `readonly ComputeNode[]`                     | The rebuild kernels, for batching into a larger dispatch. Don't modify. Throws after `dispose`.                                                                                                    |
+| Property                   | Type                                         | Description                                                                                                                                                                                         |
+| -------------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `renderer`                 | `WebGPURenderer`                             | From `particles`.                                                                                                                                                                                   |
+| `particles`                | [`ParticleSystem`](./core.md#particlesystem) | Binned particles.                                                                                                                                                                                   |
+| `cellSize`                 | `number`                                     | Cell edge length at construction, in m.                                                                                                                                                             |
+| `hashOrigin`               | `Vector3`                                    | Where the cells start, in m. This is the value of `hashOriginUniform`. To move the grid, change it in place right before a rebuild. Queries read it too.                                            |
+| `hashTableSize`            | `number`                                     | Bucket count, a power of two.                                                                                                                                                                       |
+| `hashTableSizePadded`      | `number`                                     | `hashTableSize` rounded up to a multiple of 1024.                                                                                                                                                   |
+| `cellIndex`                | `StorageBufferNode<'uint'>`                  | Bucket index per particle.                                                                                                                                                                          |
+| `counts`                   | `StorageBufferNode<'uint'>`                  | Atomic particle count per bucket.                                                                                                                                                                   |
+| `cellStart`                | `StorageBufferNode<'uint'>`                  | First slot in `sortedIndices` per bucket.                                                                                                                                                           |
+| `cellEnd`                  | `StorageBufferNode<'uint'>`                  | One past the last slot per bucket.                                                                                                                                                                  |
+| `sortedIndices`            | `StorageBufferNode<'uint'>`                  | Particle indices in bucket order.                                                                                                                                                                   |
+| `sortedPredictedPositions` | `StorageBufferNode<'vec4'>`                  | `predictedPositions` in bucket order, refreshed each rebuild.                                                                                                                                       |
+| `overflowFlag`             | `StorageBufferNode<'uint'>`                  | Atomic. Set to 1 when a particle was more than 512 cells from `hashOrigin` on some axis at the last rebuild. Those particles still find their neighbors, through buckets shared with distant cells. |
+| `hashOriginUniform`        | `UniformNode<'vec3', Vector3>`               | Origin used by the kernels.                                                                                                                                                                         |
+| `cellSizeUniform`          | `UniformNode<'float', number>`               | Cell size used by the kernels, in m.                                                                                                                                                                |
+| `rebuildPipeline`          | `readonly ComputeNode[]`                     | The rebuild kernels, for batching into a larger dispatch. Don't modify them. Reading this after `dispose` throws.                                                                                   |
 
 ### Methods
 
@@ -226,7 +226,7 @@ All read-only.
 rebuild(): Promise<void>
 ```
 
-Rebuild from the current `particles.predictedPositions`.
+Rebuild the grid from the current `particles.predictedPositions`.
 
 #### `readback()`
 
@@ -234,7 +234,7 @@ Rebuild from the current `particles.predictedPositions`.
 readback(): Promise<HashGridSnapshot>
 ```
 
-Read the grid buffers to the CPU. Stalls on the GPU. `HashGridSnapshot` isn't exported by name; its fields:
+Copy the grid buffers to the CPU. This waits for the GPU. `HashGridSnapshot` isn't exported by name. Its fields are:
 
 | Field                            | Type          | Description                                                                  |
 | -------------------------------- | ------------- | ---------------------------------------------------------------------------- |
@@ -242,7 +242,7 @@ Read the grid buffers to the CPU. Stalls on the GPU. `HashGridSnapshot` isn't ex
 | `hashTableSize`                  | `number`      | Bucket count.                                                                |
 | `hashTableSizePadded`            | `number`      | Padded bucket count.                                                         |
 | `cellIndex`                      | `Uint32Array` | Bucket per particle.                                                         |
-| `counts`, `cellStart`, `cellEnd` | `Uint32Array` | Per bucket; zero past `hashTableSize`.                                       |
+| `counts`, `cellStart`, `cellEnd` | `Uint32Array` | One value per bucket, and zero past `hashTableSize`.                         |
 | `sortedIndices`                  | `Uint32Array` | Particle indices in bucket order. Order within a bucket varies between runs. |
 
 #### `readbackOverflow()`
@@ -251,7 +251,7 @@ Read the grid buffers to the CPU. Stalls on the GPU. `HashGridSnapshot` isn't ex
 readbackOverflow(): Promise<boolean>
 ```
 
-`true` if `overflowFlag` was set by the last rebuild: some particle was more than 512 cells from `hashOrigin` on an axis. Stalls on the GPU.
+Return `true` if the last rebuild set `overflowFlag`, which means some particle was more than 512 cells from `hashOrigin` on an axis. This waits for the GPU.
 
 #### `dispose()`
 
@@ -261,13 +261,13 @@ dispose(): void
 
 Free the grid's GPU buffers. Kernels that query the grid can't run afterwards. Calling it again does nothing.
 
-| Throws                       | When                                                                                  |
-| ---------------------------- | ------------------------------------------------------------------------------------- |
-| `HashGrid has been disposed` | `rebuild`, `readback`, `readbackOverflow`, or `rebuildPipeline` used after `dispose`. |
+| Throws                       | When                                                                                      |
+| ---------------------------- | ----------------------------------------------------------------------------------------- |
+| `HashGrid has been disposed` | You used `rebuild`, `readback`, `readbackOverflow`, or `rebuildPipeline` after `dispose`. |
 
 ## NeighborList
 
-Per-particle neighbor indices within a radius, for one range, gathered once per substep so kernels that visit neighbors several times don't each walk the grid. Stored column-major: neighbor `k` of local particle `i` is at `k × range.count + i`.
+Stores the neighbors within a radius of each particle in one range. It's gathered once per substep, so kernels that visit neighbors several times don't each walk the grid. Neighbor `k` of the range's `i`th particle is at index `k × range.count + i`.
 
 ```ts
 const sph = createSphKernelUniforms(h);
@@ -296,21 +296,21 @@ new NeighborList(particles: ParticleSystem, range: ParticleRange)
 | `particles` | [`ParticleSystem`](./core.md#particlesystem) | Particle storage.                                                    |
 | `range`     | [`ParticleRange`](./core.md#particlerange)   | Particles whose neighbors are stored. Neighbors can be any particle. |
 
-| Throws                                                              | When                                                  |
-| ------------------------------------------------------------------- | ----------------------------------------------------- |
-| `NeighborList: invalid particle range start=… count=… (capacity …)` | `range` is empty, non-integer, or outside `capacity`. |
+| Throws                                                              | When                                                          |
+| ------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `NeighborList: invalid particle range start=… count=… (capacity …)` | `range` is empty, isn't whole slots, or runs past `capacity`. |
 
 ### Properties
 
 All read-only.
 
-| Property       | Type                                         | Description                                                                             |
-| -------------- | -------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `particles`    | [`ParticleSystem`](./core.md#particlesystem) | Particle storage.                                                                       |
-| `range`        | [`ParticleRange`](./core.md#particlerange)   | Covered particles.                                                                      |
-| `indices`      | `StorageBufferNode<'uint'>`                  | `range.count × MAX_NEIGHBORS` neighbor indices, column-major.                           |
-| `counts`       | `StorageBufferNode<'uint'>`                  | Stored neighbor count per local particle.                                               |
-| `overflowFlag` | `StorageBufferNode<'uint'>`                  | Atomic; 1 when some particle had more than `MAX_NEIGHBORS` neighbors in the last build. |
+| Property       | Type                                         | Description                                                                                    |
+| -------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `particles`    | [`ParticleSystem`](./core.md#particlesystem) | Particle storage.                                                                              |
+| `range`        | [`ParticleRange`](./core.md#particlerange)   | Covered particles.                                                                             |
+| `indices`      | `StorageBufferNode<'uint'>`                  | `range.count × MAX_NEIGHBORS` neighbor indices, laid out as above.                             |
+| `counts`       | `StorageBufferNode<'uint'>`                  | Number of stored neighbors for each particle in the range.                                     |
+| `overflowFlag` | `StorageBufferNode<'uint'>`                  | Atomic. Set to 1 when some particle had more than `MAX_NEIGHBORS` neighbors in the last build. |
 
 ### Methods
 
@@ -320,7 +320,7 @@ All read-only.
 buildKernels(grid: HashGrid, radiusSq: UniformNode<'float', number>): ComputeNode[]
 ```
 
-Two kernels: clear `overflowFlag`, then fill the list from `grid` with every particle closer than `sqrt(radiusSq)` (m²) at predicted positions, the particle itself included. Dispatch after the grid rebuild, e.g. in `preSolve`.
+Return two kernels that rebuild the list from `grid`. The first clears `overflowFlag`. The second stores every particle closer than `sqrt(radiusSq)` (m²) to each particle's predicted position, including the particle itself. Dispatch them after the grid rebuild, for example in `preSolve`.
 
 #### `forEach(i, onNeighbor)`
 
@@ -328,7 +328,7 @@ Two kernels: clear `overflowFlag`, then fill the list from `grid` with every par
 forEach(i: any, onNeighbor: (j: any) => void): void
 ```
 
-Emit TSL that calls `onNeighbor(j)` for each stored neighbor of particle `i`. `i` is a global particle index (`uint` node) inside `range`; `j` is a global particle index.
+Emit TSL that calls `onNeighbor(j)` for each stored neighbor of particle `i`. `i` is a global particle index (a `uint` node) inside `range`. `j` is a global index too.
 
 #### `readbackOverflow()`
 
@@ -336,7 +336,7 @@ Emit TSL that calls `onNeighbor(j)` for each stored neighbor of particle `i`. `i
 readbackOverflow(): Promise<boolean>
 ```
 
-`true` if some list was truncated during the last build. Stalls on the GPU.
+Return `true` if some particle's list was cut short in the last build. This waits for the GPU.
 
 ## MAX_NEIGHBORS
 
@@ -344,11 +344,11 @@ readbackOverflow(): Promise<boolean>
 const MAX_NEIGHBORS = 64;
 ```
 
-Most neighbors a [`NeighborList`](#neighborlist) stores per particle. Extras are dropped and flagged.
+The most neighbors a [`NeighborList`](#neighborlist) stores per particle. Extra neighbors are dropped, and the list's `overflowFlag` is set.
 
 ## SphKernelUniforms
 
-Uniforms for the Poly6 and Spiky smoothing kernels (Müller et al. 2003) with radius `h`. Created by [`createSphKernelUniforms`](#createsphkerneluniforms). Setting `h.value` recomputes the other three; it throws `createSphKernelUniforms: h must be positive` for values ≤ 0, `NaN`, or infinite.
+Uniforms for the Poly6 and Spiky smoothing kernels (Müller et al. 2003) with radius `h`. Create them with [`createSphKernelUniforms`](#createsphkerneluniforms). Setting `h.value` recomputes the other three, and throws `createSphKernelUniforms: h must be positive` if the value is zero, negative, `NaN`, or infinite.
 
 | Property    | Type                           | Description             |
 | ----------- | ------------------------------ | ----------------------- |
@@ -367,9 +367,9 @@ createSphKernelUniforms(h: number): SphKernelUniforms
 | --------- | -------- | ----------------------- |
 | `h`       | `number` | Smoothing radius, in m. |
 
-| Throws                                        | When                            |
-| --------------------------------------------- | ------------------------------- |
-| `createSphKernelUniforms: h must be positive` | `h` is ≤ 0, `NaN`, or infinite. |
+| Throws                                        | When                                       |
+| --------------------------------------------- | ------------------------------------------ |
+| `createSphKernelUniforms: h must be positive` | `h` is zero, negative, `NaN`, or infinite. |
 
 ## emitPoly6
 
@@ -377,7 +377,7 @@ createSphKernelUniforms(h: number): SphKernelUniforms
 emitPoly6(r_vec: any, u: SphKernelUniforms): any
 ```
 
-Emit `W = poly6Coef · (h² − |r|²)³`, zero for `|r| ≥ h`, as a TSL float (1/m³). `r_vec` is a TSL `vec3` offset in m.
+Emit the Poly6 kernel value for the offset `r_vec` (a TSL `vec3`, in m) as a TSL float, in 1/m³. The value is `poly6Coef · (h² − |r|²)³`, or zero when `|r| ≥ h`.
 
 ## emitPoly6FromRSq
 
@@ -385,7 +385,7 @@ Emit `W = poly6Coef · (h² − |r|²)³`, zero for `|r| ≥ h`, as a TSL float 
 emitPoly6FromRSq(rSq: any, u: SphKernelUniforms): any
 ```
 
-[`emitPoly6`](#emitpoly6) from a precomputed `|r|²` (TSL float, m²).
+Like [`emitPoly6`](#emitpoly6), but takes a precomputed squared distance (a TSL float, in m²).
 
 ## emitSpikyGrad
 
@@ -393,23 +393,23 @@ emitPoly6FromRSq(rSq: any, u: SphKernelUniforms): any
 emitSpikyGrad(r_vec: any, u: SphKernelUniforms): any
 ```
 
-Emit `∇W = −spikyCoef · (h − |r|)² · r̂` as a TSL `vec3` (1/m⁴), the gradient with respect to `r_vec`. Zero for `|r| ≥ h` and `|r| = 0`. With `r_vec = xᵢ − xⱼ` this is `∇ᵢW`; negate for `∇ⱼW`.
+Emit the gradient of the Spiky kernel with respect to `r_vec`, as a TSL `vec3` in 1/m⁴. The value is `−spikyCoef · (h − |r|)² · r̂`, or zero when `|r| ≥ h` or `|r| = 0`. With `r_vec = xᵢ − xⱼ` you get the gradient for particle `i`, so negate it for particle `j`.
 
 ## ConstraintType
 
-A set of XPBD constraints of one kind, ready for [`constraintKernels`](#constraintkernels). Returned by [`createDistanceConstraints`](#createdistanceconstraints); build others with [`colorConstraints`](#colorconstraints) and [`buildConstraintGroups`](#buildconstraintgroups).
+A set of XPBD constraints (Macklin et al. 2016) of one kind, ready to pass to [`constraintKernels`](#constraintkernels). [`createDistanceConstraints`](#createdistanceconstraints) returns one. For other kinds, use [`colorConstraints`](#colorconstraints) and [`buildConstraintGroups`](#buildconstraintgroups).
 
-| Property            | Type                                                 | Description                                              |
-| ------------------- | ---------------------------------------------------- | -------------------------------------------------------- |
-| `count`             | `number`                                             | Number of constraints.                                   |
-| `compliance`        | `StorageBufferNode<'float'>`                         | Compliance `α` per constraint. Units depend on the kind. |
-| `lambda`            | `StorageBufferNode<'float'>`                         | Accumulated Lagrange multiplier per constraint.          |
-| `groups`            | `readonly` [`ConstraintGroup`](#constraintgroup)`[]` | Color groups, solved in order every iteration.           |
-| `resetLambdaKernel` | `ComputeNode`                                        | Zeroes `lambda`. Run once per substep.                   |
+| Property            | Type                                                 | Description                                                                     |
+| ------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `count`             | `number`                                             | Number of constraints.                                                          |
+| `compliance`        | `StorageBufferNode<'float'>`                         | Compliance `α` (inverse stiffness) per constraint. Units depend on the kind.    |
+| `lambda`            | `StorageBufferNode<'float'>`                         | Accumulated Lagrange multiplier per constraint.                                 |
+| `groups`            | `readonly` [`ConstraintGroup`](#constraintgroup)`[]` | Groups of constraints that share no particles, solved in order every iteration. |
+| `resetLambdaKernel` | `ComputeNode`                                        | Zeroes `lambda`. Run it once per substep.                                       |
 
 ## ConstraintGroup
 
-One color class: constraints that share no particle, solved one thread each without races.
+A batch of constraints that share no particles, so they can all be solved at once, one thread each.
 
 | Property      | Type                        | Description                                  |
 | ------------- | --------------------------- | -------------------------------------------- |
@@ -429,23 +429,23 @@ createDistanceConstraints(args: {
 }): ConstraintType
 ```
 
-XPBD distance constraints `C = |xᵢ − xⱼ| − L₀`, colored on the CPU. Each solve writes `predictedPositions` of both particles directly. A constraint is skipped when both particles have `invMass = 0` or they coincide.
+Create distance constraints, which keep each pair of particles at its rest length. They're sorted into groups on the CPU. Each solve writes both particles' `predictedPositions` directly. A constraint is skipped when both particles are pinned (`invMass = 0`) or sit at the same point.
 
 | Argument     | Type                                         | Description                                                                                          |
 | ------------ | -------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `particles`  | [`ParticleSystem`](./core.md#particlesystem) | Particle storage.                                                                                    |
 | `pairs`      | `readonly [number, number][]`                | Particle index pairs.                                                                                |
-| `compliance` | `number \| ArrayLike<number>`                | Compliance `α` in s²/kg; a number applies to every pair, an array or typed array gives one per pair. |
+| `compliance` | `number \| ArrayLike<number>`                | Compliance `α` in s²/kg. A number applies to every pair. An array or typed array gives one per pair. |
 | `restLength` | `ArrayLike<number>`                          | Rest length per pair, in m. Array or typed array.                                                    |
 | `dt`         | `UniformNode<'float', number>`               | Substep length, usually [`SolverContext.dt`](#solvercontext).                                        |
 
-| Throws                                                             | When                                                |
-| ------------------------------------------------------------------ | --------------------------------------------------- |
-| `createDistanceConstraints: pairs is empty`                        | `pairs.length === 0`.                               |
-| `createDistanceConstraints: restLength length … ≠ pairs.length …`  | Lengths differ.                                     |
-| `createDistanceConstraints: compliance length … ≠ pairs.length …`  | `compliance` is an array of a different length.     |
-| `createDistanceConstraints: pair (…) has out-of-range index`       | An index is non-integer, negative, or ≥ `capacity`. |
-| `createDistanceConstraints: pair (…) references the same particle` | `i === j`.                                          |
+| Throws                                                             | When                                                       |
+| ------------------------------------------------------------------ | ---------------------------------------------------------- |
+| `createDistanceConstraints: pairs is empty`                        | `pairs` is empty.                                          |
+| `createDistanceConstraints: restLength length … ≠ pairs.length …`  | `restLength` doesn't have one entry per pair.              |
+| `createDistanceConstraints: compliance length … ≠ pairs.length …`  | `compliance` is an array without one entry per pair.       |
+| `createDistanceConstraints: pair (…) has out-of-range index`       | An index is negative, not a whole number, or ≥ `capacity`. |
+| `createDistanceConstraints: pair (…) references the same particle` | A pair uses the same particle twice.                       |
 
 ```ts
 const rope: Material = {
@@ -466,24 +466,24 @@ colorConstraints(args: {
 }): { groupOf: Uint32Array; numGroups: number }
 ```
 
-Greedy graph coloring on the CPU: assigns each constraint, in index order, the lowest group not used by any of its particles.
+Sort constraints into groups on the CPU so that no two in a group share a particle. Each constraint, in index order, gets the lowest group that none of its particles is in yet.
 
-| Argument                    | Type                               | Description                                                                                                 |
-| --------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `arity`                     | `number`                           | Particles per constraint.                                                                                   |
-| `nConstraints`              | `number`                           | Number of constraints.                                                                                      |
-| `participantsPerConstraint` | `readonly number[] \| Uint32Array` | Flat particle indices; participant `k` of constraint `c` at `c × arity + k`. Length `arity × nConstraints`. |
+| Argument                    | Type                               | Description                                                                                                    |
+| --------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `arity`                     | `number`                           | Particles per constraint.                                                                                      |
+| `nConstraints`              | `number`                           | Number of constraints.                                                                                         |
+| `participantsPerConstraint` | `readonly number[] \| Uint32Array` | Flat particle indices. Participant `k` of constraint `c` is at `c × arity + k`. Length `arity × nConstraints`. |
 
-| Returns     | Description                                                                                                                                           |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `groupOf`   | Group index per constraint.                                                                                                                           |
-| `numGroups` | One past the largest group index; `0` when `nConstraints` is 0. At least the most constraints sharing one particle, at most `1 + arity × (that − 1)`. |
+| Returns     | Description                                                                                                                                                  |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `groupOf`   | Group index per constraint.                                                                                                                                  |
+| `numGroups` | One past the largest group index, or `0` when `nConstraints` is 0. If one particle is in at most `d` constraints, this is from `d` to `1 + arity × (d − 1)`. |
 
-| Throws                                                                          | When                                            |
-| ------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `colorConstraints: arity must be a positive integer`                            | `arity` is not an integer ≥ 1.                  |
-| `colorConstraints: nConstraints must be an integer ≥ 0`                         | `nConstraints` is negative or not an integer.   |
-| `colorConstraints: participantsPerConstraint length … ≠ arity × nConstraints …` | The array length is not `arity × nConstraints`. |
+| Throws                                                                          | When                                                                     |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `colorConstraints: arity must be a positive integer`                            | `arity` isn't a positive whole number.                                   |
+| `colorConstraints: nConstraints must be an integer ≥ 0`                         | `nConstraints` is negative or not a whole number.                        |
+| `colorConstraints: participantsPerConstraint length … ≠ arity × nConstraints …` | `participantsPerConstraint` doesn't have `arity × nConstraints` entries. |
 
 ## buildConstraintGroups
 
@@ -494,7 +494,7 @@ buildConstraintGroups(
 ): ConstraintGroup[]
 ```
 
-One [`ConstraintGroup`](#constraintgroup) per color. `solve(constraint)` runs at shader-build time with the constraint index (`uint` node), must emit TSL that projects that constraint and writes its particles, and may `Return()` early.
+Build one [`ConstraintGroup`](#constraintgroup) for each group in a coloring. `solve(constraint)` runs at shader-build time with the constraint index (a `uint` node). It must emit TSL that solves the constraint and writes its particles, and it may call `Return()` early.
 
 ## constraintKernels
 
@@ -505,7 +505,7 @@ constraintKernels(types: readonly ConstraintType[]): {
 }
 ```
 
-Schedule constraint types as [`MaterialKernels`](#materialkernels): `preSolve` holds each type's `resetLambdaKernel`; `solve` holds every type's group kernels, types in order, groups in order.
+Turn constraint types into [`MaterialKernels`](#materialkernels). `preSolve` holds each type's `resetLambdaKernel`. `solve` holds every type's group kernels, in order.
 
 ## xpbdDeltaLambda
 
@@ -518,18 +518,22 @@ xpbdDeltaLambda(args: {
 }): any
 ```
 
-Emit the XPBD multiplier update `Δλ = (−C − α̃λ) / (Σ wₖ|∇ₖC|² + α̃)` (Macklin et al. 2016, eq. 18) as a TSL float. The caller adds `Δλ` to `λ` and moves each particle by `wₖ ∇ₖC Δλ`.
+Emit the XPBD change `Δλ` in a constraint's Lagrange multiplier, as a TSL float. The caller adds `Δλ` to `λ` and moves each particle `k` by `wₖ ∇ₖC Δλ`, where `wₖ` is its inverse mass. The update is:
 
-| Argument           | Type      | Description                                  |
-| ------------------ | --------- | -------------------------------------------- | --- | ----------------------------------- |
-| `C`                | TSL float | Constraint value at the predicted positions. |
-| `sumGradSqInvMass` | TSL float | `Σ wₖ                                        | ∇ₖC | ²` over the constraint's particles. |
-| `alphaTilde`       | TSL float | `α / dt²`.                                   |
-| `lambdaCurrent`    | TSL float | `λ` accumulated so far this substep.         |
+```text
+Δλ = (−C − α̃λ) / (Σ wₖ |∇ₖC|² + α̃)
+```
+
+| Argument           | Type      | Description                                    |
+| ------------------ | --------- | ---------------------------------------------- |
+| `C`                | TSL float | Constraint value at the predicted positions.   |
+| `sumGradSqInvMass` | TSL float | `Σ wₖ ‖∇ₖC‖²` over the constraint's particles. |
+| `alphaTilde`       | TSL float | `α / dt²`.                                     |
+| `lambdaCurrent`    | TSL float | `λ` accumulated so far this substep.           |
 
 ## Accumulator
 
-Per-particle `vec3` sums built from fixed-point `i32` atomics, for scatter kernels (one thread per pair or contact) that need to add to particles concurrently. Integer sums are order-independent, so results repeat run to run. Usage: `add` in scatter kernels, then an apply kernel.
+Lets many GPU threads add to the same particle at once, as kernels that run one thread per pair or contact need to. Each particle gets a `vec3` sum stored as fixed-point `i32` atomics. Integer addition gives the same result in any order, so results repeat from run to run. Call `add` in your kernels, then run an apply kernel.
 
 ### Constructor
 
@@ -537,25 +541,25 @@ Per-particle `vec3` sums built from fixed-point `i32` atomics, for scatter kerne
 new Accumulator(particles: ParticleSystem, maxMagnitude: number)
 ```
 
-| Parameter      | Type                                         | Description                                                                |
-| -------------- | -------------------------------------------- | -------------------------------------------------------------------------- |
-| `particles`    | [`ParticleSystem`](./core.md#particlesystem) | One sum per particle slot.                                                 |
-| `maxMagnitude` | `number`                                     | Largest per-axis sum expected per apply, in the sum's units. Sets `scale`. |
+| Parameter      | Type                                         | Description                                                                        |
+| -------------- | -------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `particles`    | [`ParticleSystem`](./core.md#particlesystem) | One sum per particle slot.                                                         |
+| `maxMagnitude` | `number`                                     | Largest per-axis sum you expect between applies, in the sum's units. Sets `scale`. |
 
-| Throws                                       | When                                       |
-| -------------------------------------------- | ------------------------------------------ |
-| `Accumulator: maxMagnitude must be positive` | `maxMagnitude` is ≤ 0, `NaN`, or infinite. |
+| Throws                                       | When                                                  |
+| -------------------------------------------- | ----------------------------------------------------- |
+| `Accumulator: maxMagnitude must be positive` | `maxMagnitude` is zero, negative, `NaN`, or infinite. |
 
 ### Properties
 
 All read-only.
 
-| Property       | Type                                         | Description                                                                               |
-| -------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `particles`    | [`ParticleSystem`](./core.md#particlesystem) | Particle storage.                                                                         |
-| `scale`        | `number`                                     | Fixed-point ticks per unit: `floor(2³⁰ / maxMagnitude)`.                                  |
-| `delta`        | `StorageBufferNode<'int'>`                   | `3 × capacity` atomic sums, xyz per particle.                                             |
-| `overflowFlag` | `StorageBufferNode<'uint'>`                  | Atomic; 1 when an applied per-axis sum reached `2³⁰` ticks since the flag was last reset. |
+| Property       | Type                                         | Description                                                                                      |
+| -------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `particles`    | [`ParticleSystem`](./core.md#particlesystem) | Particle storage.                                                                                |
+| `scale`        | `number`                                     | Fixed-point ticks per unit, `floor(2³⁰ / maxMagnitude)`.                                         |
+| `delta`        | `StorageBufferNode<'int'>`                   | `3 × capacity` atomic sums, xyz for each particle.                                               |
+| `overflowFlag` | `StorageBufferNode<'uint'>`                  | Atomic. Set to 1 when an applied per-axis sum reached `2³⁰` ticks since the flag was last reset. |
 
 ### Methods
 
@@ -565,7 +569,7 @@ All read-only.
 add(index: any, value: any): void
 ```
 
-Emit TSL that adds `value` (`vec3` node), rounded to ticks, to particle `index`'s sum (`uint` node).
+Emit TSL that adds `value` (a `vec3` node), rounded to ticks, to the sum for particle `index` (a `uint` node).
 
 #### `buildResetKernel()`
 
@@ -573,7 +577,7 @@ Emit TSL that adds `value` (`vec3` node), rounded to ticks, to particle `index`'
 buildResetKernel(resetOverflow?: boolean): ComputeNode
 ```
 
-Zero every sum and, unless `resetOverflow` is `false`, `overflowFlag`. Dispatches `3 × capacity` threads. Pass `false` to keep the flag across several resets and clear it with `buildResetOverflowKernel`.
+Return a kernel that zeroes every sum, and also `overflowFlag` unless `resetOverflow` is `false`. It dispatches `3 × capacity` threads. Pass `false` to keep the flag across several resets, then clear it with `buildResetOverflowKernel`.
 
 #### `buildResetOverflowKernel()`
 
@@ -581,7 +585,7 @@ Zero every sum and, unless `resetOverflow` is `false`, `overflowFlag`. Dispatche
 buildResetOverflowKernel(): ComputeNode
 ```
 
-Zero only `overflowFlag`. One thread.
+Return a one-thread kernel that zeroes only `overflowFlag`.
 
 #### `buildApplyKernel(targets, range?)`
 
@@ -592,7 +596,7 @@ buildApplyKernel(
 ): ComputeNode
 ```
 
-Add each particle's sum to the `xyz` of every target (keeping `w`), set `overflowFlag` on saturation, then zero the sum.
+Return a kernel that adds each particle's sum to the `xyz` of every target and then zeroes the sum. It keeps `w`, and sets `overflowFlag` if a sum saturated.
 
 | Parameter | Type                                                    | Default       | Description                   |
 | --------- | ------------------------------------------------------- | ------------- | ----------------------------- |
@@ -605,7 +609,7 @@ Add each particle's sum to the `xyz` of every target (keeping `w`), set `overflo
 readbackOverflow(): Promise<boolean>
 ```
 
-`true` if a sum saturated since `overflowFlag` was last reset. Stalls on the GPU.
+Return `true` if a sum saturated since `overflowFlag` was last reset. This waits for the GPU.
 
 #### `dispose()`
 
@@ -617,7 +621,7 @@ Free the sums and flag on the GPU. Kernels built from this accumulator can't run
 
 ## ApplyTarget
 
-A buffer for [`Accumulator.buildApplyKernel`](#buildapplykerneltargets-range) with an optional scale.
+A target buffer for [`Accumulator.buildApplyKernel`](#buildapplykerneltargets-range), with an optional scale.
 
 | Property | Type                        | Description                                                                                                   |
 | -------- | --------------------------- | ------------------------------------------------------------------------------------------------------------- |
@@ -639,27 +643,26 @@ An indexed triangle mesh as flat arrays.
 toTriangleMesh(mesh: BufferGeometry | TriangleMesh): TriangleMesh
 ```
 
-Read a geometry's `position` attribute and index into a new `TriangleMesh`; non-indexed geometry becomes a triangle soup. A `TriangleMesh` input is validated and copied.
+Copy a geometry's `position` attribute and index into a new `TriangleMesh`. Geometry without an index is read as separate triangles, three vertices each. If you pass a `TriangleMesh`, it's checked and copied.
 
-| Throws                                                        | When                                                           |
-| ------------------------------------------------------------- | -------------------------------------------------------------- |
-| `toTriangleMesh: expected a BufferGeometry or a TriangleMesh` | `mesh` is neither.                                             |
-| `toTriangleMesh: geometry has no position attribute`          | Geometry input without `position`.                             |
-| `toTriangleMesh: position attribute has itemSize …, need 3`   | Geometry `position` with fewer than 3 components.              |
-| `TriangleMesh: vertices length … is not a multiple of 3`      | `TriangleMesh` input only.                                     |
-| `TriangleMesh: indices length … is not a multiple of 3`       | Index count (or non-indexed vertex count) not a multiple of 3. |
-| `TriangleMesh: index … is out of range`                       | An index ≥ vertex count.                                       |
+| Throws                                                        | When                                                                                             |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `toTriangleMesh: expected a BufferGeometry or a TriangleMesh` | `mesh` is neither a `BufferGeometry` nor a `TriangleMesh`.                                       |
+| `toTriangleMesh: geometry has no position attribute`          | The geometry has no `position` attribute.                                                        |
+| `toTriangleMesh: position attribute has itemSize …, need 3`   | The geometry's `position` has fewer than 3 components.                                           |
+| `TriangleMesh: vertices length … is not a multiple of 3`      | The `TriangleMesh` you passed has a `vertices` length that isn't a multiple of 3.                |
+| `TriangleMesh: indices length … is not a multiple of 3`       | The index count isn't a multiple of 3, or for geometry without an index, the vertex count isn't. |
+| `TriangleMesh: index … is out of range`                       | An index points past the last vertex.                                                            |
 
 ## Limitations
 
-- `Simulation` builds its own material list; custom materials need a hand-built `SimLoop`.
-- `build` runs once in the `SimLoop` constructor; kernels can't be added or removed afterward.
-- The loop's grid uses the default `hashTableSize`; only its origin is configurable, through `SimLoopOptions.hashOrigin`.
-- Material kernels are dispatched with the thread count they were built with; the loop doesn't restrict them to a range.
+- You can't add or remove kernels after the `SimLoop` is constructed, because `build` runs only once.
+- You can't set the loop's `hashTableSize`, which is always the default. Only the grid's origin can be set, through `SimLoopOptions.hashOrigin`.
+- The loop doesn't limit a material's kernels to a range. Each kernel is dispatched with the thread count it was built with.
 - `solve` kernels never run when `SimLoopOptions.iterations` is 0.
-- Particles more than 512 cells from `hashOrigin` on any axis set `overflowFlag`; their queries still filter by distance but visit extra candidates.
-- `HashGrid.cellSize` is the construction value; changing `cellSizeUniform` doesn't update it.
-- `hashTableSize` is capped at 1,048,576 buckets.
-- A `NeighborList` keeps at most 64 neighbors per particle; the rest are dropped.
-- Constraint coloring runs on the CPU at build time; topology is fixed afterward.
-- `Accumulator` sums are fixed point: resolution `1 / scale`, saturation flagged at about `maxMagnitude` per axis, `i32` wraparound at about `2 × maxMagnitude`.
+- Particles more than 512 cells from `hashOrigin` on any axis set `overflowFlag`. Their queries still filter by distance, but they visit extra candidates.
+- Changing `cellSizeUniform` doesn't update `HashGrid.cellSize`, which keeps its construction value.
+- A grid can't have more than 1,048,576 buckets.
+- A `NeighborList` can't store more than 64 neighbors per particle. The rest are dropped.
+- You can't change which particles a constraint connects after it's built, because the grouping runs once on the CPU.
+- `Accumulator` sums have limited range and precision because they're fixed point. The resolution is `1 / scale`. Saturation is flagged at about `maxMagnitude` per axis, and the sum wraps around at about `2 × maxMagnitude`.

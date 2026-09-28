@@ -2,7 +2,7 @@
 
 # GasSystem
 
-Smoke from passive tracers. A [`FluidSystem`](./fluid-system.md) of air particles fills the volume and does the flow simulation; `GasSystem` optionally heats that air so it rises, and moves massless tracers with the air's velocity. The renderers draw the tracers.
+These are the low-level smoke classes. A [`FluidSystem`](./fluid-system.md) of air particles fills the volume and simulates the flow. `GasSystem` carries massless tracer particles along with that air, and can heat the air so it rises. `GasVolumeRenderer` and `GasSpriteRenderer` draw the tracers.
 
 ```ts
 import {
@@ -25,7 +25,7 @@ import {
 
 ## GasSystem
 
-A [`Material`](./extending.md#material) that owns the smoke tracers and, with `heatSources`, a temperature per air particle. Each substep it moves every live tracer by the kernel-weighted average velocity of the air particles within the fluid's `smoothingRadius` (Macklin et al. 2014, §7.2.1), then applies Boussinesq buoyancy `buoyancy · (T − T̄)` upward to the air, where `T̄` is the mean air temperature.
+A [`Material`](./extending.md#material) that moves smoke tracers with the air (Macklin et al. 2014, section 7.2.1). Each substep, every live tracer moves at the average velocity of the air particles within the fluid's `smoothingRadius`, with closer particles counting more. With `heatSources`, it also tracks each air particle's temperature and applies Boussinesq buoyancy, which pushes air up or down in proportion to how far it is from the average temperature.
 
 ```ts
 const air = new FluidSystem(particles, { viscosity: 0.02, vorticity: 0.06 });
@@ -51,50 +51,50 @@ new GasSystem(fluid: FluidSystem, options: GasSystemOptions)
 | Parameter | Type                                    | Description                                                                |
 | --------- | --------------------------------------- | -------------------------------------------------------------------------- |
 | `fluid`   | [`FluidSystem`](./fluid-system.md)      | The air. Tracers follow the velocities of particles in `fluid.range` only. |
-| `options` | [`GasSystemOptions`](#gassystemoptions) | See below. Required, for `capacity`.                                       |
+| `options` | [`GasSystemOptions`](#gassystemoptions) | Required, because `capacity` has no default.                               |
 
 | Throws                                             | When                                                                |
 | -------------------------------------------------- | ------------------------------------------------------------------- |
-| `GasSystem: capacity must be a positive integer`   | `capacity` is not an integer > 0.                                   |
-| `GasSystem: lifetime must be positive`             | `lifetime` is ≤ 0, `NaN`, or infinite.                              |
-| `GasSystem: buoyancy must be finite`               | `buoyancy` is not finite.                                           |
+| `GasSystem: capacity must be a positive integer`   | `capacity` isn't a positive integer.                                |
+| `GasSystem: lifetime must be positive`             | `lifetime` is zero, negative, `NaN`, or infinite.                   |
+| `GasSystem: buoyancy must be finite`               | `buoyancy` is `NaN` or infinite.                                    |
 | `GasSystem: cooling must be ≥ 0`                   | `cooling` is negative, `NaN`, or infinite.                          |
-| `GasSystem: buoyancy and cooling need heatSources` | `buoyancy` or `cooling` is given without a non-empty `heatSources`. |
+| `GasSystem: buoyancy and cooling need heatSources` | You gave `buoyancy` or `cooling` without a non-empty `heatSources`. |
 
 #### GasSystemOptions
 
-| Option        | Type                                     | Default  | Description                                                                                    |
-| ------------- | ---------------------------------------- | -------- | ---------------------------------------------------------------------------------------------- |
-| `capacity`    | `number`                                 | required | Most tracers alive at once. Fixes the size of every tracer buffer.                             |
-| `lifetime`    | `number`                                 | `5`      | Tracer lifetime, in s.                                                                         |
-| `bounds`      | `Box3`                                   | none     | Tracers outside this box are retired early. Cloned at construction.                            |
-| `heatSources` | readonly [`HeatSource`](#heatsource)`[]` | none     | Spheres that set air temperature to 1. A non-empty array enables air temperature and buoyancy. |
-| `buoyancy`    | `number`                                 | `3`      | Upward acceleration of air at temperature 1 above the mean, in m/s². Requires `heatSources`.   |
-| `cooling`     | `number`                                 | `0.8`    | Exponential cooling rate of air temperature, per s. Requires `heatSources`.                    |
+| Option        | Type                                     | Default  | Description                                                                                        |
+| ------------- | ---------------------------------------- | -------- | -------------------------------------------------------------------------------------------------- |
+| `capacity`    | `number`                                 | required | Most tracers alive at once. Fixes the size of every tracer buffer.                                 |
+| `lifetime`    | `number`                                 | `5`      | Tracer lifetime, in s.                                                                             |
+| `bounds`      | `Box3`                                   | none     | Tracers outside this box are retired early. Cloned at construction.                                |
+| `heatSources` | readonly [`HeatSource`](#heatsource)`[]` | none     | Spheres that set air temperature to 1. A non-empty array turns on air temperature and buoyancy.    |
+| `buoyancy`    | `number`                                 | `3`      | Upward acceleration of air whose temperature is 1 above the mean, in m/s². Requires `heatSources`. |
+| `cooling`     | `number`                                 | `0.8`    | Exponential cooling rate of air temperature, per s. Requires `heatSources`.                        |
 
 ### Properties
 
-| Property          | Type                                      | Access     | Description                                                                                                                                                 |
-| ----------------- | ----------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fluid`           | [`FluidSystem`](./fluid-system.md)        | read-only  | The air.                                                                                                                                                    |
-| `capacity`        | `number`                                  | read-only  | Tracer slots.                                                                                                                                               |
-| `lifetime`        | `number`                                  | read-only  | Tracer lifetime, in s.                                                                                                                                      |
-| `bounds`          | `Box3 \| undefined`                       | read-only  | Copy of `options.bounds`. Mutating it has no effect on the solver.                                                                                          |
-| `smokePositions`  | `StorageBufferNode<'vec4'>`               | read-only  | Tracer positions in `xyz`, in m. `capacity` entries.                                                                                                        |
-| `smokeVelocities` | `StorageBufferNode<'vec4'>`               | read-only  | Velocity each tracer moved with in the last substep, in m/s, in `xyz`.                                                                                      |
-| `smokeAge`        | `StorageBufferNode<'float'>`              | read-only  | Seconds since each tracer was released.                                                                                                                     |
-| `smokeAlive`      | `StorageBufferNode<'uint'>`               | read-only  | `1` for live tracers, `0` for free or retired slots.                                                                                                        |
-| `temperature`     | `StorageBufferNode<'float'> \| undefined` | read-only  | Temperature per air particle, indexed from `fluid.range.start`. Starts at 0. Present only with `heatSources`.                                               |
-| `buoyancy`        | `number`                                  | read/write | See `GasSystemOptions.buoyancy`, in m/s². Requires `heatSources`.                                                                                           |
-| `cooling`         | `number`                                  | read/write | See `GasSystemOptions.cooling`, per s. Requires `heatSources`.                                                                                              |
-| `aliveCount`      | `number`                                  | read-only  | Live tracers, counted on the CPU from release times plus pending emits. No GPU readback. Tracers retired by `bounds` still count until their lifetime ends. |
-| `neighborRadius`  | `number`                                  | read-only  | `fluid.smoothingRadius`, in m. Read by `SimLoop` to size the neighbor grid.                                                                                 |
+| Property          | Type                                      | Access     | Description                                                                                                                                                                                                  |
+| ----------------- | ----------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `fluid`           | [`FluidSystem`](./fluid-system.md)        | read-only  | The air.                                                                                                                                                                                                     |
+| `capacity`        | `number`                                  | read-only  | Tracer slots.                                                                                                                                                                                                |
+| `lifetime`        | `number`                                  | read-only  | Tracer lifetime, in s.                                                                                                                                                                                       |
+| `bounds`          | `Box3 \| undefined`                       | read-only  | A copy of `options.bounds`. Changing it has no effect.                                                                                                                                                       |
+| `smokePositions`  | `StorageBufferNode<'vec4'>`               | read-only  | Tracer positions in `xyz`, in m. `capacity` entries.                                                                                                                                                         |
+| `smokeVelocities` | `StorageBufferNode<'vec4'>`               | read-only  | Velocity each tracer moved with in the last substep, in m/s, in `xyz`.                                                                                                                                       |
+| `smokeAge`        | `StorageBufferNode<'float'>`              | read-only  | Seconds since each tracer was released.                                                                                                                                                                      |
+| `smokeAlive`      | `StorageBufferNode<'uint'>`               | read-only  | `1` for live tracers, `0` for free or retired slots.                                                                                                                                                         |
+| `temperature`     | `StorageBufferNode<'float'> \| undefined` | read-only  | Temperature of each air particle, indexed from `fluid.range.start`. Starts at 0. Present only with `heatSources`.                                                                                            |
+| `buoyancy`        | `number`                                  | read/write | See `GasSystemOptions.buoyancy`, in m/s². Requires `heatSources`.                                                                                                                                            |
+| `cooling`         | `number`                                  | read/write | See `GasSystemOptions.cooling`, per s. Requires `heatSources`.                                                                                                                                               |
+| `aliveCount`      | `number`                                  | read-only  | Number of live tracers, including ones queued by `emit`. It's counted on the CPU from release times, so reading it doesn't touch the GPU. Tracers retired by `bounds` still count until their lifetime ends. |
+| `neighborRadius`  | `number`                                  | read-only  | `fluid.smoothingRadius`, in m. `SimLoop` reads it to size the neighbor grid.                                                                                                                                 |
 
-| Throws                                               | When                                                              |
-| ---------------------------------------------------- | ----------------------------------------------------------------- |
-| `GasSystem: give heatSources to use air temperature` | `buoyancy` or `cooling` is read or written without `heatSources`. |
-| `GasSystem: buoyancy must be finite`                 | `buoyancy` is set to a non-finite value.                          |
-| `GasSystem: cooling must be ≥ 0`                     | `cooling` is set to a negative, `NaN`, or infinite value.         |
+| Throws                                               | When                                                           |
+| ---------------------------------------------------- | -------------------------------------------------------------- |
+| `GasSystem: give heatSources to use air temperature` | You read or set `buoyancy` or `cooling` without `heatSources`. |
+| `GasSystem: buoyancy must be finite`                 | You set `buoyancy` to `NaN` or an infinite value.              |
+| `GasSystem: cooling must be ≥ 0`                     | You set `cooling` to a negative, `NaN`, or infinite value.     |
 
 ### Methods
 
@@ -104,7 +104,7 @@ new GasSystem(fluid: FluidSystem, options: GasSystemOptions)
 emit(position: Vector3 | readonly [number, number, number]): boolean
 ```
 
-Queue one tracer at `position` (m), released at the start of the next `SimLoop.step`. Slots are reused in ring order, oldest first. Returns `false`, and drops the tracer, when the next slot's tracer is younger than `lifetime` or `capacity` tracers are already queued this step. A steady stream needs `capacity ≥ emission rate × lifetime`. Throws `GasSystem: already disposed` after `dispose()`.
+Queues one tracer at `position`, in m. It's released at the start of the next `SimLoop.step`. Slots are reused in ring order, oldest first. `emit` returns `false` and drops the tracer if the next slot's tracer is younger than `lifetime`, or if `capacity` tracers are already queued this step. For a steady stream, make `capacity` at least the emission rate times `lifetime`. Throws `GasSystem: already disposed` after `dispose()`.
 
 #### `update(dt)`
 
@@ -112,12 +112,12 @@ Queue one tracer at `position` (m), released at the start of the next `SimLoop.s
 update(dt: number): void
 ```
 
-Called by `SimLoop.step` with the step length in s. Uploads queued tracers and advances the CPU clock used by `emit` and `aliveCount`.
+`SimLoop.step` calls this with the step length in seconds. It uploads queued tracers and advances the clock that `emit` and `aliveCount` use.
 
-| Throws                                                                    | When                                                                  |
-| ------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| ``GasSystem: its FluidSystem must be in the same SimLoop's `materials` `` | First step after `build`, when `fluid` wasn't built by the same loop. |
-| `GasSystem: already disposed`                                             | After `dispose()`.                                                    |
+| Throws                                                                    | When                                                                                    |
+| ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| ``GasSystem: its FluidSystem must be in the same SimLoop's `materials` `` | `fluid` wasn't built by the same loop. This is checked on the first step after `build`. |
+| `GasSystem: already disposed`                                             | You called it after `dispose()`.                                                        |
 
 #### `build(context)`
 
@@ -125,11 +125,11 @@ Called by `SimLoop.step` with the step length in s. Uploads queued tracers and a
 build(context: SolverContext): MaterialKernels
 ```
 
-Called once by the `SimLoop` constructor. Returns the spawn kernel (`beforeStep`) and the advection and heat kernels (`postSolve`). A gas and its fluid can be built again by a later loop.
+The `SimLoop` constructor calls this once. It returns the spawn kernel as `beforeStep`, and the advection and heat kernels as `postSolve`. A gas and its fluid can be built again by a later loop.
 
-| Throws                                                        | When                                        |
-| ------------------------------------------------------------- | ------------------------------------------- |
-| ``GasSystem: list it before its FluidSystem in `materials` `` | `fluid` was already built by the same loop. |
+| Throws                                                        | When                                                 |
+| ------------------------------------------------------------- | ---------------------------------------------------- |
+| ``GasSystem: list it before its FluidSystem in `materials` `` | You listed the gas after its fluid in the same loop. |
 
 #### `dispose()`
 
@@ -137,7 +137,7 @@ Called once by the `SimLoop` constructor. Returns the spawn kernel (`beforeStep`
 dispose(): void
 ```
 
-Free the tracer, temperature, and spawn buffers and the kernels built by `build`. Dispose the `SimLoop` first. Later `emit` and `update` calls throw. Renderers drawing the tracers are disposed separately.
+Frees the tracer, temperature, and spawn buffers and the kernels built by `build`. Dispose the `SimLoop` first. After this, `emit` and `update` throw. Renderers that draw the tracers are disposed separately.
 
 ## HeatSource
 
@@ -148,11 +148,11 @@ interface HeatSource {
 }
 ```
 
-A sphere that sets the temperature of air particles inside it to 1 every substep. Overlapping sources don't add.
+A sphere that sets the temperature of air particles inside it to 1 every substep. Overlapping sources don't add together.
 
 | Property   | Type      | Description                                          |
 | ---------- | --------- | ---------------------------------------------------- |
-| `position` | `Vector3` | Center, in m. Mutate in place to move the source.    |
+| `position` | `Vector3` | Center, in m. Change it in place to move the source. |
 | `radius`   | `number`  | Radius, in m. Read once when the `SimLoop` is built. |
 
 ## SmokeTracers
@@ -168,20 +168,20 @@ interface SmokeTracers {
 }
 ```
 
-The tracer buffers both renderers read. [`GasSystem`](#gassystem-1) implements it; a custom emitter that fills the same buffers can be drawn too.
+The tracer buffers that both renderers read. [`GasSystem`](#gassystem-1) implements it. You can also draw tracers from your own emitter, as long as it fills the same buffers.
 
-| Property          | Type                         | Description                                                                                         |
-| ----------------- | ---------------------------- | --------------------------------------------------------------------------------------------------- |
-| `capacity`        | `number`                     | Entries in each buffer.                                                                             |
-| `lifetime`        | `number`                     | Tracer lifetime, in s. Renderers fade tracers by `age / lifetime`.                                  |
-| `smokePositions`  | `StorageBufferNode<'vec4'>`  | Positions in `xyz`, in m.                                                                           |
-| `smokeAge`        | `StorageBufferNode<'float'>` | Age, in s.                                                                                          |
-| `smokeAlive`      | `StorageBufferNode<'uint'>`  | `1` live, `0` free. Only live tracers are drawn.                                                    |
-| `smokeVelocities` | `StorageBufferNode<'vec4'>`  | Optional. Velocity in `xyz`, in m/s. Passed to `GasSpriteRenderer`'s `colorNode`; zero when absent. |
+| Property          | Type                         | Description                                                                                                 |
+| ----------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `capacity`        | `number`                     | Entries in each buffer.                                                                                     |
+| `lifetime`        | `number`                     | Tracer lifetime, in s. Renderers fade tracers by `age / lifetime`.                                          |
+| `smokePositions`  | `StorageBufferNode<'vec4'>`  | Positions in `xyz`, in m.                                                                                   |
+| `smokeAge`        | `StorageBufferNode<'float'>` | Age, in s.                                                                                                  |
+| `smokeAlive`      | `StorageBufferNode<'uint'>`  | `1` for live, `0` for free. Only live tracers are drawn.                                                    |
+| `smokeVelocities` | `StorageBufferNode<'vec4'>`  | Optional. Velocity in `xyz`, in m/s. `GasSpriteRenderer` passes it to `colorNode`, or zero if it's missing. |
 
 ## GasVolumeRenderer
 
-Lit volumetric smoke. Each `update()` splats live tracers into a density grid, blurs it, computes single-scattering light toward one direction, and writes two 3D textures; `object` ray marches them inside a box, clipped to scene depth.
+Draws the tracers as lit, volumetric smoke inside a box. Each `update()` turns the live tracers into a blurred density grid, lights it from one direction, and writes the result to two 3D textures. `object` ray-marches those textures and stops at the scene's depth, so solid objects hide the smoke behind them.
 
 ```ts
 const volume = new GasVolumeRenderer(smoke, {
@@ -207,35 +207,35 @@ new GasVolumeRenderer(gas: SmokeTracers, options: GasVolumeRendererOptions)
 | `gas`     | [`SmokeTracers`](#smoketracers)                         | Tracers to draw, usually a `GasSystem`. |
 | `options` | [`GasVolumeRendererOptions`](#gasvolumerendereroptions) | See below.                              |
 
-| Throws                                                    | When                                                          |
-| --------------------------------------------------------- | ------------------------------------------------------------- |
-| `GasVolumeRenderer: resolution must be integers in 4–128` | A `resolution` entry is not an integer in [4, 128].           |
-| `GasVolumeRenderer: steps must be an integer in 8–128`    | `steps` is not an integer in [8, 128].                        |
-| `GasVolumeRenderer: max must exceed min on every axis`    | `max − min` is ≤ 0 or `NaN` on any axis.                      |
-| `GasVolumeRenderer: edgeFade.sides must be in [0, 0.5]`   | `edgeFade.sides` is outside [0, 0.5] or `NaN`.                |
-| `GasVolumeRenderer: edgeFade.bottom must be in [0, 1]`    | `edgeFade.bottom` is outside [0, 1] or `NaN`. Same for `top`. |
+| Throws                                                    | When                                                                     |
+| --------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `GasVolumeRenderer: resolution must be integers in 4–128` | A `resolution` entry isn't an integer from 4 to 128.                     |
+| `GasVolumeRenderer: steps must be an integer in 8–128`    | `steps` isn't an integer from 8 to 128.                                  |
+| `GasVolumeRenderer: max must exceed min on every axis`    | `max` isn't greater than `min` on every axis.                            |
+| `GasVolumeRenderer: edgeFade.sides must be in [0, 0.5]`   | `edgeFade.sides` is outside [0, 0.5] or `NaN`.                           |
+| `GasVolumeRenderer: edgeFade.bottom must be in [0, 1]`    | `edgeFade.bottom` is outside [0, 1] or `NaN`. `top` throws the same way. |
 
 #### GasVolumeRendererOptions
 
-| Option           | Type                                | Default                                     | Description                                                                                                                                                                                               |
-| ---------------- | ----------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `renderer`       | `WebGPURenderer`                    | required                                    | Runs the grid compute passes.                                                                                                                                                                             |
-| `min`            | `Vector3`                           | required                                    | Minimum corner of the volume box, in m.                                                                                                                                                                   |
-| `max`            | `Vector3`                           | required                                    | Maximum corner of the volume box, in m.                                                                                                                                                                   |
-| `resolution`     | `readonly [number, number, number]` | `[32, 56, 32]`                              | Density grid voxels per axis, integers 4–128.                                                                                                                                                             |
-| `steps`          | `number`                            | `56`                                        | Ray-march samples per pixel, 8–128.                                                                                                                                                                       |
-| `density`        | `number`                            | `1`                                         | Opacity multiplier.                                                                                                                                                                                       |
-| `color`          | `number`                            | `0xd8dfe6`                                  | Color of fully lit smoke.                                                                                                                                                                                 |
-| `shadowColor`    | `number`                            | `0x3b4758`                                  | Color of fully self-shadowed smoke.                                                                                                                                                                       |
-| `lightDirection` | `Vector3`                           | `(-0.35, 0.8, 0.4)`                         | Direction toward the light. Normalized and copied.                                                                                                                                                        |
-| `edgeFade`       | `{ sides?, bottom?, top? }`         | `{ sides: 0.07, bottom: 0.025, top: 0.24 }` | Width of the smooth fade of density to zero near the box's walls, as a fraction of the box size: `sides` for the four vertical walls, `bottom` and `top` for the floor and ceiling. `0` turns a fade off. |
+| Option           | Type                                | Default                                     | Description                                                                                                                                                                                 |
+| ---------------- | ----------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `renderer`       | `WebGPURenderer`                    | required                                    | Runs the grid compute passes.                                                                                                                                                               |
+| `min`            | `Vector3`                           | required                                    | Minimum corner of the volume box, in m.                                                                                                                                                     |
+| `max`            | `Vector3`                           | required                                    | Maximum corner of the volume box, in m.                                                                                                                                                     |
+| `resolution`     | `readonly [number, number, number]` | `[32, 56, 32]`                              | Density grid voxels per axis, integers 4–128.                                                                                                                                               |
+| `steps`          | `number`                            | `56`                                        | Ray-march samples per pixel, 8–128.                                                                                                                                                         |
+| `density`        | `number`                            | `1`                                         | Opacity multiplier.                                                                                                                                                                         |
+| `color`          | `number`                            | `0xd8dfe6`                                  | Color of fully lit smoke.                                                                                                                                                                   |
+| `shadowColor`    | `number`                            | `0x3b4758`                                  | Color of fully self-shadowed smoke.                                                                                                                                                         |
+| `lightDirection` | `Vector3`                           | `(-0.35, 0.8, 0.4)`                         | Direction toward the light. Normalized and copied.                                                                                                                                          |
+| `edgeFade`       | `{ sides?, bottom?, top? }`         | `{ sides: 0.07, bottom: 0.025, top: 0.24 }` | How far density fades to zero near the box's walls, as a fraction of the box size. `sides` covers the four vertical walls, `bottom` the floor, and `top` the ceiling. `0` turns a fade off. |
 
 ### Properties
 
-| Property  | Type     | Access     | Description                                                                                                     |
-| --------- | -------- | ---------- | --------------------------------------------------------------------------------------------------------------- |
-| `object`  | `Mesh`   | read-only  | Box mesh to add to the scene. Back faces, no depth test or write, `frustumCulled = false`, named `'GasVolume'`. |
-| `density` | `number` | read/write | Opacity multiplier.                                                                                             |
+| Property  | Type     | Access     | Description                                                                                                                          |
+| --------- | -------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `object`  | `Mesh`   | read-only  | Box mesh to add to the scene. Draws back faces with no depth test or depth write. Named `'GasVolume'`, with `frustumCulled = false`. |
+| `density` | `number` | read/write | Opacity multiplier.                                                                                                                  |
 
 ### Methods
 
@@ -245,7 +245,7 @@ new GasVolumeRenderer(gas: SmokeTracers, options: GasVolumeRendererOptions)
 update(): Promise<void>
 ```
 
-Rebuild the density and light textures from the tracers. Call once per frame, after the simulation step and before rendering. Does nothing while `object.visible` is `false`.
+Rebuilds the density and light textures from the tracers. Call it once per frame, after the simulation step and before rendering. It does nothing while `object.visible` is `false`.
 
 #### `dispose()`
 
@@ -253,11 +253,11 @@ Rebuild the density and light textures from the tracers. Call once per frame, af
 dispose(): void
 ```
 
-Dispose the box geometry, material, and both 3D textures.
+Disposes the box geometry, the material, and both 3D textures.
 
 ## GasSpriteRenderer
 
-Draws each tracer as a camera-facing soft disk whose opacity decays with age: `initialOpacity · e^(−age / opacityTau)`. Reads the tracer buffers directly; no per-frame call.
+Draws each tracer as a soft disk that faces the camera and fades with age. A new tracer starts at `initialOpacity`, and its opacity falls by a factor of e every `opacityTau` seconds. The renderer reads the tracer buffers directly, so it needs no per-frame call.
 
 ### Constructor
 
@@ -270,11 +270,11 @@ new GasSpriteRenderer(gas: SmokeTracers, options?: GasSpriteRendererOptions)
 | `gas`     | [`SmokeTracers`](#smoketracers)                         | Tracers to draw. |
 | `options` | [`GasSpriteRendererOptions`](#gasspriterendereroptions) | See below.       |
 
-| Throws                                                | When                             |
-| ----------------------------------------------------- | -------------------------------- |
-| `GasSpriteRenderer: size must be positive`            | `size` ≤ 0, `NaN`, or infinite.  |
-| `GasSpriteRenderer: initialOpacity must be in (0, 1]` | `initialOpacity` outside (0, 1]. |
-| `GasSpriteRenderer: opacityTau must be positive`      | `opacityTau` ≤ 0 or `NaN`.       |
+| Throws                                                | When                                          |
+| ----------------------------------------------------- | --------------------------------------------- |
+| `GasSpriteRenderer: size must be positive`            | `size` is zero, negative, `NaN`, or infinite. |
+| `GasSpriteRenderer: initialOpacity must be in (0, 1]` | `initialOpacity` is outside (0, 1].           |
+| `GasSpriteRenderer: opacityTau must be positive`      | `opacityTau` is zero, negative, or `NaN`.     |
 
 #### GasSpriteRendererOptions
 
@@ -288,10 +288,10 @@ new GasSpriteRenderer(gas: SmokeTracers, options?: GasSpriteRendererOptions)
 
 ### Properties
 
-| Property | Type            | Access     | Description                                                                            |
-| -------- | --------------- | ---------- | -------------------------------------------------------------------------------------- |
-| `object` | `InstancedMesh` | read-only  | `capacity` instanced quads. Transparent, no depth write, `frustumCulled = false`.      |
-| `size`   | `number`        | read/write | Sprite width, in m. Throws `GasSpriteRenderer: size must be positive` like the option. |
+| Property | Type            | Access     | Description                                                                       |
+| -------- | --------------- | ---------- | --------------------------------------------------------------------------------- |
+| `object` | `InstancedMesh` | read-only  | `capacity` instanced quads. Transparent, no depth write, `frustumCulled = false`. |
+| `size`   | `number`        | read/write | Sprite width, in m. A bad value throws the same error as the option.              |
 
 ### Methods
 
@@ -301,20 +301,20 @@ new GasSpriteRenderer(gas: SmokeTracers, options?: GasSpriteRendererOptions)
 dispose(): void
 ```
 
-Dispose the quad geometry and material.
+Disposes the quad geometry and material.
 
 ## Limitations
 
-- `GasSystem` must come before its `FluidSystem` in the same loop's `materials`. The reverse throws when the `SimLoop` is built; a missing fluid throws on the first `step`.
-- Air and liquid don't mix in one `ParticleSystem`: a `SimLoop` has one gravity, and a fluid's density sum counts every particle within `smoothingRadius`, whatever its range. [`Simulation.addSmoke`](./simulation.md) refuses liquids, soft bodies, and cloth; the low-level API doesn't check.
-- Tracers with no air particle within `smoothingRadius` get zero velocity and stop. The air must fill the whole region smoke moves through.
-- The density solve only resists compression, so rising air can leave gaps; a small gravity on the air (around 1 m/s²) keeps it settled.
-- `capacity`, `lifetime`, `bounds`, and the list of heat sources are fixed after construction; source radii are fixed once the `SimLoop` is built.
+- You must list `GasSystem` before its `FluidSystem` in the same loop's `materials`.
+- You can't put air and liquid in one `ParticleSystem`. A `SimLoop` has only one gravity, and a fluid's density counts every particle within `smoothingRadius`, whatever its range. [`Simulation.addSmoke`](./simulation.md) refuses liquids, soft bodies, and cloth, but the low-level API doesn't check.
+- Tracers can't move where there's no air. A tracer with no air particle within `smoothingRadius` gets zero velocity and stops, so fill the whole region the smoke moves through with air.
+- Rising air can leave gaps, because the density solve only resists compression. A small gravity on the air, around 1 m/s², keeps it settled.
+- You can't change `capacity`, `lifetime`, `bounds`, or the list of heat sources after construction. A source's `radius` is fixed once the `SimLoop` is built.
 - A tracer retired early by `bounds` frees its slot only when its lifetime ends.
-- Mean air temperature is summed as 32-bit fixed point, 1/4096 per step. Above about 1.05 × 10⁶ air particles the step grows to keep the sum from overflowing, so the mean gets coarser (about 1/430 at 10⁷ particles).
-- `GasVolumeRenderer`: box, `resolution`, `steps`, `color`, `shadowColor`, `lightDirection`, and `edgeFade` are fixed at construction. Moving `object` doesn't move the volume.
-- `GasVolumeRenderer` fades density to zero near the walls (by default within 7% of the side walls, the bottom 2.5%, and the top 24% of the box); set `edgeFade` to change it.
-- `GasVolumeRenderer` ignores tracers outside the box and in its outermost voxel layer.
-- `GasVolumeRenderer.update()` cost scales with voxel count and `capacity`; fragment cost scales with `steps` and the box's screen area.
-- `GasSpriteRenderer` sprites aren't depth sorted, so overlapping sprites can blend in the wrong order.
-- `GasSpriteRenderer` draws all `capacity` instances every frame, live or not.
+- The mean air temperature is summed in 32-bit fixed point, in steps of 1/4096. Above about 1.05 million air particles, the step grows to keep the sum from overflowing, so the mean gets coarser. At 10 million particles the step is about 1/430.
+- You can't change the `GasVolumeRenderer` box, `resolution`, `steps`, `color`, `shadowColor`, `lightDirection`, or `edgeFade` after construction. Moving `object` doesn't move the volume.
+- `GasVolumeRenderer` fades smoke out near the box's walls, over the top 24% by default. Set `edgeFade` to change it.
+- `GasVolumeRenderer` ignores tracers outside the box and in its outermost layer of voxels.
+- The cost of `GasVolumeRenderer.update()` grows with voxel count and `capacity`. Drawing cost grows with `steps` and with how much of the screen the box covers.
+- `GasSpriteRenderer` doesn't sort sprites by depth, so overlapping sprites can blend in the wrong order.
+- `GasSpriteRenderer` draws all `capacity` instances every frame, including dead tracers.
