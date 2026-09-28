@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   Box3,
   BoxGeometry,
@@ -11,35 +11,94 @@ import {
 } from 'three';
 import { Simulation, createParticleRenderer } from '../../../src/index.js';
 
-// The high-level Simulation: it lays out every material at the given
-// particle size, couples them, and fails early with plain messages.
+// The high-level Simulation: it sizes particles from a budget or a radius,
+// lays out every material, couples them, and fails early with plain messages.
 
 const tank = () => new Box3(new Vector3(-0.3, 0, -0.2), new Vector3(0.3, 0.6, 0.2));
 
 describe('Simulation', () => {
-  it('fills a fluid box at the given particle size, within maxParticles', async () => {
+  it('fills a fluid box at the given particle size', async () => {
     const renderer = await createParticleRenderer();
     try {
-      const base = {
+      const sim = new Simulation({
         renderer,
         scene: new Scene(),
         camera: new PerspectiveCamera(),
         container: tank(),
         particleRadius: 0.01,
-      };
+      });
       // Clipped one radius inside the walls and filled on a 2 cm grid: 15 × 15 × 19.
-      const water = new Box3(new Vector3(-0.3, 0, -0.2), new Vector3(0.005, 0.305, 0.2));
-      const sim = new Simulation({ ...base, maxParticles: 5000 });
-      sim.addFluid({ box: water });
+      const water = sim.addFluid({
+        box: new Box3(new Vector3(-0.3, 0, -0.2), new Vector3(0.005, 0.305, 0.2)),
+      });
       await sim.step(1 / 60);
       expect(sim.particleCount).toBe(15 * 15 * 19);
+      expect(water.particleCount).toBe(15 * 15 * 19);
       expect(sim.particleRadius).toBe(0.01);
       sim.dispose();
-
-      const over = new Simulation({ ...base, maxParticles: 3000 });
-      over.addFluid({ box: water });
-      await expect(over.start()).rejects.toThrow(/needs 4275 particles.*maxParticles \(3000\)/);
     } finally {
+      renderer.dispose();
+    }
+  });
+
+  it('spends close to, and never more than, a particle budget', async () => {
+    const renderer = await createParticleRenderer();
+    try {
+      const scene = new Scene();
+      const ball = new Mesh(new SphereGeometry(0.08, 24, 16), new MeshStandardMaterial());
+      ball.position.set(0, 0.45, 0);
+      scene.add(ball);
+      const sim = new Simulation({
+        renderer,
+        scene,
+        camera: new PerspectiveCamera(),
+        container: tank(),
+        particles: 6000,
+      });
+      const water = sim.addFluid({
+        box: new Box3(new Vector3(-0.3, 0, -0.2), new Vector3(0, 0.3, 0.2)),
+      });
+      const body = sim.addSoftbody({ mesh: ball });
+      sim.addSphere({ radius: 0.05, center: new Vector3(-0.15, 0.1, 0) });
+      expect(sim.particleRadius).toBe(0);
+      await sim.start();
+      console.log(
+        `[simulation] ${sim.particleCount} particles, radius ${sim.particleRadius}, body ${body.particleCount}`,
+      );
+      expect(sim.particleCount).toBeLessThanOrEqual(6000);
+      expect(sim.particleCount).toBeGreaterThan(6000 * 0.95);
+      expect(water.particleCount + body.particleCount).toBe(sim.particleCount);
+      sim.dispose();
+    } finally {
+      renderer.dispose();
+    }
+  });
+
+  it('warns when a soft body gets too few particles to keep its shape', async () => {
+    const renderer = await createParticleRenderer();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const scene = new Scene();
+      const pebble = new Mesh(new SphereGeometry(0.04, 16, 12), new MeshStandardMaterial());
+      pebble.name = 'pebble';
+      pebble.position.set(0, 0.45, 0);
+      scene.add(pebble);
+      const sim = new Simulation({
+        renderer,
+        scene,
+        camera: new PerspectiveCamera(),
+        container: tank(),
+        particles: 2000,
+      });
+      sim.addFluid({ box: tank() });
+      sim.addSoftbody({ mesh: pebble });
+      await sim.start();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(/soft body "pebble" has \d+ particles/),
+      );
+      sim.dispose();
+    } finally {
+      warn.mockRestore();
       renderer.dispose();
     }
   });
@@ -59,7 +118,6 @@ describe('Simulation', () => {
         camera: new PerspectiveCamera(),
         container: tank(),
         particleRadius: 0.009,
-        maxParticles: 10000,
       });
       sim.addFluid({ box: new Box3(new Vector3(-0.3, 0, -0.2), new Vector3(0.3, 0.25, 0.2)) });
       const ball = sim.addSoftbody({ mesh: light, density: 300 });
@@ -96,10 +154,13 @@ describe('Simulation', () => {
         scene: new Scene(),
         camera: new PerspectiveCamera(),
         particleRadius: 0.02,
-        maxParticles: 10000,
       };
       expect(() => new Simulation({ ...base, particleRadius: 0 })).toThrow(/particleRadius/);
-      expect(() => new Simulation({ ...base, maxParticles: 0 })).toThrow(/maxParticles/);
+      expect(() => new Simulation({ ...base, particleRadius: undefined, particles: 2.5 })).toThrow(
+        /particles must be a positive integer/,
+      );
+      // @ts-expect-error: exactly one of the two is allowed.
+      expect(() => new Simulation({ ...base, particles: 5000 })).toThrow(/exactly one/);
       expect(() => new Simulation(base).addSmoke()).toThrow(/container/);
       expect(() => new Simulation(base).addFluid({})).toThrow(/box.*mesh/);
       await expect(new Simulation(base).step(1 / 60)).rejects.toThrow(/add a fluid/);
@@ -124,7 +185,6 @@ describe('Simulation', () => {
         scene: new Scene(),
         camera: new PerspectiveCamera(),
         particleRadius: 0.02,
-        maxParticles: 10000,
       };
 
       // Mixing smoke with other materials fails at the add call that causes it.

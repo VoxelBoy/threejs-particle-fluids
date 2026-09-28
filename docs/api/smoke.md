@@ -10,8 +10,7 @@ const smokeSim = new Simulation({
   scene,
   camera,
   container: new Box3(new Vector3(-0.5, 0, -0.5), new Vector3(0.5, 1.9, 0.5)),
-  particleRadius: 0.035,
-  maxParticles: 5000,
+  particles: 5000,
 });
 const smoke = smokeSim.addSmoke({ radius: 0.17 });
 ```
@@ -39,14 +38,15 @@ Adding smoke sets `gravity` to `(0, -1, 0)` unless `gravity` was passed to the c
 
 ### Properties
 
-| Property    | Type                           | Access     | Description                                                                      |
-| ----------- | ------------------------------ | ---------- | -------------------------------------------------------------------------------- |
-| `rate`      | `number`                       | read/write | Tracers per second. Values above `maxRate` are capped, with one console warning. |
-| `heat`      | `number`                       | read/write | m/s². `0` stops the air rising. Throws `Smoke.heat: must be finite` otherwise.   |
-| `cooling`   | `number`                       | read/write | 1/s. Throws `Smoke.cooling: must be finite and ≥ 0` otherwise.                   |
-| `opacity`   | `number`                       | read/write |                                                                                  |
-| `source`    | `Vector3`                      | read       | Live source position. Mutate in place to move it.                                |
-| `gasSystem` | [`GasSystem`](./gas-system.md) | read       | Underlying system. Throws before start.                                          |
+| Property        | Type                           | Access     | Description                                                                      |
+| --------------- | ------------------------------ | ---------- | -------------------------------------------------------------------------------- |
+| `particleCount` | `number`                       | read       | Air particles filling the container. `0` until the simulation starts.            |
+| `rate`          | `number`                       | read/write | Tracers per second. Values above `maxRate` are capped, with one console warning. |
+| `heat`          | `number`                       | read/write | m/s². `0` stops the air rising. Throws `Smoke.heat: must be finite` otherwise.   |
+| `cooling`       | `number`                       | read/write | 1/s. Throws `Smoke.cooling: must be finite and ≥ 0` otherwise.                   |
+| `opacity`       | `number`                       | read/write |                                                                                  |
+| `source`        | `Vector3`                      | read       | Live source position. Mutate in place to move it.                                |
+| `gasSystem`     | [`GasSystem`](./gas-system.md) | read       | Underlying system. Throws before start.                                          |
 
 ### Methods
 

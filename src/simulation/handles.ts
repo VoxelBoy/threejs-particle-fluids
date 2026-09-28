@@ -21,6 +21,7 @@ export class Fluid {
   /** @internal */ system: FluidSystem | undefined;
   /** @internal */ thick: ViscositySolver | undefined;
   /** @internal */ renderer: FluidSurfaceRenderer | undefined;
+  /** @internal */ count = 0;
 
   /** @internal */
   constructor(
@@ -75,6 +76,11 @@ export class Fluid {
     if (this.thick) this.thick.viscosity = value;
   }
 
+  /** Particles this liquid uses. 0 until the simulation starts. */
+  get particleCount(): number {
+    return this.count;
+  }
+
   /** Change how the liquid looks: `color`, `roughness`, `ior`, and more. */
   setAppearance(appearance: Partial<FluidAppearance>): void {
     Object.assign(this.look, appearance);
@@ -105,6 +111,7 @@ export class Smoke {
   /** @internal */ system: GasSystem | undefined;
   /** @internal */ renderer: GasVolumeRenderer | undefined;
   /** @internal */ carry = 0;
+  /** @internal */ count = 0;
   private warned = false;
 
   /** @internal */
@@ -164,6 +171,10 @@ export class Smoke {
     this.settings.opacity = value;
     if (this.renderer) this.renderer.density = value;
   }
+  /** Air particles filling the container. 0 until the simulation starts. */
+  get particleCount(): number {
+    return this.count;
+  }
   /** Where smoke is released and air is heated. Mutate it to move the source. */
   get source(): Vector3 {
     return this.settings.source;
@@ -197,6 +208,10 @@ export class Softbody {
     /** @internal */ readonly settings: { softness: number; readonly density: number },
   ) {}
 
+  /** Particles this body uses. 0 until the simulation starts. */
+  get particleCount(): number {
+    return this.count;
+  }
   /** Density in kg/m³, as given to `addSoftbody`. */
   get density(): number {
     return this.settings.density;
@@ -237,6 +252,7 @@ export class Cloth {
   /** @internal */ system: ClothSystem | undefined;
   /** @internal */ surfaceMesh: Mesh | undefined;
   /** @internal */ segments = 0;
+  /** @internal */ count = 0;
 
   /** @internal */
   constructor(
@@ -247,6 +263,10 @@ export class Cloth {
     },
   ) {}
 
+  /** Particles this cloth uses. 0 until the simulation starts. */
+  get particleCount(): number {
+    return this.count;
+  }
   /** Wind velocity in m/s. Mutate it to change the wind. */
   get wind(): Vector3 {
     return this.settings.wind;

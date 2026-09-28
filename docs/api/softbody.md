@@ -30,6 +30,7 @@ compliance = 10^(-6 + 3 × softness) × (particleCount / 200)
 
 | Property         | Type                                                | Access     | Description                                                       |
 | ---------------- | --------------------------------------------------- | ---------- | ----------------------------------------------------------------- |
+| `particleCount`  | `number`                                            | read       | Particles in this body. `0` until the simulation starts.          |
 | `softness`       | `number`                                            | read/write | Live.                                                             |
 | `density`        | `number`                                            | read       | Fixed at creation.                                                |
 | `source`         | `Mesh`                                              | read       | The mesh passed in. Hidden while the simulation runs.             |

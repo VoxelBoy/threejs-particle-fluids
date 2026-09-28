@@ -2,18 +2,19 @@
 
 # Guide
 
-Setting up a scene with [`Simulation`](api/simulation.md).
+How to set up a scene with [`Simulation`](api/simulation.md).
 
 1. [Requirements](#requirements)
 2. [First scene](#first-scene)
-3. [Choosing particle size and count](#choosing-particle-size-and-count)
-4. [Frame loop](#frame-loop)
-5. [Lighting](#lighting)
-6. [Combining materials](#combining-materials)
-7. [Smoke next to liquid](#smoke-next-to-liquid)
-8. [Loading](#loading)
-9. [Debugging](#debugging)
-10. [Low-level API](#low-level-api)
+3. [Choosing a particle count](#choosing-a-particle-count)
+4. [Using your own meshes](#using-your-own-meshes)
+5. [Frame loop](#frame-loop)
+6. [Lighting](#lighting)
+7. [Combining materials](#combining-materials)
+8. [Smoke next to liquid](#smoke-next-to-liquid)
+9. [Loading](#loading)
+10. [Debugging](#debugging)
+11. [Low-level API](#low-level-api)
 
 ## Requirements
 
@@ -30,7 +31,7 @@ npm install threejs-particle-fluids three
 
 ## First scene
 
-A block of water collapsing in a 1 × 0.8 × 0.6 m tank.
+This scene drops a block of water into a tank 1 m wide, 0.8 m tall, and 0.6 m deep.
 
 ```ts
 import { Box3, Box3Helper, DirectionalLight, PerspectiveCamera, Scene, Vector3 } from 'three';
@@ -55,14 +56,7 @@ camera.lookAt(0, 0.3, 0);
 const container = new Box3(new Vector3(-0.5, 0, -0.3), new Vector3(0.5, 0.8, 0.3));
 scene.add(new Box3Helper(container));
 
-const sim = new Simulation({
-  renderer,
-  scene,
-  camera,
-  container,
-  particleRadius: 0.014,
-  maxParticles: 5000,
-});
+const sim = new Simulation({ renderer, scene, camera, container, particles: 5000 });
 sim.addFluid({ box: new Box3(new Vector3(-0.5, 0, -0.3), new Vector3(-0.1, 0.5, 0.3)) });
 
 async function frame() {
@@ -73,78 +67,61 @@ async function frame() {
 requestAnimationFrame(frame);
 ```
 
-The pattern:
+Every scene follows the same pattern. Create a `Simulation`, add what you want to it, then call `sim.step()` before each render. You can add [liquid](api/fluid.md), [soft bodies](api/softbody.md), [cloth](api/cloth.md), [smoke](api/smoke.md), and [obstacles](api/simulation.md#addflooroptions). The simulation adds its own meshes to your scene, so there's nothing else to draw.
 
-1. `new Simulation({ ... })`
-2. `add*` calls: [`addFluid`](api/fluid.md), [`addSoftbody`](api/softbody.md), [`addCloth`](api/cloth.md), [`addSmoke`](api/smoke.md), and [obstacles](api/simulation.md#addflooroptions).
-3. `await sim.step()` then `renderer.render()` every frame.
+A runnable version is in [`examples/fluid.ts`](../examples/fluid.ts).
 
-The simulation adds its own meshes to `scene`. Runnable version: [`examples/fluid.ts`](../examples/fluid.ts).
+## Choosing a particle count
 
-## Choosing particle size and count
+`particles` is the total number of particles in the simulation. More particles give finer detail but make every frame slower, so use the lowest number that looks good. 5,000 is a reasonable place to start. Test on the slowest device you plan to support.
 
-Both are required. Nothing is chosen for you.
+All particles are the same size, so big objects get more of them than small ones. In a large tank of water, a small soft body might get only a few dozen particles and look blocky. The console warns you when this happens, and each object's `particleCount` shows how many it got.
 
-- **`particleRadius`** sets resolution. Particles sit `2r` apart. Thin features (soft body limbs, splashes, cloth folds) need several particles across.
-- **`maxParticles`** is a hard cap. If the scene needs more particles than this at your radius, `start()` throws and the message says how many it needed.
+To set the particle size yourself, pass `particleRadius` in metres instead of `particles`.
 
-Estimate the count before picking values:
+## Using your own meshes
 
-| Content        | Particles                         |
-| -------------- | --------------------------------- |
-| Box of liquid  | `volume / (2r)³`                  |
-| Soft body mesh | `meshVolume / (2r)³`              |
-| `w × h` cloth  | `(w / 2.2r + 1) × (h / 2.2r + 1)` |
-| Smoke          | `containerVolume / (2r)³`         |
+`addSoftbody`, `addFluid({ mesh })`, and `addMesh` all take an ordinary three.js mesh. The first two turn it into particles when the simulation starts. The mesh's bounding box is filled with a grid of particles, one particle width apart, and every grid point inside the mesh is kept.
 
-| Scene                         | `particleRadius` | Particles |
-| ----------------------------- | ---------------- | --------- |
-| 0.4 × 0.5 × 0.6 m water block | 0.014            | ~4,800    |
-| 1.2 × 1.2 m cloth             | 0.01             | ~3,100    |
-| 1 × 1.9 × 1 m smoke container | 0.035            | ~4,400    |
+For this to work, the mesh has to be closed, with no holes in its surface. Parts thinner than about one particle width fall between grid points and disappear. A soft body keeps only its largest connected piece, so a separate hat or eye is dropped.
 
-Halving the radius multiplies volume particle counts by 8.
+A soft body doesn't draw its particles. The simulation hides your mesh and draws a copy that bends with them, where each vertex follows its four nearest particles. The surface keeps all of its detail, even when the particles behind it are coarse.
 
-Frame cost grows with particle count and substeps. Liquid touching moving soft bodies or cloth is the most expensive combination. There is no count that runs well everywhere. Start low (a few thousand), measure on the slowest hardware you target, then raise it. Read the actual count from `sim.particleCount` after `start()`.
+`addMesh` works differently. It doesn't make particles. It turns the mesh into a solid obstacle, which follows the mesh as you move it.
+
+Filling and baking meshes happens on the CPU when the simulation starts. Detailed meshes make loading slower but don't affect the frame rate after that.
 
 ## Frame loop
 
-- Call `await sim.step()` once per frame, before `renderer.render()`.
-- With no argument, `step()` runs fixed 1/60 s steps to keep up with wall-clock time (at most 4 per call). Behavior is the same on 60 Hz and 120 Hz displays.
-- `step(1 / 60)` advances exactly one step. Use it for recording or tests. Don't pass the frame delta.
-- To pause, stop calling `step()`. After 250 ms without a call, the clock restarts instead of catching up.
-- `renderer.setAnimationLoop` with an async callback is safe: overlapping calls share one step.
+Call `await sim.step()` once per frame, before `renderer.render()`. Without an argument, `step()` runs as many 1/60 s steps as the time since the last frame calls for, up to four. The simulation runs at the same speed on 60 Hz and 120 Hz displays.
+
+`sim.step(1 / 60)` advances exactly one step, however long the frame took. Use it when recording video or in tests. Don't pass the frame's elapsed time, because steps of changing length make the simulation less stable.
+
+To pause, stop calling `step()`. When you start again after more than 250 ms, the simulation carries on from where it was instead of trying to catch up.
 
 ## Lighting
 
-- Liquid reflects `scene.environment`. Set it **before** the first `step()`; later changes aren't picked up.
-- Liquid takes its specular highlight from one directional light: a shadow-casting one if present, otherwise the first found.
-- Soft bodies and cloth use ordinary lit materials and need scene lights.
+Liquid reflects `scene.environment`, so set one or the water will look flat. It takes its highlight from a directional light, preferring one that casts shadows.
+
+Soft bodies and cloth are ordinary lit meshes, so they need lights like anything else in your scene.
 
 ## Combining materials
 
-Fluids, soft bodies, cloth, and obstacles in one `Simulation` interact with no extra setup.
+Liquid, soft bodies, cloth, and obstacles in the same simulation all push on each other. There's nothing to set up.
 
 ```ts
-const sim = new Simulation({
-  renderer,
-  scene,
-  camera,
-  container,
-  particleRadius: 0.016,
-  maxParticles: 6000,
-});
+const sim = new Simulation({ renderer, scene, camera, container, particles: 5000 });
 sim.addFluid({ box: water });
 sim.addSoftbody({ mesh: ball, density: 400 }); // floats
 sim.addSoftbody({ mesh: cube, density: 2000 }); // sinks
-sim.addSphere({ radius: 0.1, follow: paddle }); // moving obstacle
+sim.addSphere({ radius: 0.1, follow: paddle }); // moves with the paddle mesh
 ```
 
-Soft bodies and cloth must start inside the container and clear of obstacles and each other. Liquid is placed around them. See [`examples/floating.ts`](../examples/floating.ts) and [`examples/cloth.ts`](../examples/cloth.ts).
+Place soft bodies and cloth inside the container, away from obstacles and each other. Liquid fills in around them. See [`examples/floating.ts`](../examples/floating.ts) and [`examples/cloth.ts`](../examples/cloth.ts).
 
 ## Smoke next to liquid
 
-Smoke can't share a `Simulation` with liquid, soft bodies, or cloth. Use two, and step both:
+Smoke can't share a simulation with liquid, soft bodies, or cloth. To have both in one scene, create a second simulation for the smoke and step both each frame:
 
 ```ts
 const smokeSim = new Simulation({
@@ -152,8 +129,7 @@ const smokeSim = new Simulation({
   scene,
   camera,
   container: new Box3(new Vector3(1, 0, -0.5), new Vector3(2, 1.9, 0.5)),
-  particleRadius: 0.035,
-  maxParticles: 5000,
+  particles: 5000,
 });
 smokeSim.addSmoke();
 
@@ -167,11 +143,11 @@ async function frame() {
 
 ## Loading
 
-The first `step()` (or `start()`) voxelizes meshes and bakes `addMesh` distance fields on the main thread. Shaders compile on the first step and first render. To show a loading screen:
+The first step does the setup work: it fills meshes with particles, bakes obstacles, and compiles shaders. This blocks the page, so show a loading screen first and give the browser time to draw it:
 
 ```ts
 showLoadingScreen();
-await new Promise(requestAnimationFrame); // let the browser draw it
+await new Promise(requestAnimationFrame);
 await new Promise(requestAnimationFrame);
 await sim.start();
 await sim.step(1 / 60);
@@ -181,28 +157,30 @@ hideLoadingScreen();
 
 ## Debugging
 
+To see what's being simulated, draw the particles instead of the surfaces:
+
 ```ts
 sim.showParticles = true;
 ```
 
-Hides the rendered surfaces and draws raw particles. Use it to check mesh filling, starting positions, and tunneling.
+This shows whether a mesh filled the way you expected and whether anything is passing through something else.
 
-| Symptom                                   | Fix                                                                                                                  |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| Nothing visible                           | Await `step()` before rendering. Check the camera (units are metres). Add a `container` or `addFloor()`.             |
-| Liquid looks flat                         | Set `scene.environment` before the first step.                                                                       |
-| Liquid disappears as it spreads           | Give a `container` covering everywhere it flows.                                                                     |
-| Objects pass through obstacles            | Thicker or slower obstacles, or raise `substeps`.                                                                    |
-| Liquid is springy                         | Raise `substeps`.                                                                                                    |
-| Soft bodies are blocky or lose thin parts | Lower `particleRadius` (and raise `maxParticles`).                                                                   |
-| Cloth leaks liquid                        | Raise cloth `weight`.                                                                                                |
-| Slow                                      | Raise `particleRadius`, lower `substeps`, cap pixel ratio (`renderer.setPixelRatio(Math.min(devicePixelRatio, 2))`). |
+| Problem                                   | Fix                                                                                                                    |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Nothing shows up                          | Await `step()` before rendering. Units are metres, so check the camera distance. Add a `container` or `addFloor()`.    |
+| Liquid looks flat                         | Set `scene.environment`.                                                                                               |
+| Liquid disappears as it spreads           | Make the `container` cover everywhere the liquid can go.                                                               |
+| Things pass through obstacles             | Make the obstacles thicker or slower, or raise `substeps`.                                                             |
+| Liquid looks springy                      | Raise `substeps`.                                                                                                      |
+| Soft bodies are blocky or lose thin parts | Raise `particles`, or use less liquid around them.                                                                     |
+| Cloth leaks liquid                        | Raise the cloth's `weight`.                                                                                            |
+| Frames are slow                           | Lower `particles` or `substeps`, and cap the pixel ratio with `renderer.setPixelRatio(Math.min(devicePixelRatio, 2))`. |
 
-All error messages are listed in [Simulation › Errors](api/simulation.md#errors).
+Every error message is listed under [Simulation › Errors](api/simulation.md#errors).
 
 ## Low-level API
 
-`Simulation` is built from exported classes. Use them for emitters, custom forces, custom renderers, rigid bodies, or settings `Simulation` doesn't expose.
+`Simulation` is built from classes that are also exported. Use them when you need something it doesn't offer, such as pouring liquid in over time, custom forces, rigid bodies, or your own renderers.
 
 ```ts
 const particles = new ParticleSystem(renderer, init.length, radius);
@@ -214,6 +192,6 @@ const loop = new SimLoop(particles, { substeps: 3, materials: [fluid], colliders
 await loop.step(1 / 60);
 ```
 
-Start at [Core](api/core.md). Full example: [`examples/low-level.ts`](../examples/low-level.ts). The demo presets in [`demo/presets/`](../demo/presets) are larger low-level scenes.
+Start with the [Core](api/core.md) reference. [`examples/low-level.ts`](../examples/low-level.ts) is a complete scene, and the demo presets in [`demo/presets/`](../demo/presets) are larger ones.
 
-From a running `Simulation`, the underlying objects are available after `start()`: `sim.particleSystem`, `sim.loop`, `fluid.fluidSystem`, `fluid.surface`, `softbody.softbodySystem`, `cloth.clothSystem`, `smoke.gasSystem`.
+If you only need one setting that `Simulation` doesn't expose, you can reach the objects it built after `start()`. They are `sim.particleSystem`, `sim.loop`, `fluid.fluidSystem`, `fluid.surface`, `softbody.softbodySystem`, `cloth.clothSystem`, and `smoke.gasSystem`.

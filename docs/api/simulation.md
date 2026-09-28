@@ -54,32 +54,26 @@ new Simulation(options: SimulationOptions)
 
 ### SimulationOptions
 
-| Option           | Type             | Default                                  | Description                                                                        |
-| ---------------- | ---------------- | ---------------------------------------- | ---------------------------------------------------------------------------------- |
-| `renderer`       | `WebGPURenderer` | required                                 | From [`createParticleRenderer`](#createparticlerenderer).                          |
-| `scene`          | `Scene`          | required                                 | Scene the surfaces are added to. Liquid reflects `scene.environment`.              |
-| `camera`         | `Camera`         | required                                 | Camera the liquid surface is ray-marched from.                                     |
-| `particleRadius` | `number`         | required                                 | Radius of every particle, m. Particles are placed `2 × particleRadius` apart.      |
-| `maxParticles`   | `number`         | required                                 | Upper limit on the total particle count. The build throws if the scene needs more. |
-| `container`      | `Box3`           | none                                     | Walls on the floor and four sides. Required for smoke.                             |
-| `closed`         | `boolean`        | `false`                                  | Adds a lid to `container`. Always on with smoke.                                   |
-| `gravity`        | `Vector3`        | `(0, -9.81, 0)`; `(0, -1, 0)` with smoke | m/s². Copied; change it later through [`gravity`](#properties).                    |
-| `substeps`       | `number`         | computed                                 | Solver substeps per 1/60 s step. See [Substeps](#substeps).                        |
+| Option           | Type             | Default                                  | Description                                                             |
+| ---------------- | ---------------- | ---------------------------------------- | ----------------------------------------------------------------------- |
+| `renderer`       | `WebGPURenderer` | required                                 | From [`createParticleRenderer`](#createparticlerenderer).               |
+| `scene`          | `Scene`          | required                                 | Scene the surfaces are added to. Liquid reflects `scene.environment`.   |
+| `camera`         | `Camera`         | required                                 | Camera the liquid surface is ray-marched from.                          |
+| `particles`      | `number`         | one of these two                         | Total particle budget. See [Sizing particles](#sizing-particles).       |
+| `particleRadius` | `number`         | one of these two                         | Radius of every particle, m. See [Sizing particles](#sizing-particles). |
+| `container`      | `Box3`           | none                                     | Walls on the floor and four sides. Required for smoke.                  |
+| `closed`         | `boolean`        | `false`                                  | Adds a lid to `container`. Always on with smoke.                        |
+| `gravity`        | `Vector3`        | `(0, -9.81, 0)`; `(0, -1, 0)` with smoke | m/s². Copied; change it later through [`gravity`](#properties).         |
+| `substeps`       | `number`         | computed                                 | Solver substeps per 1/60 s step. See [Substeps](#substeps).             |
 
-#### Particle count
+#### Sizing particles
 
-`particleRadius` and `maxParticles` are both required. Nothing is sized automatically. The count at a given radius is:
+Every particle in a simulation has the same size. Set it in one of two ways:
 
-| Content                 | Particles                                                                                          |
-| ----------------------- | -------------------------------------------------------------------------------------------------- |
-| Fluid box               | `volume / (2r)³`, after clipping to the container and removing space taken by obstacles and solids |
-| Fluid or soft body mesh | `volume / (2r)³` (voxelized)                                                                       |
-| Cloth `w × h`           | `(round(w / 2.2r) + 1) × (round(h / 2.2r) + 1)`                                                    |
-| Smoke                   | `containerVolume / (2r)³` (air fills the container)                                                |
+- **`particles`** sets a budget. When the simulation starts, it lays everything out and adjusts the particle size until the total fits within the budget, usually within a few percent of it. Each fluid, soft body, and cloth gets a share in proportion to its volume or area.
+- **`particleRadius`** sets the size in metres. The count then follows from what you add: a box of liquid with volume `V` holds about `V / (2r)³` particles, and a `w × h` cloth about `(w / 2.2r) × (h / 2.2r)`.
 
-Example: a 0.4 × 0.5 × 0.6 m block of water at `r = 0.014` is about 4,800 particles.
-
-GPU cost grows with particle count and substeps. Test on the slowest hardware you target. [`particleCount`](#properties) reports the actual count after `start()`.
+Frame time grows with the particle count. After `start()`, [`particleCount`](#properties) and [`particleRadius`](#properties) report what was chosen, and each handle's `particleCount` shows its share. A soft body with fewer than 100 particles, or a cloth with fewer than 10 along a side, logs a console warning.
 
 #### Substeps
 
@@ -97,7 +91,7 @@ Each substep costs about as much as the first. Raise it for fast or thin obstacl
 | Property         | Type                                         | Access     | Description                                                                                    |
 | ---------------- | -------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------- |
 | `gravity`        | `Vector3`                                    | read       | Live gravity vector, m/s². Mutate it in place; applied on the next step.                       |
-| `particleRadius` | `number`                                     | read       | The `particleRadius` option.                                                                   |
+| `particleRadius` | `number`                                     | read       | Radius of every particle, m. With `particles`, `0` until the simulation starts.                |
 | `particleCount`  | `number`                                     | read       | Particles in use. `0` until the simulation starts.                                             |
 | `showParticles`  | `boolean`                                    | read/write | Hide the rendered surfaces and draw raw particles. Default `false`.                            |
 | `particleSystem` | [`ParticleSystem`](./core.md#particlesystem) | read       | The underlying particle storage. Throws before the simulation starts.                          |
@@ -240,22 +234,22 @@ Removes everything the simulation added to the scene, disposes its renderers, ge
 
 ## Errors
 
-| Message                                                                                  | Cause                                                                                    |
-| ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `Simulation: particleRadius must be a positive number of metres, …`                      | Missing or invalid `particleRadius`.                                                     |
-| `Simulation: maxParticles must be a positive integer, …`                                 | Missing or invalid `maxParticles`.                                                       |
-| `Simulation: the scene needs N particles at particleRadius r, above maxParticles (M). …` | Raise `maxParticles`, raise `particleRadius`, or add less. Thrown by `start()`/`step()`. |
-| `Simulation: <call> must happen before the first step() or start()`                      | An `add*` call after the simulation started.                                             |
-| `Simulation: add a fluid, smoke, soft body, or cloth before stepping`                    | Only obstacles were added.                                                               |
-| `addFluid: give either `box`or`mesh``                                                    | Both or neither given.                                                                   |
-| `addFluid: the fluid has no room; check its box and the container`                       | The box is outside the container or fully occupied.                                      |
-| `addSoftbody: the mesh is too small for the particle size`                               | The mesh voxelizes to zero particles. Lower `particleRadius` or scale the mesh up.       |
-| `addSmoke: smoke needs a `container` for the air to fill`                                | No `container`.                                                                          |
-| `addSmoke: a simulation can have one smoke source`                                       | `addSmoke` called twice.                                                                 |
-| `<call>: gas and liquid can’t be simulated together, …`                                  | Smoke mixed with fluid, soft bodies, or cloth.                                           |
-| `Simulation.particleSystem is created on the first step` (also `Simulation.loop`)        | Accessed before `start()`.                                                               |
-| `bakeMeshToSdf: mesh appears non-watertight — …`                                         | `addMesh` mesh has holes.                                                                |
-| `SDFCollider.setTransform: scale must be uniform`                                        | `addMesh` mesh has non-uniform scale.                                                    |
+| Message                                                                           | Cause                                                                                                  |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `Simulation: give exactly one of `particles`or`particleRadius``                   | Both or neither given.                                                                                 |
+| `Simulation: particles must be a positive integer, …`                             | Invalid `particles`.                                                                                   |
+| `Simulation: particleRadius must be a positive number of metres, …`               | Invalid `particleRadius`.                                                                              |
+| `Simulation: <call> must happen before the first step() or start()`               | An `add*` call after the simulation started.                                                           |
+| `Simulation: add a fluid, smoke, soft body, or cloth before stepping`             | Only obstacles were added.                                                                             |
+| `addFluid: give either `box`or`mesh``                                             | Both or neither given.                                                                                 |
+| `addFluid: the fluid has no room; check its box and the container`                | The box is outside the container or fully occupied.                                                    |
+| `addSoftbody: the mesh is too small for the particle size`                        | The mesh voxelizes to zero particles. Raise `particles`, lower `particleRadius`, or scale the mesh up. |
+| `addSmoke: smoke needs a `container` for the air to fill`                         | No `container`.                                                                                        |
+| `addSmoke: a simulation can have one smoke source`                                | `addSmoke` called twice.                                                                               |
+| `<call>: gas and liquid can’t be simulated together, …`                           | Smoke mixed with fluid, soft bodies, or cloth.                                                         |
+| `Simulation.particleSystem is created on the first step` (also `Simulation.loop`) | Accessed before `start()`.                                                                             |
+| `bakeMeshToSdf: mesh appears non-watertight — …`                                  | `addMesh` mesh has holes.                                                                              |
+| `SDFCollider.setTransform: scale must be uniform`                                 | `addMesh` mesh has non-uniform scale.                                                                  |
 
 Errors thrown during the build reject the promise returned by `start()` or `step()`.
 

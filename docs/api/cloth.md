@@ -43,12 +43,13 @@ Set at construction: stretch tolerance `0.06` (fixed), drag `0.18`, lift `0.02`,
 
 ### Properties
 
-| Property      | Type                               | Access     | Description                                                               |
-| ------------- | ---------------------------------- | ---------- | ------------------------------------------------------------------------- |
-| `wind`        | `Vector3`                          | read       | Live wind, m/s. Mutate in place. Copied to `clothSystem.wind` every step. |
-| `softness`    | `number`                           | read/write | Live. Setting it overwrites `clothSystem.bendCompliance`.                 |
-| `mesh`        | `Mesh`                             | read       | Cloth surface in the scene. Throws before start.                          |
-| `clothSystem` | [`ClothSystem`](./cloth-system.md) | read       | Underlying solver. Throws before start.                                   |
+| Property        | Type                               | Access     | Description                                                               |
+| --------------- | ---------------------------------- | ---------- | ------------------------------------------------------------------------- |
+| `particleCount` | `number`                           | read       | Particles in this cloth. `0` until the simulation starts.                 |
+| `wind`          | `Vector3`                          | read       | Live wind, m/s. Mutate in place. Copied to `clothSystem.wind` every step. |
+| `softness`      | `number`                           | read/write | Live. Setting it overwrites `clothSystem.bendCompliance`.                 |
+| `mesh`          | `Mesh`                             | read       | Cloth surface in the scene. Throws before start.                          |
+| `clothSystem`   | [`ClothSystem`](./cloth-system.md) | read       | Underlying solver. Throws before start.                                   |
 
 ## Limitations
 

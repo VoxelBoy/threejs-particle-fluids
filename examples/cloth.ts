@@ -15,8 +15,7 @@ const ball = new Mesh(
 );
 scene.add(ball);
 
-// A 1.2 m square of cloth at this radius takes about 3,100 particles.
-const sim = new Simulation({ renderer, scene, camera, particleRadius: 0.01, maxParticles: 4000 });
+const sim = new Simulation({ renderer, scene, camera, particles: 3000 });
 const curtain = sim.addCloth({
   width: 1.2,
   height: 1.2,

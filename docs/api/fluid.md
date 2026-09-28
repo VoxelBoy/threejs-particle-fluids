@@ -34,6 +34,7 @@ Particles are placed on a `2 × particleRadius` grid, skipping positions inside 
 
 | Property         | Type                                                             | Access     | Description                                                    |
 | ---------------- | ---------------------------------------------------------------- | ---------- | -------------------------------------------------------------- |
+| `particleCount`  | `number`                                                         | read       | Particles in this liquid. `0` until the simulation starts.     |
 | `viscosity`      | `number`                                                         | read/write | See [FluidOptions](#fluidoptions).                             |
 | `surfaceTension` | `number`                                                         | read/write |                                                                |
 | `vorticity`      | `number`                                                         | read/write |                                                                |

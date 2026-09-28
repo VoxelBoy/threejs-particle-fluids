@@ -27,8 +27,7 @@ const sim = new Simulation({
   scene,
   camera,
   container: new Box3(new Vector3(-0.5, 0, -0.3), new Vector3(0.5, 0.8, 0.3)),
-  particleRadius: 0.014, // m; particles are spaced 2r apart
-  maxParticles: 5000, // start() throws if the scene needs more
+  particles: 5000, // total budget; sets the cost of each step
 });
 sim.addFluid({ box: new Box3(new Vector3(-0.5, 0, -0.3), new Vector3(-0.1, 0.5, 0.3)) });
 

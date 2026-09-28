@@ -15,8 +15,7 @@ const sim = new Simulation({
   scene,
   camera,
   container: new Box3(new Vector3(-0.5, 0, -0.5), new Vector3(0.5, 1.9, 0.5)),
-  particleRadius: 0.035, // air fills the container: about 4,400 particles
-  maxParticles: 5000,
+  particles: 5000, // air particles filling the container
 });
 sim.addSmoke({ source: new Vector3(0, 0, 0), radius: 0.17 });
 

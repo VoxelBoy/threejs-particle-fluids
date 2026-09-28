@@ -15,8 +15,7 @@ const sim = new Simulation({
   scene,
   camera,
   container: new Box3(new Vector3(-0.5, 0, -0.3), new Vector3(0.5, 0.8, 0.3)),
-  particleRadius: 0.014, // the water block takes about 4,800 particles at this size
-  maxParticles: 5000,
+  particles: 5000,
 });
 sim.addFluid({
   box: new Box3(new Vector3(-0.5, 0, -0.3), new Vector3(-0.1, 0.5, 0.3)),

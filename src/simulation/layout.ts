@@ -19,6 +19,28 @@ export function worldGeometry(mesh: Mesh): BufferGeometry {
   return mesh.geometry.clone().applyMatrix4(mesh.matrixWorld);
 }
 
+/**
+ * The radius at which `volume` cubic metres filled at spacing `2r`, plus
+ * `area` square metres of cloth at spacing `clothSpacing · r`, take `budget`
+ * particles.
+ */
+export function radiusForBudget(
+  volume: number,
+  area: number,
+  clothSpacing: number,
+  budget: number,
+): number {
+  const count = (r: number) => volume / (2 * r) ** 3 + area / (clothSpacing * r) ** 2;
+  let low = 1e-5,
+    high = 10;
+  for (let i = 0; i < 80; i++) {
+    const mid = Math.sqrt(low * high);
+    if (count(mid) > budget) low = mid;
+    else high = mid;
+  }
+  return high;
+}
+
 /** A solid that liquid particles must not start inside. */
 export type Obstacle = (p: Vector3) => number;
 

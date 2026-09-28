@@ -7,6 +7,7 @@ import {
   PlaneGeometry,
   Quaternion,
   Vector3,
+  type BufferGeometry,
   type Camera,
   type InstancedMesh,
   type Mesh,
@@ -51,13 +52,14 @@ import {
   capsuleObstacle,
   clearOf,
   fillBox,
+  radiusForBudget,
   sdfObstacle,
   sphereObstacle,
   worldGeometry,
   type Obstacle,
 } from './layout.js';
 
-export interface SimulationOptions {
+interface SimulationBaseOptions {
   /** A renderer from {@link createParticleRenderer}. */
   readonly renderer: WebGPURenderer;
   /** Scene the simulation draws into. Liquids reflect its environment map and main directional light. */
@@ -71,23 +73,38 @@ export interface SimulationOptions {
   readonly container?: Box3;
   /** Put a lid on the container. Default `false`; smoke always gets one. */
   readonly closed?: boolean;
-  /**
-   * Radius of every particle in metres. Particles are laid out `2 × particleRadius`
-   * apart, so a box of liquid holds about `volume / (2r)³` of them. Smaller
-   * particles give finer detail and cost more.
-   */
-  readonly particleRadius: number;
-  /**
-   * The most particles the scene may use. The first step throws, with the
-   * count it needed, if everything added takes more than this at
-   * `particleRadius`. Cost scales with the particle count.
-   */
-  readonly maxParticles: number;
   /** Gravity in m/s². Default `(0, -9.81, 0)`, or `(0, -1, 0)` for smoke. Change it later with {@link Simulation.gravity}. */
   readonly gravity?: Vector3;
   /** Solver substeps per step. Default: chosen from the particle size and what's in the scene. */
   readonly substeps?: number;
 }
+
+/**
+ * Options for {@link Simulation}. Give exactly one of `particles` or
+ * `particleRadius`; every particle in a simulation shares one size.
+ */
+export type SimulationOptions = SimulationBaseOptions &
+  (
+    | {
+        /**
+         * The most particles to use in total. The simulation picks the
+         * smallest particle size at which everything added fits within this
+         * many, so it uses close to this many. Each fluid, soft body, and
+         * cloth gets a share in proportion to its volume or area.
+         */
+        readonly particles: number;
+        readonly particleRadius?: undefined;
+      }
+    | {
+        /**
+         * Radius of every particle in metres. Particles are spaced
+         * `2 × particleRadius` apart, so the count follows from the size of
+         * what's added.
+         */
+        readonly particleRadius: number;
+        readonly particles?: undefined;
+      }
+  );
 
 export interface FluidOptions {
   /** Fill this box with liquid. Give this or `mesh`. */
@@ -232,6 +249,27 @@ interface ClothEntry {
 
 /** Spacing of cloth particles in particle radii. Above 2, so neighbors never touch and cloth can fold onto itself. */
 const CLOTH_SPACING = 2.2;
+/** Below this many particles a soft body can't hold its shape's detail. */
+const MIN_SOFTBODY_PARTICLES = 100;
+/** Below this many particles along a side, cloth folds look faceted. */
+const MIN_CLOTH_SIDE = 10;
+
+/** Particle positions and the per-material pieces laid out at one radius. */
+interface Layout {
+  readonly radius: number;
+  readonly init: ParticleInit[];
+  readonly bodies: { readonly shape: ReturnType<typeof voxelize>; readonly start: number }[];
+  readonly cloths: {
+    readonly graph: ReturnType<typeof createClothGraph>;
+    readonly offset: number;
+    readonly columns: number;
+    readonly rows: number;
+  }[];
+  /** Soft body and cloth particles come first, in `[0, solidEnd)`. */
+  readonly solidEnd: number;
+  readonly fluidRanges: ParticleRange[];
+  readonly airRange: ParticleRange | undefined;
+}
 
 /**
  * The easy way in: say what you want, where, and the simulation takes care
@@ -244,8 +282,7 @@ const CLOTH_SPACING = 2.2;
  *   scene,
  *   camera,
  *   container: new Box3(min, max),
- *   particleRadius: 0.015,
- *   maxParticles: 5000,
+ *   particles: 5000,
  * });
  * sim.addFluid({ box: new Box3(new Vector3(-0.5, 0, -0.3), new Vector3(0, 0.5, 0.3)) });
  *
@@ -281,19 +318,23 @@ export class Simulation {
   private lastStepMs = -Infinity;
   private system: ParticleSystem | undefined;
   private simLoop: SimLoop | undefined;
+  private radius: number;
 
   constructor(options: SimulationOptions) {
-    if (!(options.particleRadius > 0) || !Number.isFinite(options.particleRadius)) {
-      throw new Error(
-        `Simulation: particleRadius must be a positive number of metres, got ${options.particleRadius}`,
-      );
+    const { particles, particleRadius } = options;
+    if ((particles === undefined) === (particleRadius === undefined)) {
+      throw new Error('Simulation: give exactly one of `particles` or `particleRadius`');
     }
-    if (!(options.maxParticles > 0) || !Number.isInteger(options.maxParticles)) {
+    if (particles !== undefined && !(Number.isInteger(particles) && particles > 0)) {
+      throw new Error(`Simulation: particles must be a positive integer, got ${particles}`);
+    }
+    if (particleRadius !== undefined && !(particleRadius > 0 && Number.isFinite(particleRadius))) {
       throw new Error(
-        `Simulation: maxParticles must be a positive integer, got ${options.maxParticles}`,
+        `Simulation: particleRadius must be a positive number of metres, got ${particleRadius}`,
       );
     }
     this.options = options;
+    this.radius = particleRadius ?? 0;
     this.gravityValue = options.gravity?.clone() ?? new Vector3(0, -9.81, 0);
   }
 
@@ -460,9 +501,12 @@ export class Simulation {
     return this.gravityValue;
   }
 
-  /** Radius of every particle, in metres. */
+  /**
+   * Radius of every particle, in metres. With the `particles` option, it's
+   * chosen when the simulation starts and is 0 until then.
+   */
   get particleRadius(): number {
-    return this.options.particleRadius;
+    return this.radius;
   }
   /** Number of particles in use. Known once the simulation starts. */
   get particleCount(): number {
@@ -580,7 +624,7 @@ export class Simulation {
         const r = sourceRadius * 0.9 * Math.sqrt(Math.random());
         handle.system!.emit([
           source.x + Math.cos(angle) * r,
-          source.y + this.options.particleRadius + Math.random() * sourceRadius * 0.3,
+          source.y + this.radius + Math.random() * sourceRadius * 0.3,
           source.z + Math.sin(angle) * r,
         ]);
       }
@@ -608,126 +652,45 @@ export class Simulation {
       );
     }
 
-    // Every particle shares one radius.
-    const inside = container?.clone();
-    const r = this.options.particleRadius;
-    const spacing = 2 * r;
-
-    // Colliders, so liquid doesn't start inside them.
-    const obstacles: Obstacle[] = [];
     const sdfs = new Map<Mesh, SDFData>();
-    for (const def of this.colliderDefs) {
-      if (def.kind === 'sphere' && !def.follow)
-        obstacles.push(sphereObstacle(def.center, def.radius));
-      if (def.kind === 'sphere' && def.follow)
-        obstacles.push(sphereObstacle(def.follow.getWorldPosition(new Vector3()), def.radius));
-      if (def.kind === 'box') {
-        const center = def.follow ? def.follow.getWorldPosition(new Vector3()) : def.center;
-        const rotation = def.follow
-          ? def.follow.getWorldQuaternion(new Quaternion())
-          : def.rotation;
-        obstacles.push(boxObstacle(center, def.half, rotation));
-      }
-      if (def.kind === 'capsule') {
-        const shift = def.follow
-          ? def.follow
-              .getWorldPosition(new Vector3())
-              .sub(def.a.clone().add(def.b).multiplyScalar(0.5))
-          : new Vector3();
-        obstacles.push(
-          capsuleObstacle(def.a.clone().add(shift), def.b.clone().add(shift), def.radius),
-        );
-      }
-      if (def.kind === 'floor') obstacles.push((p) => p.y - def.height);
-      if (def.kind === 'mesh') {
-        const sdf = bakeMeshToSdf(def.mesh.geometry, {
-          resolution: def.resolution,
-          padding: 4 * r,
-        });
-        sdfs.set(def.mesh, sdf);
-        def.mesh.updateWorldMatrix(true, false);
-        obstacles.push(sdfObstacle(sdf, def.mesh.matrixWorld));
-      }
+    let layout: Layout;
+    if (this.options.particleRadius !== undefined) {
+      const r = this.options.particleRadius;
+      layout = this.layout(r, this.obstacles(sdfs, 4 * r));
+    } else {
+      layout = this.fitBudget(this.options.particles, sdfs);
     }
+    const r = (this.radius = layout.radius);
+    const { init, solidEnd, fluidRanges, airRange } = layout;
 
-    // Lay out the particles: soft bodies, then cloth, then liquid, then air.
-    const init: ParticleInit[] = [];
-    const bodyDefs: SoftbodyDef[] = [];
-    const solidPositions: Float32Array[] = [];
-    for (const { handle, geometry } of this.softbodies) {
-      const shape = voxelize(geometry, { particleRadius: r, largestPiece: true });
+    for (const range of fluidRanges)
+      if (range.count === 0)
+        throw new Error('addFluid: the fluid has no room; check its box and the container');
+    const bodyDefs: SoftbodyDef[] = this.softbodies.map(({ handle }, i) => {
+      const { shape, start } = layout.bodies[i]!;
       if (shape.count === 0)
         throw new Error('addSoftbody: the mesh is too small for the particle size');
-      const start = init.length;
-      const invMass = 1 / (handle.settings.density * spacing ** 3);
-      for (let i = 0; i < shape.count; i++) {
-        const p = shape.positions;
-        init.push({ position: [p[i * 3]!, p[i * 3 + 1]!, p[i * 3 + 2]!], invMass });
-      }
-      handle.index = bodyDefs.length;
+      handle.index = i;
       handle.count = shape.count;
-      bodyDefs.push({
+      return {
         range: { start, count: shape.count },
         surfaceCount: shape.surfaceCount,
         compliance: softbodyCompliance(handle.settings.softness, shape.count),
         edges: shape.edges,
-      });
-      solidPositions.push(shape.positions);
-    }
-    const clothGraphs = this.cloths.map(({ handle, options }) => {
-      const columns = Math.max(2, Math.round(options.width / (CLOTH_SPACING * r)));
-      const rows = Math.max(2, Math.round(options.height / (CLOTH_SPACING * r)));
-      const geometry = new PlaneGeometry(options.width, options.height, columns, rows);
-      geometry.applyQuaternion(new Quaternion().setFromEuler(options.rotation ?? new Euler()));
-      const at = options.position ?? new Vector3(0, 1, 0);
-      geometry.translate(at.x, at.y, at.z);
-      const graph = createClothGraph(geometry, {
-        surfaceDensity: handle.settings.weight,
-        pinnedIndices: pinned(options.pin ?? 'top', columns, rows),
-      });
-      geometry.dispose();
+      };
+    });
+    const clothGraphs = layout.cloths;
+    this.cloths.forEach(({ handle }, i) => {
+      const { graph, columns } = clothGraphs[i]!;
       handle.segments = columns;
-      const offset = init.length;
-      for (const p of graph.positions) init.push({ position: p });
-      solidPositions.push(new Float32Array(graph.positions.flat()));
-      return { graph, offset, columns, rows };
+      handle.count = graph.positions.length;
     });
-    const solidEnd = init.length;
-    const shrink = (box: Box3) => box.clone().expandByScalar(-r);
-    const fluidRanges = this.fluids.map(({ options, geometry }) => {
-      let points: number[];
-      if (options.box) {
-        const box = inside ? options.box.clone().intersect(shrink(inside)) : options.box;
-        points = fillBox(box, spacing);
-      } else {
-        points = Array.from(voxelize(geometry!, { particleRadius: r }).positions);
-        options.mesh!.visible = false;
-      }
-      points = clearOf(points, spacing, obstacles, solidPositions);
-      const start = init.length;
-      for (let i = 0; i < points.length; i += 3)
-        init.push({ position: [points[i]!, points[i + 1]!, points[i + 2]!] });
-      return { start, count: init.length - start };
+    this.fluids.forEach(({ handle, options }, i) => {
+      handle.count = fluidRanges[i]!.count;
+      if (options.mesh) options.mesh.visible = false;
     });
-    const airRange = smoke
-      ? (() => {
-          const start = init.length;
-          const points = fillBox(shrink(container!), spacing);
-          for (let i = 0; i < points.length; i += 3)
-            init.push({ position: [points[i]!, points[i + 1]!, points[i + 2]!] });
-          return { start, count: init.length - start };
-        })()
-      : undefined;
-    for (const range of fluidRanges)
-      if (range.count === 0)
-        throw new Error('addFluid: the fluid has no room; check its box and the container');
-    const { maxParticles } = this.options;
-    if (init.length > maxParticles) {
-      throw new Error(
-        `Simulation: the scene needs ${init.length} particles at particleRadius ${r}, above maxParticles (${maxParticles}). ` +
-          'Raise maxParticles, raise particleRadius, or add less',
-      );
-    }
+    if (airRange) this.smokes[0]!.handle.count = airRange.count;
+    this.warnIfCoarse(layout);
 
     const particles = (this.system = new ParticleSystem(renderer, init.length, r));
     particles.uploadParticles(init);
@@ -983,6 +946,184 @@ export class Simulation {
       );
     }
     this.showParticles = this.particleView;
+  }
+
+  /**
+   * The layout with the smallest particle radius that fits within `budget`
+   * particles. The first guess comes from the content's rough volume and
+   * area; each pass then rescales the radius by the ratio of the count it got
+   * to the budget, keeping the best layout that fits.
+   */
+  private fitBudget(budget: number, sdfs: Map<Mesh, SDFData>): Layout {
+    const { container } = this.options;
+    const boundsVolume = (box: Box3) => {
+      if (box.isEmpty()) return 0;
+      const size = box.getSize(new Vector3());
+      return size.x * size.y * size.z;
+    };
+    const meshBounds = (geometry: BufferGeometry) => {
+      geometry.computeBoundingBox();
+      return boundsVolume(geometry.boundingBox!);
+    };
+    let volume = 0;
+    for (const { options, geometry } of this.fluids) {
+      volume += options.box
+        ? boundsVolume(container ? options.box.clone().intersect(container) : options.box)
+        : meshBounds(geometry!);
+    }
+    for (const { geometry } of this.softbodies) volume += meshBounds(geometry);
+    if (this.smokes.length) volume += boundsVolume(container!);
+    const area = this.cloths.reduce((sum, { options }) => sum + options.width * options.height, 0);
+    const guess = radiusForBudget(volume, area, CLOTH_SPACING, budget);
+
+    // Mesh obstacles are baked once, padded for radii well above the guess.
+    const obstacles = this.obstacles(sdfs, 8 * guess);
+    let r = guess;
+    let best: Layout | undefined;
+    for (let pass = 0; pass < 12; pass++) {
+      const layout = this.layout(r, obstacles);
+      const count = layout.init.length;
+      if (count <= budget && (!best || count > best.init.length)) best = layout;
+      if (count <= budget && count >= 0.97 * budget) break;
+      r *= Math.cbrt(Math.max(count, 1) / (0.985 * budget));
+    }
+    // Every pass overshot: grow the particles until the scene fits.
+    for (let pass = 0; !best && pass < 100; pass++) {
+      r *= 1.05;
+      const layout = this.layout(r, obstacles);
+      if (layout.init.length <= budget) best = layout;
+    }
+    if (!best) throw new Error(`Simulation: the scene can't fit in ${budget} particles`);
+    if (4 * best.radius > 8 * guess) {
+      sdfs.clear();
+      this.obstacles(sdfs, 4 * best.radius);
+    }
+    return best;
+  }
+
+  /**
+   * Obstacles that particles mustn't start inside. Bakes each `addMesh`
+   * shape into `sdfs`, padded by `padding` metres.
+   */
+  private obstacles(sdfs: Map<Mesh, SDFData>, padding: number): Obstacle[] {
+    const obstacles: Obstacle[] = [];
+    for (const def of this.colliderDefs) {
+      if (def.kind === 'sphere' && !def.follow)
+        obstacles.push(sphereObstacle(def.center, def.radius));
+      if (def.kind === 'sphere' && def.follow)
+        obstacles.push(sphereObstacle(def.follow.getWorldPosition(new Vector3()), def.radius));
+      if (def.kind === 'box') {
+        const center = def.follow ? def.follow.getWorldPosition(new Vector3()) : def.center;
+        const rotation = def.follow
+          ? def.follow.getWorldQuaternion(new Quaternion())
+          : def.rotation;
+        obstacles.push(boxObstacle(center, def.half, rotation));
+      }
+      if (def.kind === 'capsule') {
+        const shift = def.follow
+          ? def.follow
+              .getWorldPosition(new Vector3())
+              .sub(def.a.clone().add(def.b).multiplyScalar(0.5))
+          : new Vector3();
+        obstacles.push(
+          capsuleObstacle(def.a.clone().add(shift), def.b.clone().add(shift), def.radius),
+        );
+      }
+      if (def.kind === 'floor') obstacles.push((p) => p.y - def.height);
+      if (def.kind === 'mesh') {
+        const sdf = bakeMeshToSdf(def.mesh.geometry, { resolution: def.resolution, padding });
+        sdfs.set(def.mesh, sdf);
+        def.mesh.updateWorldMatrix(true, false);
+        obstacles.push(sdfObstacle(sdf, def.mesh.matrixWorld));
+      }
+    }
+    return obstacles;
+  }
+
+  /** Lay out every particle at radius `r`: soft bodies, then cloth, then liquid, then air. */
+  private layout(r: number, obstacles: readonly Obstacle[]): Layout {
+    const { container } = this.options;
+    const spacing = 2 * r;
+    const init: ParticleInit[] = [];
+    const solidPositions: Float32Array[] = [];
+    const bodies = this.softbodies.map(({ handle, geometry }) => {
+      const shape = voxelize(geometry, { particleRadius: r, largestPiece: true });
+      const start = init.length;
+      const invMass = 1 / (handle.settings.density * spacing ** 3);
+      const p = shape.positions;
+      for (let i = 0; i < shape.count; i++) {
+        init.push({ position: [p[i * 3]!, p[i * 3 + 1]!, p[i * 3 + 2]!], invMass });
+      }
+      solidPositions.push(p);
+      return { shape, start };
+    });
+    const cloths = this.cloths.map(({ handle, options }) => {
+      const columns = Math.max(2, Math.round(options.width / (CLOTH_SPACING * r)));
+      const rows = Math.max(2, Math.round(options.height / (CLOTH_SPACING * r)));
+      const geometry = new PlaneGeometry(options.width, options.height, columns, rows);
+      geometry.applyQuaternion(new Quaternion().setFromEuler(options.rotation ?? new Euler()));
+      const at = options.position ?? new Vector3(0, 1, 0);
+      geometry.translate(at.x, at.y, at.z);
+      const graph = createClothGraph(geometry, {
+        surfaceDensity: handle.settings.weight,
+        pinnedIndices: pinned(options.pin ?? 'top', columns, rows),
+      });
+      geometry.dispose();
+      const offset = init.length;
+      for (const position of graph.positions) init.push({ position });
+      solidPositions.push(new Float32Array(graph.positions.flat()));
+      return { graph, offset, columns, rows };
+    });
+    const solidEnd = init.length;
+    const shrink = (box: Box3) => box.clone().expandByScalar(-r);
+    const fluidRanges = this.fluids.map(({ options, geometry }) => {
+      let points: number[];
+      if (options.box) {
+        points = fillBox(
+          container ? options.box.clone().intersect(shrink(container)) : options.box,
+          spacing,
+        );
+      } else {
+        points = Array.from(voxelize(geometry!, { particleRadius: r }).positions);
+      }
+      points = clearOf(points, spacing, obstacles, solidPositions);
+      const start = init.length;
+      for (let i = 0; i < points.length; i += 3)
+        init.push({ position: [points[i]!, points[i + 1]!, points[i + 2]!] });
+      return { start, count: init.length - start };
+    });
+    let airRange: ParticleRange | undefined;
+    if (this.smokes.length) {
+      const start = init.length;
+      const points = fillBox(shrink(container!), spacing);
+      for (let i = 0; i < points.length; i += 3)
+        init.push({ position: [points[i]!, points[i + 1]!, points[i + 2]!] });
+      airRange = { start, count: init.length - start };
+    }
+    return { radius: r, init, bodies, cloths, solidEnd, fluidRanges, airRange };
+  }
+
+  /** Warn about soft bodies and cloth too coarse to keep their shape. */
+  private warnIfCoarse(layout: Layout): void {
+    const fix = this.options.particles === undefined ? 'lower particleRadius' : 'raise particles';
+    const radius = `particleRadius ${layout.radius.toPrecision(3)}`;
+    this.softbodies.forEach(({ handle }, i) => {
+      const count = layout.bodies[i]!.shape.count;
+      if (count > 0 && count < MIN_SOFTBODY_PARTICLES) {
+        const name = handle.source.name ? `"${handle.source.name}"` : `#${i}`;
+        console.warn(
+          `Simulation: soft body ${name} has ${count} particles at ${radius}, too few to keep its shape. To give it more, ${fix} or scale the scene up.`,
+        );
+      }
+    });
+    this.cloths.forEach((_, i) => {
+      const { columns, rows } = layout.cloths[i]!;
+      if (Math.min(columns, rows) + 1 < MIN_CLOTH_SIDE) {
+        console.warn(
+          `Simulation: cloth #${i} is ${columns + 1} × ${rows + 1} particles at ${radius}, too few to fold smoothly. To give it more, ${fix}.`,
+        );
+      }
+    });
   }
 
   private show(object: Object3D): void {
