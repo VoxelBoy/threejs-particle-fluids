@@ -10,11 +10,15 @@ import {
   type Values,
 } from './types.js';
 
+const REPO = 'https://github.com/dgreenheck/threejs-particle-fluids';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `
   <header class="topbar">
     <a class="brand" href="./" aria-label="Three.js Particle Fluids home"><img src="${import.meta.env.BASE_URL}favicon.svg" alt="" width="34" height="34"><span>Three.js <strong>Particle Fluids</strong></span></a>
-    <span class="gpu-badge"><span></span> WebGPU</span>
+    <nav class="top-links" aria-label="Project links">
+      <a class="top-link" href="${REPO}/tree/main/docs#readme" target="_blank" rel="noopener">${icon('book')}<span>Docs</span></a>
+      <a class="top-link" href="${REPO}" target="_blank" rel="noopener">${icon('github')}<span>GitHub</span></a>
+    </nav>
   </header>
   <main class="workspace">
   <nav class="gallery" aria-label="Choose a preset">${[...new Set(presets.map((p) => p.group))]

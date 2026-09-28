@@ -112,22 +112,32 @@ button svg {
   color: #e8edf5;
   margin-left: 3px;
 }
-.gpu-badge {
+.top-links {
+  display: flex;
+  gap: 8px;
+}
+.top-link {
   display: flex;
   align-items: center;
   gap: 7px;
   color: #a9b9ba;
-  font-size: 10px;
-  letter-spacing: 0.2px;
+  font-size: 12px;
+  text-decoration: none;
   border: 1px solid #a2d6ca22;
-  padding: 6px 10px;
+  padding: 6px 12px;
   border-radius: 20px;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
 }
-.gpu-badge > span {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #91c8b1;
+.top-link:hover,
+.top-link:focus-visible {
+  color: #e7eaf0;
+  border-color: #a2d6ca55;
+}
+.top-link svg {
+  width: 15px;
+  height: 15px;
 }
 .workspace {
   display: grid;
@@ -841,9 +851,11 @@ select {
     width: 26px;
     height: 26px;
   }
-  .gpu-badge {
-    font-size: 8px;
-    padding: 5px 7px;
+  .top-link {
+    padding: 6px 8px;
+  }
+  .top-link span {
+    display: none;
   }
   .workspace {
     grid-template-columns: 66px minmax(0, 1fr);

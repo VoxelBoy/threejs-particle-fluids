@@ -44,8 +44,8 @@ export interface GasSystemOptions {
 /**
  * Smoke: massless tracer particles carried by a fluid's velocity field
  * (Macklin et al. 2014, §7.2.1). The fluid is the air; tracers make its
- * motion visible. Draw them with {@link VolumetricGasRenderer} or
- * {@link PointSpritesGasRenderer}.
+ * motion visible. Draw them with {@link GasVolumeRenderer} or
+ * {@link GasSpriteRenderer}.
  *
  * List the gas before its fluid in the {@link SimLoop}'s `materials`, so
  * tracers follow the solved velocities before vorticity and viscosity

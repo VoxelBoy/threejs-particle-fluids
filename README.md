@@ -4,6 +4,8 @@ GPU particle physics for [Three.js](https://threejs.org): liquids, soft bodies, 
 
 ![Wave Chamber](https://raw.githubusercontent.com/dgreenheck/threejs-particle-fluids/main/public/previews/cover.png)
 
+**[Live demo](https://dgreenheck.github.io/threejs-particle-fluids/)** · **[Documentation](docs/README.md)**
+
 ## Install
 
 ```sh
@@ -72,6 +74,10 @@ requestAnimationFrame(frame);
 
 The complete version, with a camera and lights, is [`examples/fluid.ts`](examples/fluid.ts). Run `npm run dev` and open `/examples/fluid.html`.
 
+## Documentation
+
+The [documentation](docs/README.md) covers each material, the colliders, combining materials, writing your own kernels, and troubleshooting.
+
 ## How it fits together
 
 - **`ParticleSystem`** holds every particle's position, velocity, and inverse mass in GPU buffers. Materials own ranges of it.
@@ -98,7 +104,7 @@ The API is young and may change before 1.0. The solvers are built for interactiv
 
 ## Demo
 
-The repository includes a demo of thirteen presets. Install Node.js 22.12 or newer, then:
+The [live demo](https://dgreenheck.github.io/threejs-particle-fluids/) runs thirteen presets in any browser with WebGPU. To run it locally, install Node.js 22.12 or newer, then:
 
 ```sh
 npm ci
