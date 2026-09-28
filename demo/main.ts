@@ -1,4 +1,5 @@
 import './style.css';
+import { version } from '../package.json';
 import { icon } from './icons.js';
 import { defaults, presets } from './presets/index.js';
 import { World, type Diagnostics } from './runtime/world.js';
@@ -14,7 +15,10 @@ const REPO = 'https://github.com/dgreenheck/threejs-particle-fluids';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `
   <header class="topbar">
-    <a class="brand" href="./" aria-label="Three.js Particle Fluids home"><img src="${import.meta.env.BASE_URL}favicon.svg" alt="" width="34" height="34"><span>Three.js <strong>Particle Fluids</strong></span></a>
+    <div class="brand-group">
+      <a class="brand" href="./" aria-label="Three.js Particle Fluids home"><img src="${import.meta.env.BASE_URL}favicon.svg" alt="" width="34" height="34"><span>Three.js <strong>Particle Fluids</strong></span></a>
+      <a class="version" href="${REPO}/releases/tag/v${version}" target="_blank" rel="noopener" aria-label="Version ${version} release notes">v${version}</a>
+    </div>
     <nav class="top-links" aria-label="Project links">
       <a class="top-link" href="${REPO}/tree/main/docs#readme" target="_blank" rel="noopener">${icon('book')}<span>Docs</span></a>
       <a class="top-link" href="${REPO}" target="_blank" rel="noopener">${icon('github')}<span>GitHub</span></a>

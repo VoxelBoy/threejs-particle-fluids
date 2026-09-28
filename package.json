@@ -1,6 +1,6 @@
 {
   "name": "threejs-particle-fluids",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "GPU particle physics for Three.js: liquids, soft bodies, cloth, and smoke, simulated and rendered with WebGPU.",
   "keywords": [
     "three",

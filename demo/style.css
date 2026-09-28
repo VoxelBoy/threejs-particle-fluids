@@ -112,6 +112,29 @@ button svg {
   color: #e8edf5;
   margin-left: 3px;
 }
+.brand-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.version {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-decoration: none;
+  border: 1px solid #a2d6ca22;
+  padding: 2px 8px;
+  border-radius: 10px;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
+}
+.version:hover,
+.version:focus-visible {
+  color: #e7eaf0;
+  border-color: #a2d6ca55;
+}
 .top-links {
   display: flex;
   gap: 8px;
@@ -850,6 +873,13 @@ select {
   .brand img {
     width: 26px;
     height: 26px;
+  }
+  .brand-group {
+    gap: 8px;
+  }
+  .version {
+    font-size: 10px;
+    padding: 1px 6px;
   }
   .top-link {
     padding: 6px 8px;
