@@ -243,7 +243,7 @@ Removes everything the simulation added to your scene, frees its GPU memory, and
 | `<call>: gas and liquid can’t be simulated together, …`               | You mixed smoke with liquid, soft bodies, or cloth.                                                     |
 | `Simulation.particleSystem is created on the first step`              | You read `particleSystem` or `loop` before `start()`.                                                   |
 | `bakeMeshToSdf: mesh appears non-watertight — …`                      | A mesh passed to `addMesh` has holes.                                                                   |
-| `SDFCollider.setTransform: scale must be uniform`                     | A mesh passed to `addMesh` is scaled differently along different axes.                                  |
+| `SDFCollider.setTransform: …`                                         | A mesh passed to `addMesh` is scaled differently along different axes, scaled to zero, or mirrored.     |
 
 Errors from building the simulation reject the promise that `start()` or `step()` returns.
 

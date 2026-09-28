@@ -33,6 +33,22 @@ describe('SDFCollider', () => {
     expect(collider.version).toBe(moved);
   });
 
+  it('rejects transforms it can’t represent', () => {
+    const collider = new SDFCollider(particles, field);
+    expect(() => collider.setTransform(new Matrix4().makeScale(0, 0, 0))).toThrow(
+      /scale must be non-zero/,
+    );
+    expect(() => collider.setTransform(new Matrix4().makeScale(-1, 1, 1))).toThrow(/mirrored/);
+    expect(() => collider.setTransform(new Matrix4().makeScale(1, 2, 1))).toThrow(
+      /scale must be uniform/,
+    );
+    const broken = new Matrix4();
+    broken.elements[12] = NaN;
+    expect(() => collider.setTransform(broken)).toThrow(/NaN or infinite/);
+    collider.setTransform(new Matrix4().makeScale(2, 2, 2));
+    expect(collider.scale).toBeCloseTo(2);
+  });
+
   it('normalizes rotations and rejects zero ones', () => {
     const collider = new SDFCollider(particles, field);
     collider.setRotation(new Quaternion(0, 3, 0, 4));

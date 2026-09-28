@@ -207,6 +207,18 @@ export class SDFCollider implements Collider {
 
   /** Place the collider from a matrix. Scale must be uniform. */
   setTransform(transform: Matrix4): void {
+    // Matrix4.decompose reads a zero scale as 1 and folds a mirror into a
+    // negative x scale, so both are caught here, before it runs.
+    const determinant = transform.determinant();
+    if (!Number.isFinite(determinant)) {
+      throw new Error('SDFCollider.setTransform: the matrix has NaN or infinite values');
+    }
+    if (Math.abs(determinant) < 1e-18) {
+      throw new Error('SDFCollider.setTransform: scale must be non-zero');
+    }
+    if (determinant < 0) {
+      throw new Error('SDFCollider.setTransform: mirrored transforms aren’t supported');
+    }
     const position = new Vector3();
     const rotation = new Quaternion();
     const scale = new Vector3();

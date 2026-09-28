@@ -299,12 +299,14 @@ Sets the uniform scale. The field's distances scale with it. `thickness` doesn't
 setTransform(transform: Matrix4): void
 ```
 
-Sets position, rotation, and scale from a matrix, such as `mesh.matrixWorld`. A matrix with zero scale doesn't throw. It places the collider at the matrix's position with a scale of 1 and no rotation.
+Sets position, rotation, and scale from a matrix, such as `mesh.matrixWorld`.
 
-| Throws                                                                    | When                                                                                                    |
-| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `SDFCollider.setTransform: scale must be uniform`                         | The matrix scales the axes by different amounts (more than 1e-4 relative to x), or it mirrors the mesh. |
-| `SDFCollider.setRotation: rotation must be a finite, non-zero quaternion` | The matrix contains `NaN` or infinite values.                                                           |
+| Throws                                                            | When                                                                            |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `SDFCollider.setTransform: scale must be uniform`                 | The matrix scales the axes by different amounts (more than 1e-4 relative to x). |
+| `SDFCollider.setTransform: scale must be non-zero`                | The matrix scales the mesh to nothing.                                          |
+| `SDFCollider.setTransform: mirrored transforms aren’t supported`  | The matrix flips the mesh, for example with a negative scale.                   |
+| `SDFCollider.setTransform: the matrix has NaN or infinite values` | The matrix contains `NaN` or infinite values.                                   |
 
 #### `update()`
 
@@ -445,7 +447,7 @@ const sdf = decodeSdfBinary(await(await fetch('/bunny.sdf.bin')).arrayBuffer());
 - You can't remove a primitive, detach it, or change its friction. Only spheres can be reshaped, with `setSphere`. Planes, boxes, and capsules can only move through `attach`.
 - Between updates, an attached primitive is assumed to move and turn at a steady rate. A turn of more than half a revolution in one step is read as the shorter turn the other way.
 - You can't invert a plane or a capsule, only spheres and boxes. To keep particles on the other side of a plane, flip its normal.
-- `SDFCollider` supports only uniform scale, so `setTransform` throws on a stretched or mirrored matrix.
+- `SDFCollider` supports only uniform, positive scale, so `setTransform` throws on a stretched, flattened, or mirrored matrix.
 - `SDFCollider` friction treats the mesh as still, and a moved mesh jumps to its new placement instead of sweeping across substeps. Particles left inside are pushed toward the nearest surface, which for a thin part can be the far side. Keep each step's movement small compared with the thinnest part.
 - You can't change an `SDFCollider`'s field after construction, including its resolution, origin, and voxel size. Position, rotation, scale, `thickness`, `muS`, and `muK` can change every step.
 - Each `SDFCollider` builds its own kernels and takes 7 texture samples per particle per solver iteration, plus 7 for each touching particle in the friction pass.
